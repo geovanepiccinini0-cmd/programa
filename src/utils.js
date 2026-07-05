@@ -28,6 +28,38 @@ export function weekdayLongName(dateStr) {
   return nomes[new Date(dateStr + 'T00:00:00').getDay()];
 }
 
+const BUSINESS_HOURS = [
+  { start: '08:00', end: '12:00' },
+  { start: '13:00', end: '18:00' },
+];
+const SLOT_MINUTES = 30;
+
+function timeToMinutes(t) {
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function minutesToTime(mins) {
+  const h = String(Math.floor(mins / 60)).padStart(2, '0');
+  const m = String(mins % 60).padStart(2, '0');
+  return `${h}:${m}`;
+}
+
+export function availableTimeSlots(occupiedTimes) {
+  const occupied = new Set(occupiedTimes);
+  const slots = [];
+  BUSINESS_HOURS.forEach(({ start, end }) => {
+    let cur = timeToMinutes(start);
+    const endMin = timeToMinutes(end);
+    while (cur < endMin) {
+      const t = minutesToTime(cur);
+      if (!occupied.has(t)) slots.push(t);
+      cur += SLOT_MINUTES;
+    }
+  });
+  return slots;
+}
+
 export function formatPhoneBR(value) {
   const digits = (value || '').replace(/\D/g, '').slice(0, 11);
   const len = digits.length;
@@ -108,7 +140,7 @@ export function exportLeadsCSV(leads, produtoFiltro, etapaFiltro) {
   const headers = [
     'Nome', 'Telefone', 'Canal', 'Produto', 'Tipo', 'Etapa', 'Valor de Crédito', 'Entrada',
     '% Entrada/Crédito', 'Parcela', 'Lance', 'Valor Estimado', 'Valor de Avaliação do Imóvel',
-    '% LTV', 'Próximo Contato', 'Dias sem contato', 'Notas',
+    '% LTV', 'Próximo Contato', 'Horário do Próximo Contato', 'Dias sem contato', 'Notas',
   ];
   const rows = filtered.map((l) => {
     const dias = diasDesde(l.ultimaAtualizacao || l.criadoEm);
@@ -117,7 +149,7 @@ export function exportLeadsCSV(leads, produtoFiltro, etapaFiltro) {
     return [
       l.nome, l.telefone || '', l.canal || '', l.produto || '', l.tipo || '', l.etapa || '',
       l.credito || '', l.entrada || '', pctEntrada, l.parcela || '', l.lance || '', l.valor || '',
-      l.valorImovel || '', ltv, l.proximoContato || '', dias !== null ? dias : '', l.notas || '',
+      l.valorImovel || '', ltv, l.proximoContato || '', l.proximoContatoHorario || '', dias !== null ? dias : '', l.notas || '',
     ];
   });
   const csvLines = [headers.map(csvEscape).join(';'), ...rows.map((r) => r.map(csvEscape).join(';'))];

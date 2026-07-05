@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CANAIS, PRODUTOS, STAGES } from '../constants.js';
-import { formatPhoneBR, moneyFormat, parseMoneyValue } from '../utils.js';
+import { availableTimeSlots, formatPhoneBR, moneyFormat, parseMoneyValue } from '../utils.js';
 import ProdutoFields from './ProdutoFields.jsx';
 
 const EMPTY_EXTRA = { tipo: '', credito: '', entrada: '', parcela: '', lance: '', valor: '', valorImovel: '' };
@@ -18,13 +18,14 @@ function extraFromLead(lead) {
   };
 }
 
-export default function LeadModal({ lead, onClose, onSave }) {
+export default function LeadModal({ lead, tasks, onClose, onSave }) {
   const [nome, setNome] = useState('');
   const [telefone, setTelefone] = useState('');
   const [canal, setCanal] = useState(CANAIS[0]);
   const [produto, setProduto] = useState(PRODUTOS[0]);
   const [etapa, setEtapa] = useState(STAGES[0]);
   const [proximoContato, setProximoContato] = useState('');
+  const [proximoContatoHorario, setProximoContatoHorario] = useState('');
   const [notas, setNotas] = useState('');
   const [extra, setExtra] = useState({ ...EMPTY_EXTRA });
   const [error, setError] = useState('');
@@ -36,10 +37,19 @@ export default function LeadModal({ lead, onClose, onSave }) {
     setProduto(lead ? lead.produto : PRODUTOS[0]);
     setEtapa(lead ? lead.etapa : STAGES[0]);
     setProximoContato(lead ? lead.proximoContato || '' : '');
+    setProximoContatoHorario(lead ? lead.proximoContatoHorario || '' : '');
     setNotas(lead ? lead.notas || '' : '');
     setExtra(extraFromLead(lead));
     setError('');
   }, [lead]);
+
+  const availableSlots = useMemo(() => {
+    if (!proximoContato) return [];
+    const occupied = tasks
+      .filter((t) => t.data === proximoContato && t.horario && !(lead && t.origem === 'lead-agenda' && t.leadId === lead.id))
+      .map((t) => t.horario);
+    return availableTimeSlots(occupied);
+  }, [tasks, proximoContato, lead]);
 
   function handleProdutoChange(novoProduto) {
     setProduto(novoProduto);
@@ -72,6 +82,7 @@ export default function LeadModal({ lead, onClose, onSave }) {
       produto,
       etapa,
       proximoContato,
+      proximoContatoHorario: proximoContato ? proximoContatoHorario : '',
       notas: notas.trim(),
       ...buildExtraForSave(),
     };
@@ -124,7 +135,32 @@ export default function LeadModal({ lead, onClose, onSave }) {
               <label htmlFor="f-proximo">Próximo contato</label>
               <input type="date" id="f-proximo" value={proximoContato} onChange={(e) => setProximoContato(e.target.value)} />
             </div>
+            <div className="field">
+              <label htmlFor="f-proximo-horario">Horário</label>
+              <input type="time" id="f-proximo-horario" value={proximoContatoHorario} onChange={(e) => setProximoContatoHorario(e.target.value)} disabled={!proximoContato} />
+            </div>
           </div>
+          {proximoContato && (
+            <div className="field">
+              <label>Horários disponíveis nesse dia</label>
+              <div className="filters" style={{ marginBottom: 0 }}>
+                {availableSlots.length === 0 ? (
+                  <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>Nenhum horário livre nesse dia (considerando 08h-12h e 13h-18h).</span>
+                ) : (
+                  availableSlots.map((slot) => (
+                    <button
+                      type="button"
+                      key={slot}
+                      className={`chip ${proximoContatoHorario === slot ? 'active' : ''}`}
+                      onClick={() => setProximoContatoHorario(slot)}
+                    >
+                      {slot}
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
           <div className="field">
             <label htmlFor="f-notas">Notas</label>
             <textarea id="f-notas" rows={3} value={notas} onChange={(e) => setNotas(e.target.value)} />

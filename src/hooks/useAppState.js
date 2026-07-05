@@ -37,6 +37,54 @@ function pendingRotinaTasks(templates, tasks) {
   return pending;
 }
 
+function computeLeadAgendaTaskData(lead) {
+  const ativo = lead.etapa !== 'Ganho' && lead.etapa !== 'Perdido';
+  if (!ativo || !lead.proximoContato) return null;
+  return {
+    titulo: 'Contato: ' + lead.nome,
+    categoria: 'Agenda/Ligação',
+    data: lead.proximoContato,
+    horario: lead.proximoContatoHorario || '',
+    concluida: false,
+    leadId: lead.id,
+    origem: 'lead-agenda',
+  };
+}
+
+function reconcileLeadAgendaActions(affectedLeads, tasks) {
+  const actions = [];
+  affectedLeads.forEach((lead) => {
+    const desired = computeLeadAgendaTaskData(lead);
+    const existing = tasks.find((t) => t.origem === 'lead-agenda' && t.leadId === lead.id);
+    if (!desired) {
+      if (existing) actions.push({ type: 'delete', id: existing.id });
+      return;
+    }
+    if (existing) {
+      const changed = existing.titulo !== desired.titulo || existing.data !== desired.data || existing.horario !== desired.horario;
+      if (changed) actions.push({ type: 'update', id: existing.id, data: desired });
+    } else {
+      actions.push({ type: 'insert', data: desired });
+    }
+  });
+  return actions;
+}
+
+async function applyLeadAgendaActions(actions, setTasks) {
+  for (const action of actions) {
+    if (action.type === 'delete') {
+      await tasksApi.remove(action.id);
+      setTasks((prev) => prev.filter((t) => t.id !== action.id));
+    } else if (action.type === 'update') {
+      const updated = await tasksApi.update(action.id, action.data);
+      setTasks((prev) => prev.map((t) => (t.id === action.id ? updated : t)));
+    } else if (action.type === 'insert') {
+      const inserted = await tasksApi.insert(action.data);
+      setTasks((prev) => [...prev, inserted]);
+    }
+  }
+}
+
 function applyRealtimeChange(setState, fromRow, payload) {
   if (payload.eventType === 'DELETE') {
     setState((prev) => prev.filter((item) => item.id !== payload.old.id));
@@ -84,6 +132,9 @@ export function useAppState() {
             if (cancelled) return;
             setTasks((prev) => [...prev, inserted]);
           }
+
+          const leadAgendaActions = reconcileLeadAgendaActions(leadsData, tasksData);
+          await applyLeadAgendaActions(leadAgendaActions, setTasks);
         }
       } catch (e) {
         if (!cancelled) { setError(e); setLoading(false); }
@@ -112,6 +163,7 @@ export function useAppState() {
       const inserted = await tasksApi.insert(p);
       setTasks((prev) => [...prev, inserted]);
     }
+    await applyLeadAgendaActions(reconcileLeadAgendaActions([saved], tasks), setTasks);
   }, [tasks]);
 
   const deleteLead = useCallback(async (id) => {
@@ -130,7 +182,8 @@ export function useAppState() {
     if (next < 0 || next >= STAGES.length) return;
     const updated = await leadsApi.update(id, { ...lead, etapa: STAGES[next], ultimaAtualizacao: todayStr() });
     setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
-  }, [leads]);
+    await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
+  }, [leads, tasks]);
 
   const addTask = useCallback(async (titulo, categoria, data, horario) => {
     const inserted = await tasksApi.insert({ titulo, categoria, data, horario, concluida: false, leadId: null, origem: 'manual' });
