@@ -1,7 +1,3 @@
-export function uid() {
-  return 'id_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-}
-
 export function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }

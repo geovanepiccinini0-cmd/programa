@@ -7,7 +7,7 @@ const TABS = [
   { key: 'rotina', label: 'Rotina' },
 ];
 
-export default function Header({ activeTab, onTabChange, onNewLead, onOpenExport, onExportBackup, onImportBackup }) {
+export default function Header({ activeTab, onTabChange, onNewLead, onOpenExport, onExportBackup, onImportBackup, onSignOut }) {
   const fileInputRef = useRef(null);
 
   function handleFileChange(e) {
@@ -45,6 +45,7 @@ export default function Header({ activeTab, onTabChange, onNewLead, onOpenExport
         <button className="btn-ghost" title="Importar backup de arquivo" onClick={() => fileInputRef.current?.click()}>⬆ Importar</button>
         <input ref={fileInputRef} type="file" accept=".json" style={{ display: 'none' }} onChange={handleFileChange} />
         <button className="btn-primary" onClick={onNewLead}>+ Novo Lead</button>
+        <button className="btn-ghost" title="Sair da conta" onClick={onSignOut}>⎋ Sair</button>
       </div>
     </header>
   );

@@ -1,159 +1,222 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DIAS_SEMANA } from '../constants.js';
-import { todayStr, uid } from '../utils.js';
+import { todayStr } from '../utils.js';
+import { leadsApi, tasksApi, templatesApi } from '../lib/db.js';
+import { supabase } from '../lib/supabaseClient.js';
 
-const STORAGE_KEYS = { leads: 'crm-piccinini:leads', tasks: 'crm-piccinini:tasks', templates: 'crm-piccinini:templates' };
-
-function loadFromStorage(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : [];
-  } catch (e) {
-    console.error('Erro ao ler storage', key, e);
-    return [];
-  }
-}
-
-function saveToStorage(key, value) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-    return true;
-  } catch (e) {
-    console.error('Erro ao salvar storage', key, e);
-    return false;
-  }
-}
-
-function generateAutoTasks(leads, tasks) {
+function pendingAutoTasksForLeads(leads, tasks) {
   const today = todayStr();
-  const newTasks = [];
+  const pending = [];
   leads.forEach((l) => {
     if (l.etapa === 'Ganho' || l.etapa === 'Perdido') return;
     if (!l.proximoContato) return;
     if (l.proximoContato > today) return;
     const jaTem = tasks.some((t) => t.leadId === l.id && t.origem === 'auto' && !t.concluida)
-      || newTasks.some((t) => t.leadId === l.id && t.origem === 'auto' && !t.concluida);
+      || pending.some((t) => t.leadId === l.id);
     if (!jaTem) {
-      newTasks.push({ id: uid(), titulo: 'Follow-up: ' + l.nome, categoria: 'Follow-up', data: l.proximoContato, concluida: false, leadId: l.id, origem: 'auto' });
+      pending.push({ titulo: 'Follow-up: ' + l.nome, categoria: 'Follow-up', data: l.proximoContato, concluida: false, leadId: l.id, origem: 'auto' });
     }
   });
-  return newTasks;
+  return pending;
 }
 
-function generateAutoTaskForLead(lead, tasks) {
-  return generateAutoTasks([lead], tasks);
-}
-
-function generateRotinaTasks(templates, tasks) {
+function pendingRotinaTasks(templates, tasks) {
   const todayAbrev = DIAS_SEMANA[new Date().getDay()];
   const today = todayStr();
-  const newTasks = [];
+  const pending = [];
   templates.forEach((tpl) => {
     if (!tpl.ativo) return;
     if (!tpl.dias.includes(todayAbrev)) return;
     const jaTem = tasks.some((t) => t.templateId === tpl.id && t.data === today)
-      || newTasks.some((t) => t.templateId === tpl.id && t.data === today);
+      || pending.some((t) => t.templateId === tpl.id);
     if (!jaTem) {
       const titulo = tpl.horario ? `${tpl.horario} · ${tpl.titulo}` : tpl.titulo;
-      newTasks.push({ id: uid(), titulo, categoria: tpl.categoria, data: today, concluida: false, leadId: null, origem: 'rotina', templateId: tpl.id });
+      pending.push({ titulo, categoria: tpl.categoria, data: today, concluida: false, leadId: null, origem: 'rotina', templateId: tpl.id });
     }
   });
-  return newTasks;
+  return pending;
+}
+
+function applyRealtimeChange(setState, fromRow, payload) {
+  if (payload.eventType === 'DELETE') {
+    setState((prev) => prev.filter((item) => item.id !== payload.old.id));
+    return;
+  }
+  const row = fromRow(payload.new);
+  setState((prev) => {
+    const idx = prev.findIndex((item) => item.id === row.id);
+    if (idx === -1) return [...prev, row];
+    const next = prev.slice();
+    next[idx] = row;
+    return next;
+  });
 }
 
 export function useAppState() {
-  const [leads, setLeads] = useState(() => loadFromStorage(STORAGE_KEYS.leads));
-  const [tasks, setTasks] = useState(() => loadFromStorage(STORAGE_KEYS.tasks));
-  const [templates, setTemplates] = useState(() => loadFromStorage(STORAGE_KEYS.templates));
-  const initialized = useRef(false);
+  const [leads, setLeads] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [templates, setTemplates] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const autoTasksChecked = useRef(false);
 
   useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
-    setTasks((prevTasks) => {
-      const autoTasks = generateAutoTasks(leads, prevTasks);
-      const rotinaTasks = generateRotinaTasks(templates, [...prevTasks, ...autoTasks]);
-      return [...prevTasks, ...autoTasks, ...rotinaTasks];
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    let cancelled = false;
+    (async () => {
+      try {
+        const [leadsData, tasksData, templatesData] = await Promise.all([
+          leadsApi.fetchAll(), tasksApi.fetchAll(), templatesApi.fetchAll(),
+        ]);
+        if (cancelled) return;
+        setLeads(leadsData);
+        setTasks(tasksData);
+        setTemplates(templatesData);
+        setLoading(false);
 
-  useEffect(() => { saveToStorage(STORAGE_KEYS.leads, leads); }, [leads]);
-  useEffect(() => { saveToStorage(STORAGE_KEYS.tasks, tasks); }, [tasks]);
-  useEffect(() => { saveToStorage(STORAGE_KEYS.templates, templates); }, [templates]);
-
-  const saveLead = useCallback((id, data) => {
-    let savedLead = null;
-    setLeads((prev) => {
-      if (id) {
-        return prev.map((l) => {
-          if (l.id !== id) return l;
-          savedLead = { ...l, ...data, ultimaAtualizacao: todayStr() };
-          return savedLead;
-        });
+        if (!autoTasksChecked.current) {
+          autoTasksChecked.current = true;
+          const pending = [
+            ...pendingAutoTasksForLeads(leadsData, tasksData),
+            ...pendingRotinaTasks(templatesData, tasksData),
+          ];
+          for (const p of pending) {
+            const inserted = await tasksApi.insert(p);
+            if (cancelled) return;
+            setTasks((prev) => [...prev, inserted]);
+          }
+        }
+      } catch (e) {
+        if (!cancelled) { setError(e); setLoading(false); }
       }
-      savedLead = { id: uid(), criadoEm: todayStr(), ultimaAtualizacao: todayStr(), ...data };
-      return [...prev, savedLead];
-    });
-    setTasks((prev) => [...prev, ...generateAutoTaskForLead(savedLead, prev)]);
+    })();
+    return () => { cancelled = true; };
   }, []);
 
-  const deleteLead = useCallback((id) => {
+  useEffect(() => {
+    const channel = supabase
+      .channel('crm-piccinini-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, (payload) => applyRealtimeChange(setLeads, leadsApi.fromRow, payload))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, (payload) => applyRealtimeChange(setTasks, tasksApi.fromRow, payload))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'templates' }, (payload) => applyRealtimeChange(setTemplates, templatesApi.fromRow, payload))
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  const saveLead = useCallback(async (id, data) => {
+    const saved = id
+      ? await leadsApi.update(id, { ...data, ultimaAtualizacao: todayStr() })
+      : await leadsApi.insert({ ...data, criadoEm: todayStr(), ultimaAtualizacao: todayStr() });
+    setLeads((prev) => (id ? prev.map((l) => (l.id === id ? saved : l)) : [...prev, saved]));
+    const pending = pendingAutoTasksForLeads([saved], tasks);
+    for (const p of pending) {
+      const inserted = await tasksApi.insert(p);
+      setTasks((prev) => [...prev, inserted]);
+    }
+  }, [tasks]);
+
+  const deleteLead = useCallback(async (id) => {
+    const relatedTasks = tasks.filter((t) => t.leadId === id);
+    await Promise.all(relatedTasks.map((t) => tasksApi.remove(t.id)));
+    await leadsApi.remove(id);
     setLeads((prev) => prev.filter((l) => l.id !== id));
     setTasks((prev) => prev.filter((t) => t.leadId !== id));
+  }, [tasks]);
+
+  const moveStage = useCallback(async (id, dir, STAGES) => {
+    const lead = leads.find((l) => l.id === id);
+    if (!lead) return;
+    const idx = STAGES.indexOf(lead.etapa);
+    const next = idx + dir;
+    if (next < 0 || next >= STAGES.length) return;
+    const updated = await leadsApi.update(id, { ...lead, etapa: STAGES[next], ultimaAtualizacao: todayStr() });
+    setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
+  }, [leads]);
+
+  const addTask = useCallback(async (titulo, categoria, data, horario) => {
+    const inserted = await tasksApi.insert({ titulo, categoria, data, horario, concluida: false, leadId: null, origem: 'manual' });
+    setTasks((prev) => [...prev, inserted]);
   }, []);
 
-  const moveStage = useCallback((id, dir, STAGES) => {
-    setLeads((prev) => prev.map((l) => {
-      if (l.id !== id) return l;
-      const idx = STAGES.indexOf(l.etapa);
-      const next = idx + dir;
-      if (next < 0 || next >= STAGES.length) return l;
-      return { ...l, etapa: STAGES[next], ultimaAtualizacao: todayStr() };
-    }));
-  }, []);
+  const toggleTask = useCallback(async (id) => {
+    const t = tasks.find((x) => x.id === id);
+    if (!t) return;
+    const updated = await tasksApi.update(id, { ...t, concluida: !t.concluida });
+    setTasks((prev) => prev.map((x) => (x.id === id ? updated : x)));
+  }, [tasks]);
 
-  const addTask = useCallback((titulo, categoria, data, horario) => {
-    setTasks((prev) => [...prev, { id: uid(), titulo, categoria, data, horario: horario || '', concluida: false, leadId: null, origem: 'manual' }]);
-  }, []);
-
-  const toggleTask = useCallback((id) => {
-    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, concluida: !t.concluida } : t)));
-  }, []);
-
-  const deleteTask = useCallback((id) => {
+  const deleteTask = useCallback(async (id) => {
+    await tasksApi.remove(id);
     setTasks((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const addRotina = useCallback((titulo, categoria, horario, dias) => {
-    const tpl = { id: uid(), titulo, categoria, horario: horario || '', dias: [...dias].sort((a, b) => DIAS_SEMANA.indexOf(a) - DIAS_SEMANA.indexOf(b)), ativo: true };
+  const addRotina = useCallback(async (titulo, categoria, horario, dias) => {
+    const sortedDias = [...dias].sort((a, b) => DIAS_SEMANA.indexOf(a) - DIAS_SEMANA.indexOf(b));
+    const tpl = await templatesApi.insert({ titulo, categoria, horario, dias: sortedDias, ativo: true });
     setTemplates((prev) => [...prev, tpl]);
-    setTasks((prev) => [...prev, ...generateRotinaTasks([tpl], prev)]);
-  }, []);
+    const pending = pendingRotinaTasks([tpl], tasks);
+    for (const p of pending) {
+      const inserted = await tasksApi.insert(p);
+      setTasks((prev) => [...prev, inserted]);
+    }
+  }, [tasks]);
 
-  const toggleRotinaAtiva = useCallback((id) => {
-    setTemplates((prev) => {
-      const next = prev.map((t) => (t.id === id ? { ...t, ativo: !t.ativo } : t));
-      const tpl = next.find((t) => t.id === id);
-      if (tpl && tpl.ativo) {
-        setTasks((prevTasks) => [...prevTasks, ...generateRotinaTasks([tpl], prevTasks)]);
+  const toggleRotinaAtiva = useCallback(async (id) => {
+    const tpl = templates.find((t) => t.id === id);
+    if (!tpl) return;
+    const updated = await templatesApi.update(id, { ...tpl, ativo: !tpl.ativo });
+    setTemplates((prev) => prev.map((t) => (t.id === id ? updated : t)));
+    if (updated.ativo) {
+      const pending = pendingRotinaTasks([updated], tasks);
+      for (const p of pending) {
+        const inserted = await tasksApi.insert(p);
+        setTasks((prev) => [...prev, inserted]);
       }
-      return next;
-    });
-  }, []);
+    }
+  }, [templates, tasks]);
 
-  const deleteRotina = useCallback((id) => {
+  const deleteRotina = useCallback(async (id) => {
+    await templatesApi.remove(id);
     setTemplates((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const importBackup = useCallback((backup) => {
-    setLeads(backup.leads || []);
-    setTasks(backup.tasks || []);
-    setTemplates(backup.templates || []);
-  }, []);
+  const importBackup = useCallback(async (backup) => {
+    await Promise.all(tasks.map((t) => tasksApi.remove(t.id)));
+    await Promise.all(leads.map((l) => leadsApi.remove(l.id)));
+    await Promise.all(templates.map((t) => templatesApi.remove(t.id)));
+
+    const leadIdMap = new Map();
+    const newLeads = [];
+    for (const l of backup.leads || []) {
+      const inserted = await leadsApi.insert(l);
+      leadIdMap.set(l.id, inserted.id);
+      newLeads.push(inserted);
+    }
+
+    const templateIdMap = new Map();
+    const newTemplates = [];
+    for (const tpl of backup.templates || []) {
+      const inserted = await templatesApi.insert(tpl);
+      templateIdMap.set(tpl.id, inserted.id);
+      newTemplates.push(inserted);
+    }
+
+    const newTasks = [];
+    for (const t of backup.tasks || []) {
+      const inserted = await tasksApi.insert({
+        ...t,
+        leadId: t.leadId ? leadIdMap.get(t.leadId) || null : null,
+        templateId: t.templateId ? templateIdMap.get(t.templateId) || null : null,
+      });
+      newTasks.push(inserted);
+    }
+
+    setLeads(newLeads);
+    setTemplates(newTemplates);
+    setTasks(newTasks);
+  }, [leads, tasks, templates]);
 
   return {
-    leads, tasks, templates,
+    leads, tasks, templates, loading, error,
     saveLead, deleteLead, moveStage,
     addTask, toggleTask, deleteTask,
     addRotina, toggleRotinaAtiva, deleteRotina,

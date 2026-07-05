@@ -6,13 +6,17 @@ import FunilView from './components/FunilView.jsx';
 import RotinaView from './components/RotinaView.jsx';
 import LeadModal from './components/LeadModal.jsx';
 import ExportModal from './components/ExportModal.jsx';
+import Login from './components/Login.jsx';
+import SetupNeeded from './components/SetupNeeded.jsx';
 import { useAppState } from './hooks/useAppState.js';
+import { useAuth } from './hooks/useAuth.js';
+import { isSupabaseConfigured } from './lib/supabaseClient.js';
 import { STAGES } from './constants.js';
 import { downloadJSON, todayStr } from './utils.js';
 
-export default function App() {
+function CrmApp({ onSignOut }) {
   const {
-    leads, tasks, templates,
+    leads, tasks, templates, loading, error,
     saveLead, deleteLead, moveStage,
     addTask, toggleTask, deleteTask,
     addRotina, toggleRotinaAtiva, deleteRotina,
@@ -75,11 +79,25 @@ export default function App() {
       if (!Array.isArray(backup.leads) || !Array.isArray(backup.tasks)) throw new Error('Arquivo de backup inválido.');
       const substituir = confirm('Importar este backup vai SUBSTITUIR todos os leads, tarefas e rotinas atuais. Deseja continuar?');
       if (!substituir) return;
-      importBackup(backup);
+      await importBackup(backup);
       alert('Backup importado com sucesso.');
     } catch (err) {
       alert('Não foi possível importar: ' + err.message);
     }
+  }
+
+  if (loading) {
+    return <div className="app"><div className="empty-state">Carregando seus dados...</div></div>;
+  }
+
+  if (error) {
+    return (
+      <div className="app">
+        <div className="empty-state" style={{ borderColor: 'var(--red)', color: 'var(--red)' }}>
+          Não foi possível carregar os dados: {error.message}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -91,6 +109,7 @@ export default function App() {
         onOpenExport={() => setExportModalOpen(true)}
         onExportBackup={handleExportBackup}
         onImportBackup={handleImportBackup}
+        onSignOut={onSignOut}
       />
 
       <StatsBar leads={leads} tasks={tasks} />
@@ -140,4 +159,22 @@ export default function App() {
       )}
     </div>
   );
+}
+
+export default function App() {
+  const { session, loading, signIn, signOut } = useAuth();
+
+  if (!isSupabaseConfigured) {
+    return <SetupNeeded />;
+  }
+
+  if (loading) {
+    return <div className="app"><div className="empty-state">Carregando...</div></div>;
+  }
+
+  if (!session) {
+    return <Login onSignIn={signIn} />;
+  }
+
+  return <CrmApp onSignOut={signOut} />;
 }
