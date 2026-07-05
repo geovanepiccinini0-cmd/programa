@@ -22,15 +22,9 @@ Sistema de CRM (Hoje / Funil / Rotina) para gestão de leads de Consórcio, Cart
 
 ```bash
 npm install
-cp .env.example .env
 ```
 
-Edite o `.env` e cole os valores copiados do Supabase:
-
-```
-VITE_SUPABASE_URL=https://SEU-PROJETO.supabase.co
-VITE_SUPABASE_ANON_KEY=sua-chave-anon-public
-```
+A URL e a anon/publishable key do Supabase já estão embutidas em `src/lib/supabaseClient.js` como valores padrão — essa chave é feita para ser pública (a proteção real dos dados é a Row Level Security do banco), então não é obrigatório usar variáveis de ambiente. Se quiser apontar para outro projeto Supabase (ex.: um ambiente de testes), copie `.env.example` para `.env` e preencha `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` — esses valores, se definidos, têm prioridade sobre os padrões do código.
 
 ## 3. Executar em desenvolvimento
 
@@ -56,8 +50,7 @@ npm run preview
 
 1. Suba o repositório no GitHub (já está feito, se você está lendo isso a partir dele).
 2. Crie o projeto na [Vercel](https://vercel.com) ou [Netlify](https://netlify.com) importando este repositório.
-3. Nas configurações do projeto, adicione as mesmas variáveis de ambiente do `.env`: `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY`.
-4. Deploy. Você recebe um link acessível de qualquer dispositivo, com login protegido e dados sincronizados em tempo real entre eles.
+3. Deploy — não é necessário configurar nenhuma variável de ambiente, já que os valores padrão do Supabase estão embutidos no código. Você recebe um link acessível de qualquer dispositivo, com login protegido e dados sincronizados em tempo real entre eles.
 
 ## Persistência e sincronização
 
