@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
-import { CATS_TASK, PROD_COLOR } from '../constants.js';
-import { fmtDate, isTaskOverdue, todayStr } from '../utils.js';
+import { CATS_TASK } from '../constants.js';
+import { todayStr, tomorrowStr } from '../utils.js';
+import TaskGroupedList from './TaskGroupedList.jsx';
+import WeekAgenda from './WeekAgenda.jsx';
 
 export default function HojeView({ leads, tasks, onAddTask, onToggleTask, onDeleteTask }) {
   const [title, setTitle] = useState('');
@@ -8,22 +10,11 @@ export default function HojeView({ leads, tasks, onAddTask, onToggleTask, onDele
   const [date, setDate] = useState(todayStr());
   const [time, setTime] = useState('');
 
-  const groups = useMemo(() => {
-    const g = {};
-    CATS_TASK.forEach((c) => { g[c] = []; });
-    tasks.forEach((t) => {
-      if (!g[t.categoria]) g[t.categoria] = [];
-      g[t.categoria].push(t);
-    });
-    CATS_TASK.forEach((c) => {
-      g[c] = g[c].slice().sort((a, b) => {
-        const da = (a.data || '9999') + 'T' + (a.horario || '99:99');
-        const db = (b.data || '9999') + 'T' + (b.horario || '99:99');
-        return da.localeCompare(db);
-      });
-    });
-    return g;
-  }, [tasks]);
+  const today = todayStr();
+  const tomorrow = tomorrowStr();
+
+  const todayTasks = useMemo(() => tasks.filter((t) => t.data === today), [tasks, today]);
+  const tomorrowTasks = useMemo(() => tasks.filter((t) => t.data === tomorrow), [tasks, tomorrow]);
 
   function handleAdd() {
     const trimmed = title.trim();
@@ -51,43 +42,31 @@ export default function HojeView({ leads, tasks, onAddTask, onToggleTask, onDele
         <button className="btn-primary" onClick={handleAdd}>Adicionar</button>
       </div>
 
-      <div>
-        {tasks.length === 0 ? (
-          <div className="empty-state">Nenhuma tarefa ainda. Adicione a primeira acima ou cadastre um lead com data de próximo contato.</div>
-        ) : (
-          CATS_TASK.map((catName) => {
-            const items = groups[catName] || [];
-            if (items.length === 0) return null;
-            return (
-              <div className="task-group" key={catName}>
-                <h3>{catName}</h3>
-                {items.map((t) => {
-                  const overdue = isTaskOverdue(t);
-                  const lead = t.leadId ? leads.find((l) => l.id === t.leadId) : null;
-                  return (
-                    <div key={t.id} className={`task-row ${overdue ? 'overdue' : ''} ${t.concluida ? 'done' : ''}`}>
-                      <button className="task-check" onClick={() => onToggleTask(t.id)} />
-                      <div className="task-body">
-                        <div className="task-title">{t.titulo}</div>
-                        <div className="task-meta">
-                          <span>{fmtDate(t.data)}{t.horario ? ' · ' + t.horario : ''}</span>
-                          {overdue && <span className="badge tag-overdue">ATRASADO</span>}
-                          {lead && (
-                            <span className="badge" style={{ background: PROD_COLOR[lead.produto] || 'var(--surface-2)', color: '#0a1628' }}>
-                              {lead.produto}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <button className="task-del" onClick={() => onDeleteTask(t.id)}>✕</button>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })
-        )}
-      </div>
+      <h2 className="section-title">Hoje</h2>
+      <TaskGroupedList
+        tasks={todayTasks}
+        leads={leads}
+        onToggleTask={onToggleTask}
+        onDeleteTask={onDeleteTask}
+        emptyMessage="Nenhuma tarefa para hoje. Adicione a primeira acima ou cadastre um lead com data de próximo contato."
+      />
+
+      <h2 className="section-title">Amanhã</h2>
+      <TaskGroupedList
+        tasks={tomorrowTasks}
+        leads={leads}
+        onToggleTask={onToggleTask}
+        onDeleteTask={onDeleteTask}
+        emptyMessage="Nenhuma tarefa para amanhã ainda."
+      />
+
+      <h2 className="section-title">Agenda da semana</h2>
+      <WeekAgenda
+        tasks={tasks}
+        leads={leads}
+        onToggleTask={onToggleTask}
+        onDeleteTask={onDeleteTask}
+      />
     </section>
   );
 }

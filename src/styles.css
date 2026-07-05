@@ -49,6 +49,8 @@ header.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
 
 /* HOJE - TASKS */
+.section-title{font-size:16px;font-weight:700;margin:26px 0 12px;padding-top:18px;border-top:1px solid var(--border);}
+.section-title:first-of-type{margin-top:0;padding-top:0;border-top:none;}
 .task-group{margin-bottom:18px;}
 .task-group h3{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-dim);margin:0 0 8px;font-weight:600;}
 .task-row{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:6px;}
