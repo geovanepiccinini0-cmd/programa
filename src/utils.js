@@ -2,6 +2,32 @@ export function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
+export function tomorrowStr() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+export function currentWeekDates() {
+  const now = new Date();
+  const day = now.getDay(); // 0 = domingo ... 6 = sábado
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() + diffToMonday);
+  const dates = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+export function weekdayLongName(dateStr) {
+  const nomes = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+  return nomes[new Date(dateStr + 'T00:00:00').getDay()];
+}
+
 export function formatPhoneBR(value) {
   const digits = (value || '').replace(/\D/g, '').slice(0, 11);
   const len = digits.length;
