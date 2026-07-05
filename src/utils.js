@@ -2,6 +2,16 @@ export function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
+export function formatPhoneBR(value) {
+  const digits = (value || '').replace(/\D/g, '').slice(0, 11);
+  const len = digits.length;
+  if (len === 0) return '';
+  if (len <= 2) return `(${digits}`;
+  if (len <= 3) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
+  if (len <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2, 3)} ${digits.slice(3)}`;
+  return `(${digits.slice(0, 2)}) ${digits.slice(2, 3)} ${digits.slice(3, 7)}-${digits.slice(7)}`;
+}
+
 export function fmtBRL(n) {
   n = Number(n) || 0;
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });

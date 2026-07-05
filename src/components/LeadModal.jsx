@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CANAIS, PRODUTOS, STAGES } from '../constants.js';
-import { moneyFormat, parseMoneyValue } from '../utils.js';
+import { formatPhoneBR, moneyFormat, parseMoneyValue } from '../utils.js';
 import ProdutoFields from './ProdutoFields.jsx';
 
 const EMPTY_EXTRA = { tipo: '', credito: '', entrada: '', parcela: '', lance: '', valor: '', valorImovel: '' };
@@ -31,7 +31,7 @@ export default function LeadModal({ lead, onClose, onSave }) {
 
   useEffect(() => {
     setNome(lead ? lead.nome : '');
-    setTelefone(lead ? lead.telefone || '' : '');
+    setTelefone(lead ? formatPhoneBR(lead.telefone) : '');
     setCanal(lead ? lead.canal : CANAIS[0]);
     setProduto(lead ? lead.produto : PRODUTOS[0]);
     setEtapa(lead ? lead.etapa : STAGES[0]);
@@ -95,7 +95,7 @@ export default function LeadModal({ lead, onClose, onSave }) {
           <div className="field-row">
             <div className="field">
               <label htmlFor="f-telefone">Telefone</label>
-              <input type="text" id="f-telefone" placeholder="(54) 9...." value={telefone} onChange={(e) => setTelefone(e.target.value)} />
+              <input type="text" inputMode="numeric" id="f-telefone" placeholder="(54) 9 9999-9999" value={telefone} onChange={(e) => setTelefone(formatPhoneBR(e.target.value))} />
             </div>
             <div className="field">
               <label htmlFor="f-canal">Canal</label>
