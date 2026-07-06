@@ -11,7 +11,7 @@ function pendingAutoTasksForLeads(leads, tasks) {
     if (l.etapa === 'Ganho' || l.etapa === 'Perdido') return;
     if (!l.proximoContato) return;
     if (l.proximoContato > today) return;
-    const jaTem = tasks.some((t) => t.leadId === l.id && t.origem === 'auto' && !t.concluida)
+    const jaTem = tasks.some((t) => t.leadId === l.id && t.origem === 'auto' && t.data === l.proximoContato)
       || pending.some((t) => t.leadId === l.id);
     if (!jaTem) {
       pending.push({ titulo: 'Follow-up: ' + l.nome, categoria: 'Follow-up', data: l.proximoContato, concluida: false, leadId: l.id, origem: 'auto' });
