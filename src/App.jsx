@@ -149,6 +149,7 @@ function CrmApp({ onSignOut }) {
       {leadModalOpen && (
         <LeadModal
           lead={editingLead}
+          tasks={tasks}
           onClose={() => setLeadModalOpen(false)}
           onSave={handleSaveLead}
         />

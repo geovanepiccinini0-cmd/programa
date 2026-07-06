@@ -20,6 +20,7 @@ create table if not exists public.leads (
   valor numeric,
   valor_imovel numeric,
   proximo_contato date,
+  proximo_contato_horario text,
   notas text,
   criado_em date not null default current_date,
   ultima_atualizacao date not null default current_date,

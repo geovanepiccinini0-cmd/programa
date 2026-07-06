@@ -37,7 +37,7 @@ function LeadCard({ lead, onEdit, onDelete, onMoveStage }) {
       <div className="card-valor">{fmtBRL(leadValor(lead))}</div>
       <DetailLine lead={lead} />
       <div className={`card-meta ${late ? 'late' : ''}`}>
-        {lead.canal || ''}{lead.proximoContato ? ' · próx. contato ' + fmtDate(lead.proximoContato) : ''}
+        {lead.canal || ''}{lead.proximoContato ? ' · próx. contato ' + fmtDate(lead.proximoContato) + (lead.proximoContatoHorario ? ' ' + lead.proximoContatoHorario : '') : ''}
       </div>
       <div className="card-meta">
         {!isFinal && dias !== null ? (
