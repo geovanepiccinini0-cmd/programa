@@ -30,8 +30,7 @@ function pendingRotinaTasks(templates, tasks) {
     const jaTem = tasks.some((t) => t.templateId === tpl.id && t.data === today)
       || pending.some((t) => t.templateId === tpl.id);
     if (!jaTem) {
-      const titulo = tpl.horario ? `${tpl.horario} · ${tpl.titulo}` : tpl.titulo;
-      pending.push({ titulo, categoria: tpl.categoria, data: today, concluida: false, leadId: null, origem: 'rotina', templateId: tpl.id });
+      pending.push({ titulo: tpl.titulo, categoria: tpl.categoria, data: today, horario: tpl.horario || '', concluida: false, leadId: null, origem: 'rotina', templateId: tpl.id });
     }
   });
   return pending;
