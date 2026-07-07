@@ -88,10 +88,7 @@ export default function MetricasView({ userId }) {
               {stageLeads.length === 0 && <div className="empty-state" style={{ padding: '16px 6px' }}>—</div>}
               {stageLeads.map((l) => (
                 <div className="card" key={l.id} style={isLeadStale(l) ? { borderColor: 'var(--red)' } : undefined}>
-                  <LeadCardBody
-                    lead={l}
-                    footer={<div className="card-meta">Vendedor(a): {emailByUserId[l.userId] || 'Sem e-mail'}</div>}
-                  />
+                  <LeadCardBody lead={l} />
                 </div>
               ))}
             </div>
