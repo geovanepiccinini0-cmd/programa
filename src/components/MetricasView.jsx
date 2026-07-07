@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { PROD_COLOR, STAGES } from '../constants.js';
+import { STAGES } from '../constants.js';
 import { leadsApi, profilesApi } from '../lib/db.js';
-import { fmtBRL, fmtDate, leadValor } from '../utils.js';
+import { fmtBRL, leadValor } from '../utils.js';
+import { LeadCardBody, isLeadStale } from './LeadCardInfo.jsx';
 
 export default function MetricasView({ userId }) {
   const [leads, setLeads] = useState([]);
@@ -86,18 +87,11 @@ export default function MetricasView({ userId }) {
               {soma > 0 && <div className="col-sum">{fmtBRL(soma)}</div>}
               {stageLeads.length === 0 && <div className="empty-state" style={{ padding: '16px 6px' }}>—</div>}
               {stageLeads.map((l) => (
-                <div className="card" key={l.id}>
-                  <div className="card-top">
-                    <div>
-                      <div className="card-nome">{l.nome}</div>
-                      <div className="card-fone">{emailByUserId[l.userId] || 'Sem e-mail'}</div>
-                    </div>
-                    <span className="prod-badge" style={{ background: PROD_COLOR[l.produto] || '#888' }}>{l.produto}</span>
-                  </div>
-                  <div className="card-valor">{fmtBRL(leadValor(l))}</div>
-                  <div className="card-meta">
-                    {l.canal || ''}{l.proximoContato ? ' · próx. contato ' + fmtDate(l.proximoContato) : ''}
-                  </div>
+                <div className="card" key={l.id} style={isLeadStale(l) ? { borderColor: 'var(--red)' } : undefined}>
+                  <LeadCardBody
+                    lead={l}
+                    footer={<div className="card-meta">Vendedor(a): {emailByUserId[l.userId] || 'Sem e-mail'}</div>}
+                  />
                 </div>
               ))}
             </div>
