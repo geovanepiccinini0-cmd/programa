@@ -99,7 +99,7 @@ function applyRealtimeChange(setState, fromRow, payload) {
   });
 }
 
-export function useAppState() {
+export function useAppState(userId) {
   const [leads, setLeads] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [templates, setTemplates] = useState([]);
@@ -112,7 +112,7 @@ export function useAppState() {
     (async () => {
       try {
         const [leadsData, tasksData, templatesData] = await Promise.all([
-          leadsApi.fetchAll(), tasksApi.fetchAll(), templatesApi.fetchAll(),
+          leadsApi.fetchAll(userId), tasksApi.fetchAll(userId), templatesApi.fetchAll(userId),
         ]);
         if (cancelled) return;
         setLeads(leadsData);
@@ -140,17 +140,21 @@ export function useAppState() {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     const channel = supabase
       .channel('crm-piccinini-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, (payload) => applyRealtimeChange(setLeads, leadsApi.fromRow, payload))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, (payload) => {
+        const row = payload.new || payload.old;
+        if (row.user_id !== userId) return; // ignora leads de outros usuários na visão pessoal
+        applyRealtimeChange(setLeads, leadsApi.fromRow, payload);
+      })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, (payload) => applyRealtimeChange(setTasks, tasksApi.fromRow, payload))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'templates' }, (payload) => applyRealtimeChange(setTemplates, templatesApi.fromRow, payload))
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, []);
+  }, [userId]);
 
   const saveLead = useCallback(async (id, data) => {
     const saved = id
