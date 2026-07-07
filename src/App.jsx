@@ -116,7 +116,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
 
       {activeTab !== 'metricas' && <StatsBar leads={leads} tasks={tasks} />}
 
-      {activeTab === 'metricas' && isAdmin && <MetricasView />}
+      {activeTab === 'metricas' && isAdmin && <MetricasView userId={userId} />}
 
       {activeTab === 'hoje' && (
         <HojeView

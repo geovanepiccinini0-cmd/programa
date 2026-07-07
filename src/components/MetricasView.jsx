@@ -3,7 +3,7 @@ import { PROD_COLOR, STAGES } from '../constants.js';
 import { leadsApi, profilesApi } from '../lib/db.js';
 import { fmtBRL, fmtDate, leadValor } from '../utils.js';
 
-export default function MetricasView() {
+export default function MetricasView({ userId }) {
   const [leads, setLeads] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -15,7 +15,7 @@ export default function MetricasView() {
       try {
         const [leadsData, profilesData] = await Promise.all([leadsApi.fetchAllForAdmin(), profilesApi.fetchAll()]);
         if (cancelled) return;
-        setLeads(leadsData);
+        setLeads(leadsData.filter((l) => l.userId !== userId));
         setProfiles(profilesData);
         setLoading(false);
       } catch (e) {
@@ -23,7 +23,7 @@ export default function MetricasView() {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [userId]);
 
   const emailByUserId = useMemo(() => {
     const map = {};
