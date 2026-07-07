@@ -3,6 +3,7 @@ import { supabase } from './supabaseClient.js';
 function leadFromRow(r) {
   return {
     id: r.id,
+    userId: r.user_id,
     nome: r.nome,
     telefone: r.telefone || '',
     canal: r.canal || '',
@@ -93,8 +94,10 @@ function templateToRow(data) {
   };
 }
 
-async function fetchAll(table, fromRow) {
-  const { data, error } = await supabase.from(table).select('*').order('created_at', { ascending: true });
+async function fetchAll(table, fromRow, userId) {
+  let query = supabase.from(table).select('*').order('created_at', { ascending: true });
+  if (userId) query = query.eq('user_id', userId);
+  const { data, error } = await query;
   if (error) throw error;
   return data.map(fromRow);
 }
@@ -117,7 +120,8 @@ async function deleteRow(table, id) {
 }
 
 export const leadsApi = {
-  fetchAll: () => fetchAll('leads', leadFromRow),
+  fetchAll: (userId) => fetchAll('leads', leadFromRow, userId),
+  fetchAllForAdmin: () => fetchAll('leads', leadFromRow),
   insert: (data) => insertRow('leads', leadToRow, leadFromRow, data),
   update: (id, data) => updateRow('leads', leadToRow, leadFromRow, id, data),
   remove: (id) => deleteRow('leads', id),
@@ -125,7 +129,7 @@ export const leadsApi = {
 };
 
 export const tasksApi = {
-  fetchAll: () => fetchAll('tasks', taskFromRow),
+  fetchAll: (userId) => fetchAll('tasks', taskFromRow, userId),
   insert: (data) => insertRow('tasks', taskToRow, taskFromRow, data),
   update: (id, data) => updateRow('tasks', taskToRow, taskFromRow, id, data),
   remove: (id) => deleteRow('tasks', id),
@@ -133,9 +137,22 @@ export const tasksApi = {
 };
 
 export const templatesApi = {
-  fetchAll: () => fetchAll('templates', templateFromRow),
+  fetchAll: (userId) => fetchAll('templates', templateFromRow, userId),
   insert: (data) => insertRow('templates', templateToRow, templateFromRow, data),
   update: (id, data) => updateRow('templates', templateToRow, templateFromRow, id, data),
   remove: (id) => deleteRow('templates', id),
   fromRow: templateFromRow,
+};
+
+export const profilesApi = {
+  fetchMine: async (userId) => {
+    const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
+    if (error) throw error;
+    return data ? { id: data.id, email: data.email, isAdmin: data.is_admin } : null;
+  },
+  fetchAll: async () => {
+    const { data, error } = await supabase.from('profiles').select('*');
+    if (error) throw error;
+    return data.map((r) => ({ id: r.id, email: r.email, isAdmin: r.is_admin }));
+  },
 };

@@ -7,8 +7,9 @@ const TABS = [
   { key: 'rotina', label: 'Rotina' },
 ];
 
-export default function Header({ activeTab, onTabChange, onNewLead, onOpenExport, onExportBackup, onImportBackup, onSignOut }) {
+export default function Header({ activeTab, onTabChange, onNewLead, onOpenExport, onExportBackup, onImportBackup, onSignOut, isAdmin }) {
   const fileInputRef = useRef(null);
+  const tabs = isAdmin ? [...TABS, { key: 'metricas', label: 'Métricas' }] : TABS;
 
   function handleFileChange(e) {
     const file = e.target.files[0];
@@ -29,7 +30,7 @@ export default function Header({ activeTab, onTabChange, onNewLead, onOpenExport
         </div>
       </div>
       <div className="tabs">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.key}
             className={`tab-btn ${activeTab === t.key ? 'active' : ''}`}

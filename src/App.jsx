@@ -8,20 +8,21 @@ import LeadModal from './components/LeadModal.jsx';
 import ExportModal from './components/ExportModal.jsx';
 import Login from './components/Login.jsx';
 import SetupNeeded from './components/SetupNeeded.jsx';
+import MetricasView from './components/MetricasView.jsx';
 import { useAppState } from './hooks/useAppState.js';
 import { useAuth } from './hooks/useAuth.js';
 import { isSupabaseConfigured } from './lib/supabaseClient.js';
 import { STAGES } from './constants.js';
 import { downloadJSON, todayStr } from './utils.js';
 
-function CrmApp({ onSignOut }) {
+function CrmApp({ userId, isAdmin, onSignOut }) {
   const {
     leads, tasks, templates, loading, error,
     saveLead, deleteLead, moveStage,
     addTask, toggleTask, deleteTask,
     addRotina, toggleRotinaAtiva, deleteRotina,
     importBackup,
-  } = useAppState();
+  } = useAppState(userId);
 
   const [activeTab, setActiveTab] = useState('hoje');
   const [filterProduto, setFilterProduto] = useState('Todos');
@@ -110,9 +111,12 @@ function CrmApp({ onSignOut }) {
         onExportBackup={handleExportBackup}
         onImportBackup={handleImportBackup}
         onSignOut={onSignOut}
+        isAdmin={isAdmin}
       />
 
-      <StatsBar leads={leads} tasks={tasks} />
+      {activeTab !== 'metricas' && <StatsBar leads={leads} tasks={tasks} />}
+
+      {activeTab === 'metricas' && isAdmin && <MetricasView />}
 
       {activeTab === 'hoje' && (
         <HojeView
@@ -163,7 +167,7 @@ function CrmApp({ onSignOut }) {
 }
 
 export default function App() {
-  const { session, loading, signIn, signOut } = useAuth();
+  const { session, loading, userId, isAdmin, signIn, signOut } = useAuth();
 
   if (!isSupabaseConfigured) {
     return <SetupNeeded />;
@@ -177,5 +181,5 @@ export default function App() {
     return <Login onSignIn={signIn} />;
   }
 
-  return <CrmApp onSignOut={signOut} />;
+  return <CrmApp userId={userId} isAdmin={isAdmin} onSignOut={signOut} />;
 }

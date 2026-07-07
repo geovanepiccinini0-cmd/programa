@@ -52,6 +52,25 @@ npm run preview
 2. Crie o projeto na [Vercel](https://vercel.com) ou [Netlify](https://netlify.com) importando este repositório.
 3. Deploy — não é necessário configurar nenhuma variável de ambiente, já que os valores padrão do Supabase estão embutidos no código. Você recebe um link acessível de qualquer dispositivo, com login protegido e dados sincronizados em tempo real entre eles.
 
+## Múltiplos usuários e visão de administrador
+
+Cada usuário logado só vê e edita os próprios leads, tarefas e rotinas — os dados de um vendedor não aparecem para o outro. Quem for marcado como **administrador** ganha, além do próprio CRM normal, uma aba extra **Métricas** com números agregados (pipeline total, leads por vendedor) e os cards de todos os leads da equipe agrupados por etapa — só leitura, sem tarefas, sem poder editar leads de outra pessoa.
+
+Para adicionar outra pessoa:
+
+1. **Authentication → Users → Add user** no Supabase, criando o e-mail/senha dela (igual ao seu login).
+2. Pronto — assim que ela logar, já existe um perfil próprio dela isolado dos seus dados (isso é automático).
+
+Para se tornar administrador (você, ou quem precisar ver as métricas da equipe):
+
+1. No **SQL Editor**, rode:
+   ```sql
+   update public.profiles set is_admin = true where email = 'email-da-pessoa@exemplo.com';
+   ```
+2. Essa pessoa precisa recarregar a página do CRM para a aba **Métricas** aparecer.
+
+Se o seu projeto Supabase já existia antes desta atualização, rode primeiro [`supabase/migrations/003_admin_profiles.sql`](./supabase/migrations/003_admin_profiles.sql) no SQL Editor (cria a tabela de perfis e já marca automaticamente o seu usuário atual como admin — só ajustar o e-mail no final do arquivo antes de rodar).
+
 ## Persistência e sincronização
 
 Os dados (leads, tarefas e rotinas) ficam salvos no banco Postgres do seu projeto Supabase, não mais no navegador. Isso significa:
@@ -76,6 +95,7 @@ src/
     useAppState.js          Estado central (leads/tasks/templates), sync com o backend e geração automática de tarefas
   components/
     Login.jsx               Tela de login (e-mail/senha)
+    MetricasView.jsx        Visão do administrador: métricas agregadas e cards de leads de toda a equipe (só leitura)
     Header.jsx               Cabeçalho, abas e ações (novo lead, backup, importar, planilha, sair)
     StatsBar.jsx              Cartões de estatísticas do topo
     HojeView.jsx              Lista de tarefas do dia, agrupadas por categoria
