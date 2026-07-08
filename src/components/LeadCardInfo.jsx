@@ -4,10 +4,10 @@ import { diasDesde, fmtBRL, fmtDate, leadValor, todayStr } from '../utils.js';
 export function DetailLine({ lead }) {
   if (lead.produto === 'Carta Contemplada') {
     const pctEntrada = lead.credito > 0 && lead.entrada != null ? Math.round((Number(lead.entrada) / Number(lead.credito)) * 100) : null;
-    return <div className="card-meta">{lead.tipo ? lead.tipo + ' · ' : ''}Entrada {fmtBRL(lead.entrada)}{pctEntrada !== null ? ' (' + pctEntrada + '% do crédito)' : ''} · Parcela {fmtBRL(lead.parcela)}</div>;
+    return <div className="card-meta">Entrada {fmtBRL(lead.entrada)}{pctEntrada !== null ? ' (' + pctEntrada + '% do crédito)' : ''} · Parcela {fmtBRL(lead.parcela)}</div>;
   }
   if (lead.produto === 'Consórcio') {
-    return <div className="card-meta">{lead.tipo ? lead.tipo + ' · ' : ''}Parcela {fmtBRL(lead.parcela)} · Lance {fmtBRL(lead.lance)}</div>;
+    return <div className="card-meta">Parcela {fmtBRL(lead.parcela)} · Lance {fmtBRL(lead.lance)}</div>;
   }
   if (lead.produto === 'Home Equity') {
     const ltv = lead.valorImovel > 0 && lead.valor != null ? Math.round((Number(lead.valor) / Number(lead.valorImovel)) * 100) : null;
@@ -36,7 +36,10 @@ export function LeadCardBody({ lead, footer }) {
           <div className="card-nome">{lead.nome}</div>
           <div className="card-fone">{lead.telefone || 'sem telefone'}</div>
         </div>
-        <span className="prod-badge" style={{ background: PROD_COLOR[lead.produto] || '#888' }}>{lead.produto}</span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
+          <span className="prod-badge" style={{ background: PROD_COLOR[lead.produto] || '#888' }}>{lead.produto}</span>
+          {lead.tipo && <span className="badge" style={{ background: 'var(--surface-2)', color: 'var(--text)', whiteSpace: 'nowrap' }}>{lead.tipo}</span>}
+        </div>
       </div>
       <div className="card-valor">{fmtBRL(leadValor(lead))}</div>
       <DetailLine lead={lead} />
