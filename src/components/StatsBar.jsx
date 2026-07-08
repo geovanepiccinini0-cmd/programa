@@ -7,11 +7,15 @@ export default function StatsBar({ leads, tasks }) {
     const today = todayStr();
     const ativos = leads.filter((l) => l.etapa !== 'Ganho' && l.etapa !== 'Perdido');
     const pipelineValor = ativos.reduce((s, l) => s + leadValor(l), 0);
+    const ganhos = leads.filter((l) => l.etapa === 'Ganho');
+    const ganhoValor = ganhos.reduce((s, l) => s + leadValor(l), 0);
+    const baseConversao = ganhoValor + pipelineValor;
+    const pctConversao = baseConversao > 0 ? Math.round((ganhoValor / baseConversao) * 100) : 0;
     const atrasados = tasks.filter((t) => t.categoria === 'Follow-up' && isTaskOverdue(t)).length;
     const hojeTotal = tasks.filter((t) => t.data === today).length;
     const hojeFeitas = tasks.filter((t) => t.data === today && t.concluida).length;
     const parados = ativos.filter((l) => diasDesde(l.ultimaAtualizacao || l.criadoEm) >= STALE_DAYS).length;
-    return { ativos, pipelineValor, atrasados, hojeTotal, hojeFeitas, parados };
+    return { ativos, pipelineValor, ganhos, ganhoValor, pctConversao, atrasados, hojeTotal, hojeFeitas, parados };
   }, [leads, tasks]);
 
   return (
@@ -19,6 +23,10 @@ export default function StatsBar({ leads, tasks }) {
       <div className="stat-card">
         <div className="num">{fmtBRL(stats.pipelineValor)}</div>
         <div className="label">Pipeline ativo ({stats.ativos.length} leads)</div>
+      </div>
+      <div className="stat-card ok">
+        <div className="num">{fmtBRL(stats.ganhoValor)}</div>
+        <div className="label">Ganho ({stats.ganhos.length} leads) · {stats.pctConversao}% de conversão</div>
       </div>
       <div className={`stat-card ${stats.atrasados > 0 ? 'warn' : ''}`}>
         <div className="num">{stats.atrasados}</div>
