@@ -21,6 +21,7 @@ function extraFromLead(lead) {
 export default function LeadModal({ lead, tasks, onClose, onSave }) {
   const [nome, setNome] = useState('');
   const [telefone, setTelefone] = useState('');
+  const [cidade, setCidade] = useState('');
   const [canal, setCanal] = useState(CANAIS[0]);
   const [produto, setProduto] = useState(PRODUTOS[0]);
   const [etapa, setEtapa] = useState(STAGES[0]);
@@ -33,6 +34,7 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
   useEffect(() => {
     setNome(lead ? lead.nome : '');
     setTelefone(lead ? formatPhoneBR(lead.telefone) : '');
+    setCidade(lead ? lead.cidade || '' : '');
     setCanal(lead ? lead.canal : CANAIS[0]);
     setProduto(lead ? lead.produto : PRODUTOS[0]);
     setEtapa(lead ? lead.etapa : STAGES[0]);
@@ -78,6 +80,7 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
     const data = {
       nome: nomeTrim,
       telefone: telefone.trim(),
+      cidade: cidade.trim(),
       canal,
       produto,
       etapa,
@@ -108,6 +111,12 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
               <label htmlFor="f-telefone">Telefone</label>
               <input type="text" inputMode="numeric" id="f-telefone" placeholder="(54) 9 9999-9999" value={telefone} onChange={(e) => setTelefone(formatPhoneBR(e.target.value))} />
             </div>
+            <div className="field">
+              <label htmlFor="f-cidade">Cidade</label>
+              <input type="text" id="f-cidade" placeholder="Ex: Erechim" value={cidade} onChange={(e) => setCidade(e.target.value)} />
+            </div>
+          </div>
+          <div className="field-row">
             <div className="field">
               <label htmlFor="f-canal">Canal</label>
               <select id="f-canal" value={canal} onChange={(e) => setCanal(e.target.value)}>

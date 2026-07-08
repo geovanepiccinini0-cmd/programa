@@ -9,6 +9,7 @@ create table if not exists public.leads (
   user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
   nome text not null,
   telefone text,
+  cidade text,
   canal text,
   produto text not null,
   etapa text not null,
