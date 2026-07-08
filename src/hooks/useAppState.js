@@ -196,9 +196,20 @@ export function useAppState(userId) {
   const toggleTask = useCallback(async (id) => {
     const t = tasks.find((x) => x.id === id);
     if (!t) return;
-    const updated = await tasksApi.update(id, { ...t, concluida: !t.concluida });
+    const concluindo = !t.concluida;
+    const updated = await tasksApi.update(id, { ...t, concluida: concluindo });
     setTasks((prev) => prev.map((x) => (x.id === id ? updated : x)));
-  }, [tasks]);
+
+    const ehFollowUpDeLead = concluindo && t.leadId && (t.origem === 'auto' || t.origem === 'lead-agenda');
+    if (ehFollowUpDeLead) {
+      const lead = leads.find((l) => l.id === t.leadId);
+      if (lead && lead.proximoContato) {
+        const cleared = await leadsApi.update(lead.id, { ...lead, proximoContato: '', proximoContatoHorario: '' });
+        setLeads((prev) => prev.map((l) => (l.id === lead.id ? cleared : l)));
+        await applyLeadAgendaActions(reconcileLeadAgendaActions([cleared], tasks), setTasks);
+      }
+    }
+  }, [tasks, leads]);
 
   const deleteTask = useCallback(async (id) => {
     await tasksApi.remove(id);

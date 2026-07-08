@@ -7,7 +7,7 @@ export default function StatsBar({ leads, tasks }) {
     const today = todayStr();
     const ativos = leads.filter((l) => l.etapa !== 'Ganho' && l.etapa !== 'Perdido');
     const pipelineValor = ativos.reduce((s, l) => s + leadValor(l), 0);
-    const atrasados = tasks.filter(isTaskOverdue).length;
+    const atrasados = tasks.filter((t) => t.categoria === 'Follow-up' && isTaskOverdue(t)).length;
     const hojeTotal = tasks.filter((t) => t.data === today).length;
     const hojeFeitas = tasks.filter((t) => t.data === today && t.concluida).length;
     const parados = ativos.filter((l) => diasDesde(l.ultimaAtualizacao || l.criadoEm) >= STALE_DAYS).length;
