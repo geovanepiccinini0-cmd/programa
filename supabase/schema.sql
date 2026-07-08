@@ -96,6 +96,11 @@ create policy "profiles: admin pode ler tudo" on public.profiles
 create policy "leads: admin pode ler tudo" on public.leads
   for select using (public.is_admin());
 
+-- Admin também pode editar e mudar de etapa os leads de qualquer vendedor
+-- (mas não excluir — a exclusão continua restrita ao dono do lead).
+create policy "leads: admin pode editar tudo" on public.leads
+  for update using (public.is_admin()) with check (public.is_admin());
+
 -- Cria automaticamente um perfil (não-admin) para cada novo usuário cadastrado
 create or replace function public.handle_new_user()
 returns trigger

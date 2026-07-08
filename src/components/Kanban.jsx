@@ -4,7 +4,6 @@ import { LeadCardBody, isLeadStale } from './LeadCardInfo.jsx';
 
 function LeadCard({ lead, onEdit, onDelete, onMoveStage }) {
   const idx = STAGES.indexOf(lead.etapa);
-  const isFinal = lead.etapa === 'Ganho' || lead.etapa === 'Perdido';
   const isStale = isLeadStale(lead);
 
   return (
@@ -18,9 +17,11 @@ function LeadCard({ lead, onEdit, onDelete, onMoveStage }) {
               <button className="icon-btn" onClick={() => onEdit(lead)}>Editar</button>
               <button className="icon-btn" onClick={() => onMoveStage(lead.id, 1)} disabled={idx === STAGES.length - 1}>▶</button>
             </div>
-            <div className="card-actions" style={{ marginTop: 4 }}>
-              <button className="icon-btn del" style={{ flex: 1 }} onClick={() => onDelete(lead.id)}>Excluir lead</button>
-            </div>
+            {onDelete && (
+              <div className="card-actions" style={{ marginTop: 4 }}>
+                <button className="icon-btn del" style={{ flex: 1 }} onClick={() => onDelete(lead.id)}>Excluir lead</button>
+              </div>
+            )}
           </>
         )}
       />

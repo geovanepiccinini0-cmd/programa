@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { STAGES } from '../constants.js';
 import { leadsApi, profilesApi } from '../lib/db.js';
-import { fmtBRL, leadValor } from '../utils.js';
-import { LeadCardBody, isLeadStale } from './LeadCardInfo.jsx';
+import { fmtBRL, leadValor, todayStr } from '../utils.js';
+import Kanban from './Kanban.jsx';
+import LeadModal from './LeadModal.jsx';
 
 export default function MetricasView({ userId }) {
   const [leads, setLeads] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [editingLead, setEditingLead] = useState(null);
+  const [leadModalOpen, setLeadModalOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,6 +51,27 @@ export default function MetricasView({ userId }) {
       .sort((a, b) => b.valor - a.valor);
   }, [ativos, emailByUserId]);
 
+  function handleEditLead(lead) {
+    setEditingLead(lead);
+    setLeadModalOpen(true);
+  }
+
+  async function handleSaveLead(id, data) {
+    const updated = await leadsApi.update(id, { ...data, ultimaAtualizacao: todayStr() });
+    setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
+    setLeadModalOpen(false);
+  }
+
+  async function handleMoveStage(id, dir) {
+    const lead = leads.find((l) => l.id === id);
+    if (!lead) return;
+    const idx = STAGES.indexOf(lead.etapa);
+    const next = idx + dir;
+    if (next < 0 || next >= STAGES.length) return;
+    const updated = await leadsApi.update(id, { ...lead, etapa: STAGES[next], ultimaAtualizacao: todayStr() });
+    setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
+  }
+
   if (loading) return <section className="view active"><div className="empty-state">Carregando métricas...</div></section>;
   if (error) {
     return (
@@ -74,27 +98,22 @@ export default function MetricasView({ userId }) {
         ))}
       </div>
 
-      <div className="kanban">
-        {STAGES.map((stage) => {
-          const stageLeads = leads.filter((l) => l.etapa === stage);
-          const soma = stageLeads.reduce((s, l) => s + leadValor(l), 0);
-          return (
-            <div className="col" key={stage}>
-              <div className="col-head">
-                <h3>{stage}</h3>
-                <span className="count">{stageLeads.length}</span>
-              </div>
-              {soma > 0 && <div className="col-sum">{fmtBRL(soma)}</div>}
-              {stageLeads.length === 0 && <div className="empty-state" style={{ padding: '16px 6px' }}>—</div>}
-              {stageLeads.map((l) => (
-                <div className="card" key={l.id} style={isLeadStale(l) ? { borderColor: 'var(--red)' } : undefined}>
-                  <LeadCardBody lead={l} />
-                </div>
-              ))}
-            </div>
-          );
-        })}
-      </div>
+      <Kanban
+        leads={leads}
+        filterProduto="Todos"
+        filterStale={false}
+        onEdit={handleEditLead}
+        onMoveStage={handleMoveStage}
+      />
+
+      {leadModalOpen && (
+        <LeadModal
+          lead={editingLead}
+          tasks={[]}
+          onClose={() => setLeadModalOpen(false)}
+          onSave={handleSaveLead}
+        />
+      )}
     </section>
   );
 }
