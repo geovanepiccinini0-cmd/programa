@@ -6,6 +6,7 @@ function leadFromRow(r) {
     userId: r.user_id,
     nome: r.nome,
     telefone: r.telefone || '',
+    cidade: r.cidade || '',
     canal: r.canal || '',
     produto: r.produto,
     etapa: r.etapa,
@@ -28,6 +29,7 @@ function leadToRow(data) {
   return {
     nome: data.nome,
     telefone: data.telefone,
+    cidade: data.cidade,
     canal: data.canal,
     produto: data.produto,
     etapa: data.etapa,

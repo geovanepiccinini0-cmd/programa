@@ -41,7 +41,7 @@ export function LeadCardBody({ lead, footer }) {
       <div className="card-valor">{fmtBRL(leadValor(lead))}</div>
       <DetailLine lead={lead} />
       <div className={`card-meta ${late ? 'late' : ''}`}>
-        {lead.canal || ''}{lead.proximoContato ? ' · próx. contato ' + fmtDate(lead.proximoContato) + (lead.proximoContatoHorario ? ' ' + lead.proximoContatoHorario : '') : ''}
+        {lead.canal || ''}{lead.cidade ? ' · ' + lead.cidade : ''}{lead.proximoContato ? ' · próx. contato ' + fmtDate(lead.proximoContato) + (lead.proximoContatoHorario ? ' ' + lead.proximoContatoHorario : '') : ''}
       </div>
       <div className="card-meta">
         {!isFinal && dias !== null ? (

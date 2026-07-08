@@ -138,7 +138,7 @@ export function exportLeadsCSV(leads, produtoFiltro, etapaFiltro) {
   }
 
   const headers = [
-    'Nome', 'Telefone', 'Canal', 'Produto', 'Tipo', 'Etapa', 'Valor de Crédito', 'Entrada',
+    'Nome', 'Telefone', 'Cidade', 'Canal', 'Produto', 'Tipo', 'Etapa', 'Valor de Crédito', 'Entrada',
     '% Entrada/Crédito', 'Parcela', 'Lance', 'Valor Estimado', 'Valor de Avaliação do Imóvel',
     '% LTV', 'Próximo Contato', 'Horário do Próximo Contato', 'Dias sem contato', 'Notas',
   ];
@@ -147,7 +147,7 @@ export function exportLeadsCSV(leads, produtoFiltro, etapaFiltro) {
     const pctEntrada = l.credito > 0 && l.entrada != null ? Math.round((Number(l.entrada) / Number(l.credito)) * 100) : '';
     const ltv = l.valorImovel > 0 && l.valor != null ? Math.round((Number(l.valor) / Number(l.valorImovel)) * 100) : '';
     return [
-      l.nome, l.telefone || '', l.canal || '', l.produto || '', l.tipo || '', l.etapa || '',
+      l.nome, l.telefone || '', l.cidade || '', l.canal || '', l.produto || '', l.tipo || '', l.etapa || '',
       l.credito || '', l.entrada || '', pctEntrada, l.parcela || '', l.lance || '', l.valor || '',
       l.valorImovel || '', ltv, l.proximoContato || '', l.proximoContatoHorario || '', dias !== null ? dias : '', l.notas || '',
     ];
