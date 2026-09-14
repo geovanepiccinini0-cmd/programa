@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
-import { CATS_TASK, PROD_COLOR } from '../constants.js';
+import { CATS_TASK } from '../constants.js';
 import { fmtDate, isTaskOverdue } from '../utils.js';
+import TaskLeadBadges from './TaskLeadBadges.jsx';
 
 export default function TaskGroupedList({ tasks, leads, onToggleTask, onDeleteTask, emptyMessage }) {
   const groups = useMemo(() => {
@@ -43,11 +44,7 @@ export default function TaskGroupedList({ tasks, leads, onToggleTask, onDeleteTa
                     <div className="task-meta">
                       <span>{fmtDate(t.data)}{t.horario ? ' · ' + t.horario : ''}</span>
                       {overdue && <span className="badge tag-overdue">ATRASADO</span>}
-                      {lead && (
-                        <span className="badge" style={{ background: PROD_COLOR[lead.produto] || 'var(--surface-2)', color: '#0a1628' }}>
-                          {lead.produto}
-                        </span>
-                      )}
+                      <TaskLeadBadges lead={lead} />
                     </div>
                   </div>
                   <button className="task-del" onClick={() => onDeleteTask(t.id)}>✕</button>
