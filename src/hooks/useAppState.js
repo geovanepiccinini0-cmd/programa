@@ -14,7 +14,7 @@ function pendingAutoTasksForLeads(leads, tasks) {
     const jaTem = tasks.some((t) => t.leadId === l.id && t.origem === 'auto' && t.data === l.proximoContato)
       || pending.some((t) => t.leadId === l.id);
     if (!jaTem) {
-      pending.push({ titulo: 'Follow-up: ' + l.nome, categoria: 'Follow-up', data: l.proximoContato, concluida: false, leadId: l.id, origem: 'auto' });
+      pending.push({ titulo: 'Follow-up: ' + l.nome, categoria: 'Follow-up', data: l.proximoContato, horario: l.proximoContatoHorario || '', concluida: false, leadId: l.id, origem: 'auto' });
     }
   });
   return pending;
