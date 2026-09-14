@@ -72,6 +72,13 @@ export default function MetricasView({ userId }) {
     setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
   }
 
+  async function handleDropStage(id, etapa) {
+    const lead = leads.find((l) => l.id === id);
+    if (!lead || lead.etapa === etapa) return;
+    const updated = await leadsApi.update(id, { ...lead, etapa, ultimaAtualizacao: todayStr() });
+    setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
+  }
+
   if (loading) return <section className="view active"><div className="empty-state">Carregando métricas...</div></section>;
   if (error) {
     return (
@@ -104,6 +111,7 @@ export default function MetricasView({ userId }) {
         filterStale={false}
         onEdit={handleEditLead}
         onMoveStage={handleMoveStage}
+        onDropStage={handleDropStage}
       />
 
       {leadModalOpen && (

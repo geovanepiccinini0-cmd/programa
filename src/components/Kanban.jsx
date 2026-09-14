@@ -1,13 +1,19 @@
+import { useState } from 'react';
 import { STAGES } from '../constants.js';
 import { diasDesde, fmtBRL, leadValor } from '../utils.js';
 import { LeadCardBody, isLeadStale } from './LeadCardInfo.jsx';
 
-function LeadCard({ lead, onEdit, onDelete, onMoveStage }) {
+function LeadCard({ lead, onEdit, onDelete, onMoveStage, onDragStart }) {
   const idx = STAGES.indexOf(lead.etapa);
   const isStale = isLeadStale(lead);
 
   return (
-    <div className="card" style={isStale ? { borderColor: 'var(--red)' } : undefined}>
+    <div
+      className="card"
+      draggable
+      onDragStart={(e) => onDragStart(e, lead.id)}
+      style={isStale ? { borderColor: 'var(--red)' } : undefined}
+    >
       <LeadCardBody
         lead={lead}
         footer={(
@@ -29,7 +35,29 @@ function LeadCard({ lead, onEdit, onDelete, onMoveStage }) {
   );
 }
 
-export default function Kanban({ leads, filterProduto, filterStale, onEdit, onDelete, onMoveStage }) {
+export default function Kanban({ leads, filterProduto, filterStale, onEdit, onDelete, onMoveStage, onDropStage }) {
+  const [dragOverStage, setDragOverStage] = useState(null);
+
+  function handleDragStart(e, leadId) {
+    e.dataTransfer.setData('text/plain', leadId);
+    e.dataTransfer.effectAllowed = 'move';
+  }
+
+  function handleDragOver(e, stage) {
+    if (!onDropStage) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverStage !== stage) setDragOverStage(stage);
+  }
+
+  function handleDrop(e, stage) {
+    if (!onDropStage) return;
+    e.preventDefault();
+    setDragOverStage(null);
+    const leadId = e.dataTransfer.getData('text/plain');
+    if (leadId) onDropStage(leadId, stage);
+  }
+
   return (
     <div className="kanban">
       {STAGES.map((stage) => {
@@ -39,7 +67,13 @@ export default function Kanban({ leads, filterProduto, filterStale, onEdit, onDe
         stageLeads = stageLeads.slice().sort((a, b) => diasDesde(b.ultimaAtualizacao || b.criadoEm) - diasDesde(a.ultimaAtualizacao || a.criadoEm));
         const soma = stageLeads.reduce((s, l) => s + leadValor(l), 0);
         return (
-          <div className="col" key={stage}>
+          <div
+            className={`col ${dragOverStage === stage ? 'drag-over' : ''}`}
+            key={stage}
+            onDragOver={(e) => handleDragOver(e, stage)}
+            onDragLeave={() => setDragOverStage((s) => (s === stage ? null : s))}
+            onDrop={(e) => handleDrop(e, stage)}
+          >
             <div className="col-head">
               <h3>{stage}</h3>
               <span className="count">{stageLeads.length}</span>
@@ -47,7 +81,7 @@ export default function Kanban({ leads, filterProduto, filterStale, onEdit, onDe
             {soma > 0 && <div className="col-sum">{fmtBRL(soma)}</div>}
             {stageLeads.length === 0 && <div className="empty-state" style={{ padding: '16px 6px' }}>—</div>}
             {stageLeads.map((l) => (
-              <LeadCard key={l.id} lead={l} onEdit={onEdit} onDelete={onDelete} onMoveStage={onMoveStage} />
+              <LeadCard key={l.id} lead={l} onEdit={onEdit} onDelete={onDelete} onMoveStage={onMoveStage} onDragStart={handleDragStart} />
             ))}
           </div>
         );
