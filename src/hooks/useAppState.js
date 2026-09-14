@@ -188,6 +188,14 @@ export function useAppState(userId) {
     await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
   }, [leads, tasks]);
 
+  const setLeadStage = useCallback(async (id, etapa) => {
+    const lead = leads.find((l) => l.id === id);
+    if (!lead || lead.etapa === etapa) return;
+    const updated = await leadsApi.update(id, { ...lead, etapa, ultimaAtualizacao: todayStr() });
+    setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
+    await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
+  }, [leads, tasks]);
+
   const addTask = useCallback(async (titulo, categoria, data, horario) => {
     const inserted = await tasksApi.insert({ titulo, categoria, data, horario, concluida: false, leadId: null, origem: 'manual' });
     setTasks((prev) => [...prev, inserted]);
@@ -284,7 +292,7 @@ export function useAppState(userId) {
 
   return {
     leads, tasks, templates, loading, error,
-    saveLead, deleteLead, moveStage,
+    saveLead, deleteLead, moveStage, setLeadStage,
     addTask, toggleTask, deleteTask,
     addRotina, toggleRotinaAtiva, deleteRotina,
     importBackup,

@@ -2,7 +2,7 @@ import { PRODUTOS, STALE_DAYS } from '../constants.js';
 import HealthBar from './HealthBar.jsx';
 import Kanban from './Kanban.jsx';
 
-export default function FunilView({ leads, filterProduto, setFilterProduto, filterStale, setFilterStale, onEdit, onDelete, onMoveStage }) {
+export default function FunilView({ leads, filterProduto, setFilterProduto, filterStale, setFilterStale, onEdit, onDelete, onMoveStage, onDropStage }) {
   const opts = ['Todos', ...PRODUTOS];
   return (
     <section className="view active">
@@ -32,6 +32,7 @@ export default function FunilView({ leads, filterProduto, setFilterProduto, filt
         onEdit={onEdit}
         onDelete={onDelete}
         onMoveStage={onMoveStage}
+        onDropStage={onDropStage}
       />
     </section>
   );

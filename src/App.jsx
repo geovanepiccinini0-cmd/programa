@@ -18,7 +18,7 @@ import { downloadJSON, todayStr } from './utils.js';
 function CrmApp({ userId, isAdmin, onSignOut }) {
   const {
     leads, tasks, templates, loading, error,
-    saveLead, deleteLead, moveStage,
+    saveLead, deleteLead, moveStage, setLeadStage,
     addTask, toggleTask, deleteTask,
     addRotina, toggleRotinaAtiva, deleteRotina,
     importBackup,
@@ -60,6 +60,10 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
 
   function handleMoveStage(id, dir) {
     moveStage(id, dir, STAGES);
+  }
+
+  function handleDropStage(id, etapa) {
+    setLeadStage(id, etapa);
   }
 
   function handleDeleteRotina(id) {
@@ -138,6 +142,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
           onEdit={handleEditLead}
           onDelete={handleDeleteLead}
           onMoveStage={handleMoveStage}
+          onDropStage={handleDropStage}
         />
       )}
 
