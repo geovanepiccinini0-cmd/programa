@@ -35,7 +35,19 @@ function LeadCard({ lead, onEdit, onDelete, onMoveStage, onDragStart }) {
   );
 }
 
-export default function Kanban({ leads, filterProduto, filterStale, onEdit, onDelete, onMoveStage, onDropStage }) {
+function sortStageLeads(stageLeads, sortOrder) {
+  const arr = stageLeads.slice();
+  if (sortOrder === 'novo') {
+    arr.sort((a, b) => (b.createdAt || b.criadoEm || '').localeCompare(a.createdAt || a.criadoEm || ''));
+  } else if (sortOrder === 'antigo') {
+    arr.sort((a, b) => (a.createdAt || a.criadoEm || '').localeCompare(b.createdAt || b.criadoEm || ''));
+  } else {
+    arr.sort((a, b) => diasDesde(b.ultimaAtualizacao || b.criadoEm) - diasDesde(a.ultimaAtualizacao || a.criadoEm));
+  }
+  return arr;
+}
+
+export default function Kanban({ leads, filterProduto, filterStale, sortOrder, onEdit, onDelete, onMoveStage, onDropStage }) {
   const [dragOverStage, setDragOverStage] = useState(null);
 
   function handleDragStart(e, leadId) {
@@ -64,7 +76,7 @@ export default function Kanban({ leads, filterProduto, filterStale, onEdit, onDe
         let stageLeads = leads.filter((l) => l.etapa === stage);
         if (filterProduto !== 'Todos') stageLeads = stageLeads.filter((l) => l.produto === filterProduto);
         if (filterStale) stageLeads = stageLeads.filter((l) => diasDesde(l.ultimaAtualizacao || l.criadoEm) >= 15);
-        stageLeads = stageLeads.slice().sort((a, b) => diasDesde(b.ultimaAtualizacao || b.criadoEm) - diasDesde(a.ultimaAtualizacao || a.criadoEm));
+        stageLeads = sortStageLeads(stageLeads, sortOrder);
         const soma = stageLeads.reduce((s, l) => s + leadValor(l), 0);
         return (
           <div

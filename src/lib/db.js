@@ -22,6 +22,7 @@ function leadFromRow(r) {
     notas: r.notas || '',
     criadoEm: r.criado_em,
     ultimaAtualizacao: r.ultima_atualizacao,
+    createdAt: r.created_at,
   };
 }
 
