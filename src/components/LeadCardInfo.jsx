@@ -13,6 +13,9 @@ export function DetailLine({ lead }) {
     const ltv = lead.valorImovel > 0 && lead.valor != null ? Math.round((Number(lead.valor) / Number(lead.valorImovel)) * 100) : null;
     return <div className="card-meta">Imóvel avaliado em {fmtBRL(lead.valorImovel)}{ltv !== null ? ' · LTV ' + ltv + '%' : ''}</div>;
   }
+  if (lead.produto === 'Financiamento') {
+    return <div className="card-meta">Entrada {fmtBRL(lead.entrada)} · Parcela {fmtBRL(lead.parcela)}</div>;
+  }
   return null;
 }
 

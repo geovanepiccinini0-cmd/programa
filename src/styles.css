@@ -11,6 +11,7 @@
   --purple:#a586e8;
   --red:#e8615d;
   --green:#3ddc97;
+  --orange:#e89a4d;
 }
 *{box-sizing:border-box;}
 body{margin:0;background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;}
