@@ -27,6 +27,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
   const [activeTab, setActiveTab] = useState('hoje');
   const [filterProduto, setFilterProduto] = useState('Todos');
   const [filterStale, setFilterStale] = useState(false);
+  const [sortOrder, setSortOrder] = useState('padrao');
   const [leadModalOpen, setLeadModalOpen] = useState(false);
   const [editingLead, setEditingLead] = useState(null);
   const [exportModalOpen, setExportModalOpen] = useState(false);
@@ -139,6 +140,8 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
           setFilterProduto={setFilterProduto}
           filterStale={filterStale}
           setFilterStale={setFilterStale}
+          sortOrder={sortOrder}
+          setSortOrder={setSortOrder}
           onEdit={handleEditLead}
           onDelete={handleDeleteLead}
           onMoveStage={handleMoveStage}

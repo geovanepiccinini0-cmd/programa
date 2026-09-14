@@ -4,6 +4,7 @@ import { leadsApi, profilesApi } from '../lib/db.js';
 import { fmtBRL, leadValor, todayStr } from '../utils.js';
 import Kanban from './Kanban.jsx';
 import LeadModal from './LeadModal.jsx';
+import SortSelect from './SortSelect.jsx';
 
 export default function MetricasView({ userId }) {
   const [leads, setLeads] = useState([]);
@@ -12,6 +13,7 @@ export default function MetricasView({ userId }) {
   const [error, setError] = useState(null);
   const [editingLead, setEditingLead] = useState(null);
   const [leadModalOpen, setLeadModalOpen] = useState(false);
+  const [sortOrder, setSortOrder] = useState('padrao');
 
   useEffect(() => {
     let cancelled = false;
@@ -105,10 +107,15 @@ export default function MetricasView({ userId }) {
         ))}
       </div>
 
+      <div className="filters" style={{ alignItems: 'center' }}>
+        <SortSelect value={sortOrder} onChange={setSortOrder} />
+      </div>
+
       <Kanban
         leads={leads}
         filterProduto="Todos"
         filterStale={false}
+        sortOrder={sortOrder}
         onEdit={handleEditLead}
         onMoveStage={handleMoveStage}
         onDropStage={handleDropStage}
