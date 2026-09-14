@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
-import { PROD_COLOR } from '../constants.js';
 import { currentWeekDates, fmtDate, isTaskOverdue, todayStr, weekdayLongName } from '../utils.js';
+import TaskLeadBadges from './TaskLeadBadges.jsx';
 
 export default function WeekAgenda({ tasks, leads, onToggleTask, onDeleteTask }) {
   const weekDates = useMemo(() => currentWeekDates(), []);
@@ -40,11 +40,7 @@ export default function WeekAgenda({ tasks, leads, onToggleTask, onDeleteTask })
                       <div className="task-meta">
                         <span>{t.horario || 'sem horário'}</span>
                         {overdue && <span className="badge tag-overdue">ATRASADO</span>}
-                        {lead && (
-                          <span className="badge" style={{ background: PROD_COLOR[lead.produto] || 'var(--surface-2)', color: '#0a1628' }}>
-                            {lead.produto}
-                          </span>
-                        )}
+                        <TaskLeadBadges lead={lead} />
                       </div>
                     </div>
                     <button className="task-del" onClick={() => onDeleteTask(t.id)}>✕</button>
