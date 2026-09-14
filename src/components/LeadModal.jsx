@@ -68,6 +68,9 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
     if (produto === 'Home Equity') {
       return { valor: parseMoneyValue(extra.valor), valorImovel: parseMoneyValue(extra.valorImovel), tipo: null, credito: null, entrada: null, parcela: null, lance: null };
     }
+    if (produto === 'Financiamento') {
+      return { tipo: extra.tipo, valor: parseMoneyValue(extra.valor), entrada: parseMoneyValue(extra.entrada), parcela: parseMoneyValue(extra.parcela), credito: null, lance: null, valorImovel: null };
+    }
     return { valor: parseMoneyValue(extra.valor), tipo: null, credito: null, entrada: null, parcela: null, lance: null, valorImovel: null };
   }
 

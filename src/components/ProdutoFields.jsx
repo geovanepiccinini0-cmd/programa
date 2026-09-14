@@ -55,6 +55,27 @@ export default function ProdutoFields({ produto, extra, onExtraChange }) {
     );
   }
 
+  if (produto === 'Financiamento') {
+    return (
+      <>
+        <div className="field-row">
+          <div className="field">
+            <label htmlFor="f-tipo">Tipo</label>
+            <select id="f-tipo" value={extra.tipo || 'Imóvel'} onChange={(e) => set('tipo')(e.target.value)}>
+              <option value="Imóvel">Imóvel</option>
+              <option value="Veículo">Veículo</option>
+            </select>
+          </div>
+          <MoneyInput id="f-valor" label="Valor financiado (R$)" value={extra.valor ?? ''} onChange={set('valor')} />
+        </div>
+        <div className="field-row">
+          <MoneyInput id="f-entrada" label="Entrada (R$)" value={extra.entrada ?? ''} onChange={set('entrada')} />
+          <MoneyInput id="f-parcela" label="Parcela (R$)" value={extra.parcela ?? ''} onChange={set('parcela')} />
+        </div>
+      </>
+    );
+  }
+
   return (
     <div className="field-row">
       <MoneyInput id="f-valor" label="Valor estimado (R$)" value={extra.valor ?? ''} onChange={set('valor')} />
