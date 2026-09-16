@@ -20,6 +20,18 @@ function pendingAutoTasksForLeads(leads, tasks) {
   return pending;
 }
 
+function autoTaskHorarioUpdates(leads, tasks) {
+  const updates = [];
+  leads.forEach((l) => {
+    if (!l.proximoContato) return;
+    const existing = tasks.find((t) => t.leadId === l.id && t.origem === 'auto' && t.data === l.proximoContato);
+    if (existing && (existing.horario || '') !== (l.proximoContatoHorario || '')) {
+      updates.push({ ...existing, horario: l.proximoContatoHorario || '' });
+    }
+  });
+  return updates;
+}
+
 function pendingRotinaTasks(templates, tasks) {
   const todayAbrev = DIAS_SEMANA[new Date().getDay()];
   const today = todayStr();
@@ -132,6 +144,13 @@ export function useAppState(userId) {
             setTasks((prev) => [...prev, inserted]);
           }
 
+          const horarioUpdates = autoTaskHorarioUpdates(leadsData, tasksData);
+          for (const u of horarioUpdates) {
+            const updated = await tasksApi.update(u.id, u);
+            if (cancelled) return;
+            setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+          }
+
           const leadAgendaActions = reconcileLeadAgendaActions(leadsData, tasksData);
           await applyLeadAgendaActions(leadAgendaActions, setTasks);
         }
@@ -165,6 +184,11 @@ export function useAppState(userId) {
     for (const p of pending) {
       const inserted = await tasksApi.insert(p);
       setTasks((prev) => [...prev, inserted]);
+    }
+    const horarioUpdates = autoTaskHorarioUpdates([saved], tasks);
+    for (const u of horarioUpdates) {
+      const updated = await tasksApi.update(u.id, u);
+      setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
     }
     await applyLeadAgendaActions(reconcileLeadAgendaActions([saved], tasks), setTasks);
   }, [tasks]);
