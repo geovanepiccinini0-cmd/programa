@@ -100,6 +100,23 @@ export function isTaskOverdue(t) {
   return false;
 }
 
+export function normalizeText(s) {
+  return (s || '')
+    .toString()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+}
+
+export function leadMatchesSearch(lead, query) {
+  const q = (query || '').trim();
+  if (!q) return true;
+  const nomeMatch = normalizeText(lead.nome).includes(normalizeText(q));
+  const qDigits = q.replace(/\D/g, '');
+  const telefoneMatch = qDigits.length > 0 && (lead.telefone || '').replace(/\D/g, '').includes(qDigits);
+  return nomeMatch || telefoneMatch;
+}
+
 export function leadValor(l) {
   if (l.produto === 'Carta Contemplada' || l.produto === 'Consórcio') return Number(l.credito) || 0;
   return Number(l.valor) || 0;

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { STAGES } from '../constants.js';
-import { diasDesde, fmtBRL, leadValor } from '../utils.js';
+import { diasDesde, fmtBRL, leadMatchesSearch, leadValor } from '../utils.js';
 import { LeadCardBody, isLeadStale } from './LeadCardInfo.jsx';
 
 function LeadCard({ lead, onEdit, onDelete, onMoveStage, onDragStart }) {
@@ -47,7 +47,7 @@ function sortStageLeads(stageLeads, sortOrder) {
   return arr;
 }
 
-export default function Kanban({ leads, filterProduto, filterStale, sortOrder, onEdit, onDelete, onMoveStage, onDropStage }) {
+export default function Kanban({ leads, filterProduto, filterStale, sortOrder, searchQuery, onEdit, onDelete, onMoveStage, onDropStage }) {
   const [dragOverStage, setDragOverStage] = useState(null);
 
   function handleDragStart(e, leadId) {
@@ -76,6 +76,7 @@ export default function Kanban({ leads, filterProduto, filterStale, sortOrder, o
         let stageLeads = leads.filter((l) => l.etapa === stage);
         if (filterProduto !== 'Todos') stageLeads = stageLeads.filter((l) => l.produto === filterProduto);
         if (filterStale) stageLeads = stageLeads.filter((l) => diasDesde(l.ultimaAtualizacao || l.criadoEm) >= 15);
+        if (searchQuery) stageLeads = stageLeads.filter((l) => leadMatchesSearch(l, searchQuery));
         stageLeads = sortStageLeads(stageLeads, sortOrder);
         const soma = stageLeads.reduce((s, l) => s + leadValor(l), 0);
         return (
