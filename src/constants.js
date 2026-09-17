@@ -11,9 +11,10 @@ export const PROD_COLOR = {
   Imóvel: 'var(--purple)',
 };
 export const STALE_DAYS = 15;
-export const TAGS_LEAD = ['S/ CONDIÇÃO', 'N/ RESPONDE'];
+export const TAGS_LEAD = ['S/ CONDIÇÃO', 'N/ RESPONDE', 'CARRO ENTR.'];
 export const TAG_COLOR = {
   'S/ CONDIÇÃO': 'var(--red)',
   'N/ RESPONDE': 'var(--orange)',
+  'CARRO ENTR.': 'var(--blue)',
 };
 export const BUILD_VERSION = 'v2026-09-17-tags-lead';
