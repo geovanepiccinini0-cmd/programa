@@ -16,7 +16,7 @@
 *{box-sizing:border-box;}
 body{margin:0;background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;}
 h1,h2,h3,.display{font-family:'Space Grotesk',sans-serif;}
-.app{max-width:1180px;margin:0 auto;padding:20px 20px 60px;}
+.app{max-width:none;margin:0 auto;padding:20px 28px 60px;}
 
 /* HEADER */
 header.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px;}
