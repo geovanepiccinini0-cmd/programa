@@ -1,4 +1,4 @@
-import { PROD_COLOR } from '../constants.js';
+import { PROD_COLOR, TAG_COLOR } from '../constants.js';
 import { diasDesde, fmtBRL, fmtDate, leadValor, todayStr } from '../utils.js';
 
 export function DetailLine({ lead }) {
@@ -44,6 +44,15 @@ export function LeadCardBody({ lead, footer }) {
           {lead.tipo && <span className="badge" style={{ background: 'var(--surface-2)', color: 'var(--text)', whiteSpace: 'nowrap' }}>{lead.tipo}</span>}
         </div>
       </div>
+      {lead.tags && lead.tags.length > 0 && (
+        <div className="card-meta" style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          {lead.tags.map((tag) => (
+            <span key={tag} className="badge" style={{ background: TAG_COLOR[tag] || 'var(--surface-2)', color: '#fff' }}>
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="card-valor">{fmtBRL(leadValor(lead))}</div>
       <DetailLine lead={lead} />
       <div className={`card-meta ${late ? 'late' : ''}`}>
