@@ -7,7 +7,7 @@ export const PROD_COLOR = {
   Consórcio: 'var(--blue)',
   'Carta Contemplada': 'var(--gold)',
   'Home Equity': 'var(--teal)',
-  Financiamento: 'var(--orange)',
+  Financiamento: 'var(--red)',
   Imóvel: 'var(--purple)',
 };
 export const STALE_DAYS = 15;
