@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CANAIS, PRODUTOS, STAGES } from '../constants.js';
+import { CANAIS, PRODUTOS, STAGES, TAGS_LEAD, TAG_COLOR } from '../constants.js';
 import { availableTimeSlots, formatPhoneBR, moneyFormat, parseMoneyValue } from '../utils.js';
 import ProdutoFields from './ProdutoFields.jsx';
 
@@ -28,6 +28,7 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
   const [proximoContato, setProximoContato] = useState('');
   const [proximoContatoHorario, setProximoContatoHorario] = useState('');
   const [notas, setNotas] = useState('');
+  const [tags, setTags] = useState([]);
   const [extra, setExtra] = useState({ ...EMPTY_EXTRA });
   const [error, setError] = useState('');
 
@@ -41,6 +42,7 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
     setProximoContato(lead ? lead.proximoContato || '' : '');
     setProximoContatoHorario(lead ? lead.proximoContatoHorario || '' : '');
     setNotas(lead ? lead.notas || '' : '');
+    setTags(lead ? lead.tags || [] : []);
     setExtra(extraFromLead(lead));
     setError('');
   }, [lead]);
@@ -52,6 +54,10 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
       .map((t) => t.horario);
     return availableTimeSlots(occupied);
   }, [tasks, proximoContato, lead]);
+
+  function toggleTag(tag) {
+    setTags((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]));
+  }
 
   function handleProdutoChange(novoProduto) {
     setProduto(novoProduto);
@@ -90,6 +96,7 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
       proximoContato,
       proximoContatoHorario: proximoContato ? proximoContatoHorario : '',
       notas: notas.trim(),
+      tags,
       ...buildExtraForSave(),
     };
     onSave(lead ? lead.id : null, data);
@@ -173,6 +180,25 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
               </div>
             </div>
           )}
+          <div className="field">
+            <label>Tags</label>
+            <div className="filters" style={{ marginBottom: 0 }}>
+              {TAGS_LEAD.map((tag) => {
+                const active = tags.includes(tag);
+                return (
+                  <button
+                    type="button"
+                    key={tag}
+                    className={`chip ${active ? 'active' : ''}`}
+                    style={active ? { background: TAG_COLOR[tag] || 'var(--blue)', color: '#fff', borderColor: 'transparent' } : undefined}
+                    onClick={() => toggleTag(tag)}
+                  >
+                    {tag}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <div className="field">
             <label htmlFor="f-notas">Notas</label>
             <textarea id="f-notas" rows={3} value={notas} onChange={(e) => setNotas(e.target.value)} />

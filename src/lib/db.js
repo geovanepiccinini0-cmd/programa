@@ -20,6 +20,7 @@ function leadFromRow(r) {
     proximoContato: r.proximo_contato,
     proximoContatoHorario: r.proximo_contato_horario || '',
     notas: r.notas || '',
+    tags: r.tags || [],
     criadoEm: r.criado_em,
     ultimaAtualizacao: r.ultima_atualizacao,
     createdAt: r.created_at,
@@ -44,6 +45,7 @@ function leadToRow(data) {
     proximo_contato: data.proximoContato || null,
     proximo_contato_horario: data.proximoContatoHorario || null,
     notas: data.notas,
+    tags: data.tags || [],
     ...(data.criadoEm ? { criado_em: data.criadoEm } : {}),
     ...(data.ultimaAtualizacao ? { ultima_atualizacao: data.ultimaAtualizacao } : {}),
   };

@@ -23,6 +23,7 @@ create table if not exists public.leads (
   proximo_contato date,
   proximo_contato_horario text,
   notas text,
+  tags text[] not null default '{}',
   criado_em date not null default current_date,
   ultima_atualizacao date not null default current_date,
   created_at timestamptz not null default now()
