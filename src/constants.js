@@ -1,4 +1,4 @@
-export const STAGES = ['Novo Lead', 'Ligação', 'Qualificação', 'Atendimento', 'Proposta', 'Negociação', 'Ganho', 'Perdido'];
+export const STAGES = ['Novo Lead', 'Ligação', 'Qualificação', 'Atendimento', 'Proposta', 'Negociação', 'Follow-up 1', 'Follow-up 2', 'Follow-up 3', 'Ganho', 'Perdido'];
 export const PRODUTOS = ['Consórcio', 'Carta Contemplada', 'Home Equity', 'Financiamento', 'Imóvel'];
 export const CANAIS = ['Facebook Marketplace', 'Tráfego Pago', 'Indicação', 'Prospecção Ativa', 'Instagram/TikTok', 'Cliente', 'Attemics', 'Insta Felipe'];
 export const CATS_TASK = ['Follow-up', 'Conteúdo', 'Agenda/Ligação', 'Operacional'];
