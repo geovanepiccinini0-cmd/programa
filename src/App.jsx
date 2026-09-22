@@ -9,8 +9,10 @@ import ExportModal from './components/ExportModal.jsx';
 import Login from './components/Login.jsx';
 import SetupNeeded from './components/SetupNeeded.jsx';
 import MetricasView from './components/MetricasView.jsx';
+import AppointmentAlertBanner from './components/AppointmentAlertBanner.jsx';
 import { useAppState } from './hooks/useAppState.js';
 import { useAuth } from './hooks/useAuth.js';
+import { useAppointmentAlerts } from './hooks/useAppointmentAlerts.js';
 import { isSupabaseConfigured } from './lib/supabaseClient.js';
 import { STAGES } from './constants.js';
 import { downloadJSON, todayStr } from './utils.js';
@@ -33,6 +35,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
   const [editingLead, setEditingLead] = useState(null);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [, forceTick] = useState(0);
+  const appointmentAlerts = useAppointmentAlerts(tasks, leads);
 
   useEffect(() => {
     const id = setInterval(() => forceTick((n) => n + 1), 60000);
@@ -118,6 +121,14 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
         onImportBackup={handleImportBackup}
         onSignOut={onSignOut}
         isAdmin={isAdmin}
+      />
+
+      <AppointmentAlertBanner
+        upcoming={appointmentAlerts.upcoming}
+        permission={appointmentAlerts.permission}
+        onRequestPermission={appointmentAlerts.requestPermission}
+        onDismiss={appointmentAlerts.dismiss}
+        leads={leads}
       />
 
       {activeTab !== 'metricas' && <StatsBar leads={leads} tasks={tasks} />}
