@@ -11,11 +11,14 @@ export const PROD_COLOR = {
   Imóvel: 'var(--purple)',
 };
 export const STALE_DAYS = 15;
-export const TAGS_LEAD = ['S/ CONDIÇÃO', 'N/ RESPONDE', 'CARRO ENTR.', 'RESTRIÇÃO'];
+export const TAGS_LEAD = ['S/ CONDIÇÃO', 'C/ CONDIÇÃO', 'N/ RESPONDE', 'CARRO ENTR.', 'RESTRIÇÃO', 'PRIORIDADE', 'ATENÇÃO'];
 export const TAG_COLOR = {
   'S/ CONDIÇÃO': 'var(--red)',
+  'C/ CONDIÇÃO': 'var(--green)',
   'N/ RESPONDE': 'var(--orange)',
   'CARRO ENTR.': 'var(--blue)',
   RESTRIÇÃO: 'var(--orange)',
+  PRIORIDADE: 'var(--purple)',
+  ATENÇÃO: 'var(--orange)',
 };
 export const BUILD_VERSION = 'v2026-09-17-tags-lead';
