@@ -12,6 +12,7 @@ export default function ProdutoFields({ produto, extra, onExtraChange }) {
             <select id="f-tipo" value={extra.tipo || 'Veículo'} onChange={(e) => set('tipo')(e.target.value)}>
               <option value="Veículo">Veículo</option>
               <option value="Imóvel">Imóvel</option>
+              <option value="Pesados">Pesados</option>
             </select>
           </div>
           <MoneyInput id="f-credito" label="Crédito (R$)" value={extra.credito ?? ''} onChange={set('credito')} />
