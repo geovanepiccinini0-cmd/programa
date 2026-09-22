@@ -100,6 +100,23 @@ export function isTaskOverdue(t) {
   return false;
 }
 
+export function minutesUntil(dateStr, horario) {
+  if (!dateStr || !horario) return null;
+  const [h, m] = horario.split(':').map(Number);
+  const target = new Date(dateStr + 'T00:00:00');
+  target.setHours(h, m, 0, 0);
+  return Math.round((target - new Date()) / 60000);
+}
+
+export function upcomingAppointments(tasks, windowMinutes) {
+  const today = todayStr();
+  return tasks
+    .filter((t) => t.categoria === 'Agenda/Ligação' && !t.concluida && t.data === today && t.horario)
+    .map((t) => ({ task: t, minutesLeft: minutesUntil(t.data, t.horario) }))
+    .filter(({ minutesLeft }) => minutesLeft !== null && minutesLeft >= 0 && minutesLeft <= windowMinutes)
+    .sort((a, b) => a.minutesLeft - b.minutesLeft);
+}
+
 export function normalizeText(s) {
   return (s || '')
     .toString()
