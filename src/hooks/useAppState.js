@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DIAS_SEMANA } from '../constants.js';
-import { todayStr } from '../utils.js';
-import { leadsApi, tasksApi, templatesApi } from '../lib/db.js';
+import { todayStr, normalizeBackup } from '../utils.js';
+import { leadsApi, tasksApi, templatesApi, interactionsApi, auditLogApi } from '../lib/db.js';
 import { supabase } from '../lib/supabaseClient.js';
 
-function pendingAutoTasksForLeads(leads, tasks) {
+export function pendingAutoTasksForLeads(leads, tasks) {
   const today = todayStr();
   const pending = [];
   leads.forEach((l) => {
@@ -20,7 +20,7 @@ function pendingAutoTasksForLeads(leads, tasks) {
   return pending;
 }
 
-function autoTaskHorarioUpdates(leads, tasks) {
+export function autoTaskHorarioUpdates(leads, tasks) {
   const updates = [];
   leads.forEach((l) => {
     if (!l.proximoContato) return;
@@ -32,7 +32,7 @@ function autoTaskHorarioUpdates(leads, tasks) {
   return updates;
 }
 
-function pendingRotinaTasks(templates, tasks) {
+export function pendingRotinaTasks(templates, tasks) {
   const todayAbrev = DIAS_SEMANA[new Date().getDay()];
   const today = todayStr();
   const pending = [];
@@ -48,7 +48,7 @@ function pendingRotinaTasks(templates, tasks) {
   return pending;
 }
 
-function computeLeadAgendaTaskData(lead) {
+export function computeLeadAgendaTaskData(lead) {
   const ativo = lead.etapa !== 'Ganho' && lead.etapa !== 'Perdido';
   if (!ativo || !lead.proximoContato) return null;
   return {
@@ -62,7 +62,7 @@ function computeLeadAgendaTaskData(lead) {
   };
 }
 
-function reconcileLeadAgendaActions(affectedLeads, tasks) {
+export function reconcileLeadAgendaActions(affectedLeads, tasks) {
   const actions = [];
   affectedLeads.forEach((lead) => {
     const desired = computeLeadAgendaTaskData(lead);
@@ -93,6 +93,48 @@ async function applyLeadAgendaActions(actions, setTasks) {
       const inserted = await tasksApi.insert(action.data);
       setTasks((prev) => [...prev, inserted]);
     }
+  }
+}
+
+// --- V2 (Fase 1) — registro de mudança de etapa em lead_interactions + audit_log ---
+
+export function computeStageTimestamps(etapa) {
+  const now = new Date().toISOString();
+  if (etapa === 'Ganho') return { wonAt: now, lostAt: null };
+  if (etapa === 'Perdido') return { wonAt: null, lostAt: now };
+  return { wonAt: null, lostAt: null };
+}
+
+export function computeStageChangeInteraction(prevLead, newEtapa) {
+  if (!prevLead || prevLead.etapa === newEtapa) return null;
+  return {
+    leadId: prevLead.id,
+    type: 'stage_change',
+    channel: 'crm',
+    direction: 'internal',
+    content: `Etapa alterada de "${prevLead.etapa}" para "${newEtapa}"`,
+    metadata: { from_stage: prevLead.etapa, to_stage: newEtapa },
+  };
+}
+
+// As tabelas lead_interactions/audit_log são novas (Fase 1 V2): se a
+// migration ainda não foi rodada no Supabase, o insert falha — isso não
+// pode derrubar a troca de etapa em si (já persistida em leads), então
+// o erro é só avisado no console.
+async function logStageChange(prevLead, updatedLead) {
+  const interaction = computeStageChangeInteraction(prevLead, updatedLead.etapa);
+  if (!interaction) return;
+  try {
+    await interactionsApi.insert(interaction);
+    await auditLogApi.insert({
+      entityType: 'lead',
+      entityId: updatedLead.id,
+      action: 'stage_change',
+      oldData: { etapa: prevLead.etapa },
+      newData: { etapa: updatedLead.etapa },
+    });
+  } catch (e) {
+    console.warn('Não foi possível registrar o histórico de mudança de etapa (migrations 007/011 já foram rodadas no Supabase?):', e);
   }
 }
 
@@ -176,10 +218,14 @@ export function useAppState(userId) {
   }, [userId]);
 
   const saveLead = useCallback(async (id, data) => {
+    const prevLead = id ? leads.find((l) => l.id === id) : null;
+    const etapaChanged = Boolean(prevLead) && prevLead.etapa !== data.etapa;
+    const stageFields = etapaChanged ? computeStageTimestamps(data.etapa) : {};
     const saved = id
-      ? await leadsApi.update(id, { ...data, ultimaAtualizacao: todayStr() })
+      ? await leadsApi.update(id, { ...data, ...stageFields, ultimaAtualizacao: todayStr() })
       : await leadsApi.insert({ ...data, criadoEm: todayStr(), ultimaAtualizacao: todayStr() });
     setLeads((prev) => (id ? prev.map((l) => (l.id === id ? saved : l)) : [...prev, saved]));
+    if (etapaChanged) await logStageChange(prevLead, saved);
     const pending = pendingAutoTasksForLeads([saved], tasks);
     for (const p of pending) {
       const inserted = await tasksApi.insert(p);
@@ -191,7 +237,7 @@ export function useAppState(userId) {
       setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
     }
     await applyLeadAgendaActions(reconcileLeadAgendaActions([saved], tasks), setTasks);
-  }, [tasks]);
+  }, [tasks, leads]);
 
   const deleteLead = useCallback(async (id) => {
     const relatedTasks = tasks.filter((t) => t.leadId === id);
@@ -207,18 +253,27 @@ export function useAppState(userId) {
     const idx = STAGES.indexOf(lead.etapa);
     const next = idx + dir;
     if (next < 0 || next >= STAGES.length) return;
-    const updated = await leadsApi.update(id, { ...lead, etapa: STAGES[next], ultimaAtualizacao: todayStr() });
+    const novaEtapa = STAGES[next];
+    const stageFields = computeStageTimestamps(novaEtapa);
+    const updated = await leadsApi.update(id, { ...lead, etapa: novaEtapa, ...stageFields, ultimaAtualizacao: todayStr() });
     setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
     await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
+    await logStageChange(lead, updated);
   }, [leads, tasks]);
 
   const setLeadStage = useCallback(async (id, etapa) => {
     const lead = leads.find((l) => l.id === id);
     if (!lead || lead.etapa === etapa) return;
-    const updated = await leadsApi.update(id, { ...lead, etapa, ultimaAtualizacao: todayStr() });
+    const stageFields = computeStageTimestamps(etapa);
+    const updated = await leadsApi.update(id, { ...lead, etapa, ...stageFields, ultimaAtualizacao: todayStr() });
     setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
     await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
+    await logStageChange(lead, updated);
   }, [leads, tasks]);
+
+  const addInteractionNote = useCallback(async (leadId, content) => {
+    return interactionsApi.insert({ leadId, type: 'note', channel: 'manual', direction: 'internal', content });
+  }, []);
 
   const addTask = useCallback(async (titulo, categoria, data, horario) => {
     const inserted = await tasksApi.insert({ titulo, categoria, data, horario, concluida: false, leadId: null, origem: 'manual' });
@@ -278,14 +333,15 @@ export function useAppState(userId) {
     setTemplates((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const importBackup = useCallback(async (backup) => {
+  const importBackup = useCallback(async (rawBackup) => {
+    const backup = normalizeBackup(rawBackup);
     await Promise.all(tasks.map((t) => tasksApi.remove(t.id)));
     await Promise.all(leads.map((l) => leadsApi.remove(l.id)));
     await Promise.all(templates.map((t) => templatesApi.remove(t.id)));
 
     const leadIdMap = new Map();
     const newLeads = [];
-    for (const l of backup.leads || []) {
+    for (const l of backup.leads) {
       const inserted = await leadsApi.insert(l);
       leadIdMap.set(l.id, inserted.id);
       newLeads.push(inserted);
@@ -293,20 +349,29 @@ export function useAppState(userId) {
 
     const templateIdMap = new Map();
     const newTemplates = [];
-    for (const tpl of backup.templates || []) {
+    for (const tpl of backup.templates) {
       const inserted = await templatesApi.insert(tpl);
       templateIdMap.set(tpl.id, inserted.id);
       newTemplates.push(inserted);
     }
 
     const newTasks = [];
-    for (const t of backup.tasks || []) {
+    for (const t of backup.tasks) {
       const inserted = await tasksApi.insert({
         ...t,
         leadId: t.leadId ? leadIdMap.get(t.leadId) || null : null,
         templateId: t.templateId ? templateIdMap.get(t.templateId) || null : null,
       });
       newTasks.push(inserted);
+    }
+
+    // backup.interactions só existe em backups v2 (backupVersion >= 2);
+    // normalizeBackup já trata backups v1 (sem essa chave) como [],
+    // sem quebrar o restore. Os leads antigos já foram excluídos acima,
+    // o que já apaga em cascata (on delete cascade) as interações deles.
+    for (const it of backup.interactions) {
+      if (!it.leadId || !leadIdMap.has(it.leadId)) continue;
+      await interactionsApi.insert({ ...it, leadId: leadIdMap.get(it.leadId) });
     }
 
     setLeads(newLeads);
@@ -320,5 +385,6 @@ export function useAppState(userId) {
     addTask, toggleTask, deleteTask,
     addRotina, toggleRotinaAtiva, deleteRotina,
     importBackup,
+    addInteractionNote,
   };
 }

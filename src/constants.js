@@ -21,4 +21,57 @@ export const TAG_COLOR = {
   PRIORIDADE: 'var(--purple)',
   ATENÇÃO: 'var(--orange)',
 };
-export const BUILD_VERSION = 'v2026-09-17-tags-lead';
+export const BUILD_VERSION = 'v2.0-foundation';
+
+// --- V2 (Fase 1 — fundação técnica) ---
+
+export const NEXT_ACTION_TYPES = [
+  { value: 'call', label: 'Ligação' },
+  { value: 'whatsapp', label: 'WhatsApp' },
+  { value: 'meeting', label: 'Reunião' },
+  { value: 'proposal', label: 'Proposta' },
+  { value: 'follow_up', label: 'Follow-up' },
+  { value: 'other', label: 'Outro' },
+];
+
+export const LEAD_TEMPERATURES = [
+  { value: 'cold', label: 'Frio', color: 'var(--blue)' },
+  { value: 'warm', label: 'Morno', color: 'var(--orange)' },
+  { value: 'hot', label: 'Quente', color: 'var(--red)' },
+];
+
+export const PRIORITIES = [
+  { value: 'low', label: 'Baixa' },
+  { value: 'normal', label: 'Normal' },
+  { value: 'high', label: 'Alta' },
+  { value: 'urgent', label: 'Urgente' },
+];
+
+export const LOST_REASONS = [
+  { value: 'sem_condicao', label: 'Sem condição' },
+  { value: 'sem_interesse', label: 'Sem interesse' },
+  { value: 'nao_responde', label: 'Não responde' },
+  { value: 'fechou_concorrente', label: 'Fechou com concorrente' },
+  { value: 'credito_reprovado', label: 'Crédito reprovado' },
+  { value: 'adiou_decisao', label: 'Adiou decisão' },
+  { value: 'outro', label: 'Outro' },
+];
+
+export const INTERACTION_TYPE_LABEL = {
+  note: 'Nota',
+  call: 'Ligação',
+  follow_up: 'Follow-up',
+  meeting: 'Reunião',
+  proposal: 'Proposta',
+  stage_change: 'Mudança de etapa',
+  system: 'Sistema',
+};
+
+export const INTERACTION_CHANNEL_LABEL = {
+  manual: 'Manual',
+  phone: 'Telefone',
+  crm: 'CRM',
+  whatsapp: 'WhatsApp',
+  instagram: 'Instagram',
+  email: 'E-mail',
+};

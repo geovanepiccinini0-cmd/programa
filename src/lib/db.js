@@ -24,6 +24,15 @@ function leadFromRow(r) {
     criadoEm: r.criado_em,
     ultimaAtualizacao: r.ultima_atualizacao,
     createdAt: r.created_at,
+    nextActionType: r.next_action_type || '',
+    nextActionNote: r.next_action_note || '',
+    leadTemperature: r.lead_temperature || '',
+    priority: r.priority || 'normal',
+    lostReason: r.lost_reason || '',
+    lostReasonNote: r.lost_reason_note || '',
+    wonAt: r.won_at,
+    lostAt: r.lost_at,
+    deletedAt: r.deleted_at,
   };
 }
 
@@ -48,6 +57,14 @@ function leadToRow(data) {
     tags: data.tags || [],
     ...(data.criadoEm ? { criado_em: data.criadoEm } : {}),
     ...(data.ultimaAtualizacao ? { ultima_atualizacao: data.ultimaAtualizacao } : {}),
+    next_action_type: data.nextActionType || null,
+    next_action_note: data.nextActionNote || null,
+    lead_temperature: data.leadTemperature || null,
+    priority: data.priority || 'normal',
+    lost_reason: data.lostReason || null,
+    lost_reason_note: data.lostReasonNote || null,
+    ...(data.wonAt !== undefined ? { won_at: data.wonAt || null } : {}),
+    ...(data.lostAt !== undefined ? { lost_at: data.lostAt || null } : {}),
   };
 }
 
@@ -75,6 +92,42 @@ function taskToRow(data) {
     lead_id: data.leadId || null,
     origem: data.origem,
     template_id: data.templateId || null,
+  };
+}
+
+function interactionFromRow(r) {
+  return {
+    id: r.id,
+    leadId: r.lead_id,
+    type: r.type,
+    direction: r.direction || '',
+    channel: r.channel || '',
+    content: r.content || '',
+    metadata: r.metadata || null,
+    occurredAt: r.occurred_at,
+    createdAt: r.created_at,
+  };
+}
+
+function interactionToRow(data) {
+  return {
+    lead_id: data.leadId,
+    type: data.type,
+    direction: data.direction || null,
+    channel: data.channel || null,
+    content: data.content || null,
+    metadata: data.metadata || null,
+    ...(data.occurredAt ? { occurred_at: data.occurredAt } : {}),
+  };
+}
+
+function auditLogToRow(data) {
+  return {
+    entity_type: data.entityType,
+    entity_id: data.entityId,
+    action: data.action,
+    old_data: data.oldData || null,
+    new_data: data.newData || null,
   };
 }
 
@@ -147,6 +200,28 @@ export const templatesApi = {
   update: (id, data) => updateRow('templates', templateToRow, templateFromRow, id, data),
   remove: (id) => deleteRow('templates', id),
   fromRow: templateFromRow,
+};
+
+export const interactionsApi = {
+  fetchForLead: async (leadId) => {
+    const { data, error } = await supabase
+      .from('lead_interactions')
+      .select('*')
+      .eq('lead_id', leadId)
+      .order('occurred_at', { ascending: false });
+    if (error) throw error;
+    return data.map(interactionFromRow);
+  },
+  fetchAllForUser: (userId) => fetchAll('lead_interactions', interactionFromRow, userId),
+  insert: (data) => insertRow('lead_interactions', interactionToRow, interactionFromRow, data),
+  fromRow: interactionFromRow,
+};
+
+export const auditLogApi = {
+  insert: async (data) => {
+    const { error } = await supabase.from('audit_log').insert(auditLogToRow(data));
+    if (error) throw error;
+  },
 };
 
 export const profilesApi = {
