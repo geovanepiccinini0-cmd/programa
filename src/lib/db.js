@@ -95,7 +95,9 @@ function taskToRow(data) {
   };
 }
 
-function interactionFromRow(r) {
+// Exportadas (Fase 2A.1.1) só para cobertura de teste do limite de
+// serialização com o Supabase — implementação inalterada.
+export function interactionFromRow(r) {
   return {
     id: r.id,
     leadId: r.lead_id,
@@ -110,7 +112,7 @@ function interactionFromRow(r) {
   };
 }
 
-function interactionToRow(data) {
+export function interactionToRow(data) {
   return {
     lead_id: data.leadId,
     type: data.type,
