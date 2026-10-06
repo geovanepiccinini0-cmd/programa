@@ -223,10 +223,21 @@ export function computeLastActivityAt(interactions) {
   return maxOccurredAt(interactions);
 }
 
-// last_contact_at: activity_class 'attempt' ou 'engagement' — ignora
-// 'internal' (nota manual e troca de etapa não contam como contato).
-export function computeLastContactAt(interactions) {
+// Fase 2B — tipos que representam contato comercial de verdade (ligação,
+// WhatsApp, reunião). 'proposal' fica deliberadamente de fora: continua
+// activity_class='attempt' no Activity Engine (não mexemos nessa
+// classificação), mas não conta para ESTE relógio — enviar uma proposta
+// não deve reiniciar a cadência de tentativa de contato.
+const CONTACT_ATTEMPT_TYPES = ['call', 'whatsapp', 'meeting'];
+
+// last_contact_attempt_at: só tipos de contato (ver acima), só
+// direction='outbound' (fomos nós que agimos — uma resposta do cliente,
+// ex. whatsapp inbound, é engajamento dele, não "nossa tentativa"), e só
+// activity_class 'attempt' ou 'engagement' (ignora 'internal').
+export function computeLastContactAttemptAt(interactions) {
   return maxOccurredAt(interactions, (it) => {
+    if (!CONTACT_ATTEMPT_TYPES.includes(it.type)) return false;
+    if (it.direction !== 'outbound') return false;
     const cls = it.metadata && it.metadata.activity_class;
     return cls === 'attempt' || cls === 'engagement';
   });

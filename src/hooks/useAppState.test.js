@@ -4,7 +4,7 @@ import {
   computeLeadAgendaTaskData, reconcileLeadAgendaActions,
   computeStageTimestamps, computeStageChangeInteraction, shouldClearNextContato,
   computeNoteInteractionData,
-  computeLastActivityAt, computeLastContactAt, computeLastCustomerEngagementAt,
+  computeLastActivityAt, computeLastContactAttemptAt, computeLastCustomerEngagementAt,
   computeCommercialInteractionData,
   shouldOfferResultCapture, runCompleteTaskWithResult,
 } from './useAppState.js';
@@ -189,13 +189,13 @@ describe('Fase 2A.1 — fundação de dados do Activity/Interaction Engine', () 
     expect(computeLastActivityAt(interactions)).toBe('2026-10-03T10:00:00.000Z');
   });
 
-  it('4) last_contact_at considera attempt + engagement e ignora internal', () => {
+  it('4) last_contact_attempt_at considera call/whatsapp/meeting outbound (attempt ou engagement) e ignora internal', () => {
     const interactions = [
-      { occurredAt: '2026-10-01T09:00:00.000Z', metadata: { activity_class: 'attempt' } },
-      { occurredAt: '2026-10-05T09:00:00.000Z', metadata: { activity_class: 'internal' } }, // mais recente, mas ignorado
-      { occurredAt: '2026-10-02T09:00:00.000Z', metadata: { activity_class: 'engagement' } },
+      { type: 'call', direction: 'outbound', occurredAt: '2026-10-01T09:00:00.000Z', metadata: { activity_class: 'attempt' } },
+      { type: 'stage_change', direction: 'internal', occurredAt: '2026-10-05T09:00:00.000Z', metadata: { activity_class: 'internal' } }, // mais recente, mas ignorado
+      { type: 'whatsapp', direction: 'outbound', occurredAt: '2026-10-02T09:00:00.000Z', metadata: { activity_class: 'attempt' } },
     ];
-    expect(computeLastContactAt(interactions)).toBe('2026-10-02T09:00:00.000Z');
+    expect(computeLastContactAttemptAt(interactions)).toBe('2026-10-02T09:00:00.000Z');
   });
 
   it('5) last_customer_engagement_at considera somente engagement', () => {
@@ -217,26 +217,26 @@ describe('Fase 2A.1 — fundação de dados do Activity/Interaction Engine', () 
 
   it('7) coleção vazia: resultado previsível (null) para os três relógios', () => {
     expect(computeLastActivityAt([])).toBeNull();
-    expect(computeLastContactAt([])).toBeNull();
+    expect(computeLastContactAttemptAt([])).toBeNull();
     expect(computeLastCustomerEngagementAt([])).toBeNull();
   });
 
-  it('8) apenas eventos internal: last_contact_at e last_customer_engagement_at ficam null (last_activity_at não)', () => {
+  it('8) apenas eventos internal: last_contact_attempt_at e last_customer_engagement_at ficam null (last_activity_at não)', () => {
     const interactions = [
-      { occurredAt: '2026-10-01T09:00:00.000Z', metadata: { activity_class: 'internal' } },
-      { occurredAt: '2026-10-02T09:00:00.000Z', metadata: { activity_class: 'internal' } },
+      { type: 'note', direction: 'internal', occurredAt: '2026-10-01T09:00:00.000Z', metadata: { activity_class: 'internal' } },
+      { type: 'stage_change', direction: 'internal', occurredAt: '2026-10-02T09:00:00.000Z', metadata: { activity_class: 'internal' } },
     ];
-    expect(computeLastContactAt(interactions)).toBeNull();
+    expect(computeLastContactAttemptAt(interactions)).toBeNull();
     expect(computeLastCustomerEngagementAt(interactions)).toBeNull();
     expect(computeLastActivityAt(interactions)).toBe('2026-10-02T09:00:00.000Z');
   });
 
-  it('9) WhatsApp enviado (attempt) e depois cliente responde (engagement): os dois relógios de contato avançam juntos, conforme o exemplo aprovado', () => {
+  it('9) WhatsApp enviado (attempt, 09:00) e depois cliente responde (engagement inbound, 11:00): a resposta do cliente NÃO atualiza "última tentativa" (decisão da Fase 2B) — só "último engajamento"', () => {
     const interactions = [
-      { occurredAt: '2026-10-10T09:00:00.000Z', metadata: { activity_class: 'attempt' } },
-      { occurredAt: '2026-10-10T11:00:00.000Z', metadata: { activity_class: 'engagement' } },
+      { type: 'whatsapp', direction: 'outbound', occurredAt: '2026-10-10T09:00:00.000Z', metadata: { activity_class: 'attempt' } },
+      { type: 'whatsapp', direction: 'inbound', occurredAt: '2026-10-10T11:00:00.000Z', metadata: { activity_class: 'engagement' } },
     ];
-    expect(computeLastContactAt(interactions)).toBe('2026-10-10T11:00:00.000Z');
+    expect(computeLastContactAttemptAt(interactions)).toBe('2026-10-10T09:00:00.000Z');
     expect(computeLastCustomerEngagementAt(interactions)).toBe('2026-10-10T11:00:00.000Z');
   });
 });
@@ -498,5 +498,93 @@ describe('Fase 2A.3 — runCompleteTaskWithResult (orquestração: interação p
 
     expect(insertInteraction).not.toHaveBeenCalled();
     expect(toggleTask).not.toHaveBeenCalled();
+  });
+});
+
+describe('Fase 2B — matriz completa dos três relógios (trava a decisão semântica desta fase)', () => {
+  // Interações no formato real (como vêm de interactionFromRow): type,
+  // direction, metadata.activity_class/outcome, occurredAt.
+  const note = { type: 'note', direction: 'internal', occurredAt: '2026-10-01T09:00:00.000Z', metadata: { activity_class: 'internal', source: 'user' } };
+  const stageChange = { type: 'stage_change', direction: 'internal', occurredAt: '2026-10-01T10:00:00.000Z', metadata: { activity_class: 'internal', source: 'user' } };
+  const callNoAnswer = { type: 'call', direction: 'outbound', occurredAt: '2026-10-02T09:00:00.000Z', metadata: { activity_class: 'attempt', outcome: 'no_answer', source: 'user' } };
+  const callConnected = { type: 'call', direction: 'outbound', occurredAt: '2026-10-03T09:00:00.000Z', metadata: { activity_class: 'engagement', outcome: 'connected', source: 'user' } };
+  const whatsappSent = { type: 'whatsapp', direction: 'outbound', occurredAt: '2026-10-04T09:00:00.000Z', metadata: { activity_class: 'attempt', source: 'user' } };
+  const whatsappReceived = { type: 'whatsapp', direction: 'inbound', occurredAt: '2026-10-05T09:00:00.000Z', metadata: { activity_class: 'engagement', source: 'user' } };
+  const meetingHeld = { type: 'meeting', direction: 'outbound', occurredAt: '2026-10-06T09:00:00.000Z', metadata: { activity_class: 'engagement', outcome: 'held', source: 'user' } };
+  const proposalSent = { type: 'proposal', direction: 'outbound', occurredAt: '2026-10-07T09:00:00.000Z', metadata: { activity_class: 'attempt', outcome: 'sent', source: 'user' } };
+  const legacyNote = { type: 'note', direction: '', occurredAt: '2025-01-01T09:00:00.000Z', metadata: null };
+  const legacyStageChange = { type: 'stage_change', direction: '', occurredAt: '2025-01-02T09:00:00.000Z', metadata: { from_stage: 'Novo Lead', to_stage: 'Qualificação' } };
+
+  it('A) coleção vazia -> três null', () => {
+    expect(computeLastActivityAt([])).toBeNull();
+    expect(computeLastContactAttemptAt([])).toBeNull();
+    expect(computeLastCustomerEngagementAt([])).toBeNull();
+  });
+
+  it('B) somente note/stage_change -> activity preenchida, attempt null, engagement null', () => {
+    const interactions = [note, stageChange];
+    expect(computeLastActivityAt(interactions)).toBe(stageChange.occurredAt);
+    expect(computeLastContactAttemptAt(interactions)).toBeNull();
+    expect(computeLastCustomerEngagementAt(interactions)).toBeNull();
+  });
+
+  it('C) call no_answer outbound -> activity + attempt, não engagement', () => {
+    const interactions = [callNoAnswer];
+    expect(computeLastActivityAt(interactions)).toBe(callNoAnswer.occurredAt);
+    expect(computeLastContactAttemptAt(interactions)).toBe(callNoAnswer.occurredAt);
+    expect(computeLastCustomerEngagementAt(interactions)).toBeNull();
+  });
+
+  it('D) call connected outbound -> os três', () => {
+    const interactions = [callConnected];
+    expect(computeLastActivityAt(interactions)).toBe(callConnected.occurredAt);
+    expect(computeLastContactAttemptAt(interactions)).toBe(callConnected.occurredAt);
+    expect(computeLastCustomerEngagementAt(interactions)).toBe(callConnected.occurredAt);
+  });
+
+  it('E) whatsapp outbound attempt -> activity + attempt, não engagement', () => {
+    const interactions = [whatsappSent];
+    expect(computeLastActivityAt(interactions)).toBe(whatsappSent.occurredAt);
+    expect(computeLastContactAttemptAt(interactions)).toBe(whatsappSent.occurredAt);
+    expect(computeLastCustomerEngagementAt(interactions)).toBeNull();
+  });
+
+  it('F) whatsapp inbound engagement -> activity + engagement, NÃO attempt', () => {
+    const interactions = [whatsappReceived];
+    expect(computeLastActivityAt(interactions)).toBe(whatsappReceived.occurredAt);
+    expect(computeLastContactAttemptAt(interactions)).toBeNull();
+    expect(computeLastCustomerEngagementAt(interactions)).toBe(whatsappReceived.occurredAt);
+  });
+
+  it('G) meeting held outbound engagement -> os três', () => {
+    const interactions = [meetingHeld];
+    expect(computeLastActivityAt(interactions)).toBe(meetingHeld.occurredAt);
+    expect(computeLastContactAttemptAt(interactions)).toBe(meetingHeld.occurredAt);
+    expect(computeLastCustomerEngagementAt(interactions)).toBe(meetingHeld.occurredAt);
+  });
+
+  it('H) proposal sent outbound attempt -> activity, NÃO attempt (contact), NÃO engagement [decisão da Fase 2B]', () => {
+    const interactions = [proposalSent];
+    expect(computeLastActivityAt(interactions)).toBe(proposalSent.occurredAt);
+    expect(computeLastContactAttemptAt(interactions)).toBeNull();
+    expect(computeLastCustomerEngagementAt(interactions)).toBeNull();
+  });
+
+  it('I) occurredAt fora de ordem de inserção -> usa o maior occurredAt, não a posição no array', () => {
+    const interactions = [callConnected, callNoAnswer]; // callConnected (dia 3) inserido antes de callNoAnswer (dia 2)
+    expect(computeLastContactAttemptAt(interactions)).toBe(callConnected.occurredAt);
+  });
+
+  it('J) legado (metadata null / stage_change antigo sem activity_class) -> conta em activity, nunca em attempt/engagement', () => {
+    const interactions = [legacyNote, legacyStageChange];
+    expect(computeLastActivityAt(interactions)).toBe(legacyStageChange.occurredAt);
+    expect(computeLastContactAttemptAt(interactions)).toBeNull();
+    expect(computeLastCustomerEngagementAt(interactions)).toBeNull();
+  });
+
+  it('K) cenário real homologado da Lilliane: call no_answer depois call connected -> tentativa e engajamento acompanham o connected (mais recente)', () => {
+    const interactions = [callNoAnswer, callConnected]; // no_answer em 02/10, connected em 03/10
+    expect(computeLastContactAttemptAt(interactions)).toBe(callConnected.occurredAt);
+    expect(computeLastCustomerEngagementAt(interactions)).toBe(callConnected.occurredAt);
   });
 });
