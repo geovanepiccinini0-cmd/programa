@@ -4,6 +4,15 @@ import { todayStr, normalizeBackup } from '../utils.js';
 import { leadsApi, tasksApi, templatesApi, interactionsApi, auditLogApi } from '../lib/db.js';
 import { supabase } from '../lib/supabaseClient.js';
 
+// Infraestrutura RESERVADA para um futuro motor de automações comerciais
+// (lead sem resposta, pós-proposta, reativação etc.) — ver decisão em
+// docs/CRM_V2_PHASE_01_REPORT.md / discussão da correção de duplicidade
+// Follow-up x Contato. NÃO é mais chamada automaticamente pelo simples
+// preenchimento de proximoContato no salvamento/carregamento do lead:
+// isso passou a gerar/reconciliar só a tarefa "Contato" (origem
+// 'lead-agenda', via computeLeadAgendaTaskData/reconcileLeadAgendaActions).
+// Mantida para uso futuro por uma automação com condição própria
+// explícita (não "proximoContato preenchido").
 export function pendingAutoTasksForLeads(leads, tasks) {
   const today = todayStr();
   const pending = [];
@@ -20,6 +29,9 @@ export function pendingAutoTasksForLeads(leads, tasks) {
   return pending;
 }
 
+// Infraestrutura RESERVADA, assim como pendingAutoTasksForLeads acima:
+// só sincroniza horário de tarefas origem='auto' (geradas por
+// pendingAutoTasksForLeads). Sem chamada automática nesta fase.
 export function autoTaskHorarioUpdates(leads, tasks) {
   const updates = [];
   leads.forEach((l) => {
@@ -138,6 +150,13 @@ async function logStageChange(prevLead, updatedLead) {
   }
 }
 
+// Concluir uma tarefa vinculada a um lead (Contato/lead-agenda ou, se
+// existir, Follow-up/auto) zera o próximo contato do lead — regra
+// preservada da versão anterior, agora isolada para ser testável.
+export function shouldClearNextContato(task, concluindo) {
+  return Boolean(concluindo && task.leadId && (task.origem === 'auto' || task.origem === 'lead-agenda'));
+}
+
 function applyRealtimeChange(setState, fromRow, payload) {
   if (payload.eventType === 'DELETE') {
     setState((prev) => prev.filter((item) => item.id !== payload.old.id));
@@ -176,21 +195,18 @@ export function useAppState(userId) {
 
         if (!autoTasksChecked.current) {
           autoTasksChecked.current = true;
-          const pending = [
-            ...pendingAutoTasksForLeads(leadsData, tasksData),
-            ...pendingRotinaTasks(templatesData, tasksData),
-          ];
+          // pendingAutoTasksForLeads/autoTaskHorarioUpdates (origem 'auto')
+          // NÃO são chamadas aqui de propósito: um reload da aplicação não
+          // deve recriar tarefas Follow-up só porque o lead tem
+          // proximoContato preenchido. Isso é infraestrutura reservada
+          // para um futuro motor de automações — ver comentário acima das
+          // funções. proximoContato é reconciliado só para a tarefa
+          // "Contato" (lead-agenda) logo abaixo.
+          const pending = pendingRotinaTasks(templatesData, tasksData);
           for (const p of pending) {
             const inserted = await tasksApi.insert(p);
             if (cancelled) return;
             setTasks((prev) => [...prev, inserted]);
-          }
-
-          const horarioUpdates = autoTaskHorarioUpdates(leadsData, tasksData);
-          for (const u of horarioUpdates) {
-            const updated = await tasksApi.update(u.id, u);
-            if (cancelled) return;
-            setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
           }
 
           const leadAgendaActions = reconcileLeadAgendaActions(leadsData, tasksData);
@@ -226,16 +242,11 @@ export function useAppState(userId) {
       : await leadsApi.insert({ ...data, criadoEm: todayStr(), ultimaAtualizacao: todayStr() });
     setLeads((prev) => (id ? prev.map((l) => (l.id === id ? saved : l)) : [...prev, saved]));
     if (etapaChanged) await logStageChange(prevLead, saved);
-    const pending = pendingAutoTasksForLeads([saved], tasks);
-    for (const p of pending) {
-      const inserted = await tasksApi.insert(p);
-      setTasks((prev) => [...prev, inserted]);
-    }
-    const horarioUpdates = autoTaskHorarioUpdates([saved], tasks);
-    for (const u of horarioUpdates) {
-      const updated = await tasksApi.update(u.id, u);
-      setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
-    }
+    // proximoContato é um AGENDAMENTO: gera/reconcilia só a tarefa
+    // "Contato" (lead-agenda). NÃO dispara pendingAutoTasksForLeads
+    // (Follow-up/origem 'auto') — isso ficou reservado para uma automação
+    // futura com condição própria, não para o simples preenchimento de
+    // próximo contato. Ver comentário nas duas funções acima.
     await applyLeadAgendaActions(reconcileLeadAgendaActions([saved], tasks), setTasks);
   }, [tasks, leads]);
 
@@ -287,8 +298,7 @@ export function useAppState(userId) {
     const updated = await tasksApi.update(id, { ...t, concluida: concluindo });
     setTasks((prev) => prev.map((x) => (x.id === id ? updated : x)));
 
-    const ehFollowUpDeLead = concluindo && t.leadId && (t.origem === 'auto' || t.origem === 'lead-agenda');
-    if (ehFollowUpDeLead) {
+    if (shouldClearNextContato(t, concluindo)) {
       const lead = leads.find((l) => l.id === t.leadId);
       if (lead && lead.proximoContato) {
         const cleared = await leadsApi.update(lead.id, { ...lead, proximoContato: '', proximoContatoHorario: '' });
