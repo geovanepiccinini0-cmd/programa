@@ -1,4 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+// Fase 2C.2A — logStageChange chama interactionsApi/auditLogApi de
+// '../lib/db.js' direto (sem injeção de dependência, diferente de
+// runCompleteTaskWithResult). Para testar sem bater no Supabase real,
+// mocka-se só esse módulo; as demais funções testadas neste arquivo são
+// puras e nunca tocam db.js.
+vi.mock('../lib/db.js', () => ({
+  leadsApi: {}, tasksApi: {}, templatesApi: {},
+  interactionsApi: { insert: vi.fn(), fetchAllForUser: vi.fn() },
+  auditLogApi: { insert: vi.fn() },
+}));
+
 import {
   pendingAutoTasksForLeads, autoTaskHorarioUpdates, pendingRotinaTasks,
   computeLeadAgendaTaskData, reconcileLeadAgendaActions,
@@ -7,7 +19,9 @@ import {
   computeLastActivityAt, computeLastContactAttemptAt, computeLastCustomerEngagementAt,
   computeCommercialInteractionData,
   shouldOfferResultCapture, runCompleteTaskWithResult,
+  logStageChange, insertInteractionAndTrack,
 } from './useAppState.js';
+import { interactionsApi, auditLogApi } from '../lib/db.js';
 import { todayStr } from '../utils.js';
 import { DIAS_SEMANA } from '../constants.js';
 
@@ -587,4 +601,260 @@ describe('Fase 2B — matriz completa dos três relógios (trava a decisão sem�
     expect(computeLastContactAttemptAt(interactions)).toBe(callConnected.occurredAt);
     expect(computeLastCustomerEngagementAt(interactions)).toBe(callConnected.occurredAt);
   });
+});
+
+describe('Fase 2C.2A — logStageChange (único ponto de escrita de interactions fora de useState que não usa DI)', () => {
+  const prevLead = { id: 'lead-1', etapa: 'Negociação' };
+  const updatedLead = { id: 'lead-1', etapa: 'Ganho' };
+
+  beforeEach(() => {
+    interactionsApi.insert.mockReset();
+    auditLogApi.insert.mockReset();
+  });
+
+  it('1) etapa mudou: insere a interação e aplica a LINHA DEVOLVIDA pelo insert ao estado (nunca um objeto local inventado)', async () => {
+    const insertedRow = { id: 'int-server-1', leadId: 'lead-1', type: 'stage_change', metadata: { from_stage: 'Negociação', to_stage: 'Ganho', activity_class: 'internal', source: 'user' } };
+    interactionsApi.insert.mockResolvedValueOnce(insertedRow);
+    auditLogApi.insert.mockResolvedValueOnce({});
+    const setInteractions = vi.fn();
+
+    await logStageChange(prevLead, updatedLead, 'user-abc', setInteractions);
+
+    expect(interactionsApi.insert).toHaveBeenCalledTimes(1);
+    expect(setInteractions).toHaveBeenCalledTimes(1);
+    const updater = setInteractions.mock.calls[0][0];
+    expect(updater([])).toEqual([insertedRow]); // é a linha do servidor, não um objeto recriado localmente
+  });
+
+  it('2) etapa não mudou: não insere nada e não chama setInteractions (sem duplicidade/ruído no estado)', async () => {
+    const setInteractions = vi.fn();
+    await logStageChange(prevLead, { id: 'lead-1', etapa: 'Negociação' }, 'user-abc', setInteractions);
+    expect(interactionsApi.insert).not.toHaveBeenCalled();
+    expect(setInteractions).not.toHaveBeenCalled();
+  });
+
+  it('3) falha no insert: não chama setInteractions (nenhuma interação fantasma no estado) e não propaga o erro (mudança de etapa já persistida não pode cair)', async () => {
+    interactionsApi.insert.mockRejectedValueOnce(new Error('relation "lead_interactions" does not exist'));
+    const setInteractions = vi.fn();
+
+    await expect(logStageChange(prevLead, updatedLead, 'user-abc', setInteractions)).resolves.toBeUndefined();
+    expect(setInteractions).not.toHaveBeenCalled();
+  });
+
+  it('4) falha no audit_log depois do insert de sucesso: a interação já aplicada ao estado não é desfeita (decisão explícita, sem rollback)', async () => {
+    const insertedRow = { id: 'int-server-2', leadId: 'lead-1' };
+    interactionsApi.insert.mockResolvedValueOnce(insertedRow);
+    auditLogApi.insert.mockRejectedValueOnce(new Error('relation "audit_log" does not exist'));
+    const setInteractions = vi.fn();
+
+    await expect(logStageChange(prevLead, updatedLead, 'user-abc', setInteractions)).resolves.toBeUndefined();
+    expect(setInteractions).toHaveBeenCalledTimes(1);
+  });
+
+  it('5) setInteractions é chamado no máximo uma vez por chamada (sem duplicidade)', async () => {
+    interactionsApi.insert.mockResolvedValueOnce({ id: 'int-server-3', leadId: 'lead-1' });
+    auditLogApi.insert.mockResolvedValueOnce({});
+    const setInteractions = vi.fn();
+
+    await logStageChange(prevLead, updatedLead, 'user-abc', setInteractions);
+
+    expect(setInteractions.mock.calls.length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('Fase 2C.2A.1 — insertInteractionAndTrack (helper extraído, usado por addInteractionNote/registerCommercialInteraction/completeTaskWithResult)', () => {
+  beforeEach(() => {
+    interactionsApi.insert.mockReset();
+  });
+
+  it('insere UMA vez e aplica a linha devolvida pelo servidor ao estado UMA vez, devolvendo essa mesma linha', async () => {
+    const insertedRow = { id: 'int-x', leadId: 'lead-1', type: 'note' };
+    interactionsApi.insert.mockResolvedValueOnce(insertedRow);
+    const setInteractions = vi.fn();
+    const payload = { leadId: 'lead-1', type: 'note', content: 'oi' };
+
+    const result = await insertInteractionAndTrack(payload, setInteractions);
+
+    expect(interactionsApi.insert).toHaveBeenCalledTimes(1);
+    expect(interactionsApi.insert).toHaveBeenCalledWith(payload);
+    expect(setInteractions).toHaveBeenCalledTimes(1);
+    expect(setInteractions.mock.calls[0][0]([])).toEqual([insertedRow]);
+    expect(result).toBe(insertedRow); // a mesma linha, não uma cópia reconstruída
+  });
+
+  it('insert falha: setInteractions não é chamado (nenhuma interaction fantasma) e o erro propaga para o chamador decidir', async () => {
+    interactionsApi.insert.mockRejectedValueOnce(new Error('Falha de rede simulada'));
+    const setInteractions = vi.fn();
+
+    await expect(insertInteractionAndTrack({ leadId: 'lead-1' }, setInteractions)).rejects.toThrow('Falha de rede simulada');
+    expect(setInteractions).not.toHaveBeenCalled();
+  });
+});
+
+describe('Fase 2C.2A.1 — addInteractionNote (composição real: computeNoteInteractionData + insertInteractionAndTrack)', () => {
+  // addInteractionNote, dentro do hook, é literalmente
+  // `(leadId, content) => insertInteractionAndTrack(computeNoteInteractionData(leadId, content, userId), setInteractions)`
+  // — sem lógica extra. Testar essa composição direta exercita o
+  // comportamento real da função sem precisar renderizar o hook (zero
+  // React Testing Library no projeto).
+  beforeEach(() => {
+    interactionsApi.insert.mockReset();
+  });
+
+  it('computeNoteInteractionData produz o payload correto, passado intacto para interactionsApi.insert (1x)', async () => {
+    const insertedRow = { id: 'int-note-1', leadId: 'lead-1', type: 'note', content: 'ligar de novo' };
+    interactionsApi.insert.mockResolvedValueOnce(insertedRow);
+    const setInteractions = vi.fn();
+
+    const payload = computeNoteInteractionData('lead-1', 'ligar de novo', 'user-abc');
+    const result = await insertInteractionAndTrack(payload, setInteractions);
+
+    expect(interactionsApi.insert).toHaveBeenCalledTimes(1);
+    expect(interactionsApi.insert).toHaveBeenCalledWith(payload);
+    expect(payload).toMatchObject({ leadId: 'lead-1', type: 'note', content: 'ligar de novo', createdBy: 'user-abc', metadata: { activity_class: 'internal', source: 'user' } });
+    // a row que "entra no state" e é devolvida é a do servidor, não o payload local:
+    expect(setInteractions.mock.calls[0][0]([])).toEqual([insertedRow]);
+    expect(result).toBe(insertedRow);
+  });
+
+  it('insert falha: state não recebe interaction falsa (mesma semântica de erro de sempre)', async () => {
+    interactionsApi.insert.mockRejectedValueOnce(new Error('Falha de rede simulada'));
+    const setInteractions = vi.fn();
+
+    await expect(
+      insertInteractionAndTrack(computeNoteInteractionData('lead-1', 'nota', 'user-abc'), setInteractions),
+    ).rejects.toThrow('Falha de rede simulada');
+    expect(setInteractions).not.toHaveBeenCalled();
+  });
+});
+
+describe('Fase 2C.2A.1 — registerCommercialInteraction (composição real: computeCommercialInteractionData + insertInteractionAndTrack)', () => {
+  beforeEach(() => {
+    interactionsApi.insert.mockReset();
+  });
+
+  it('computeCommercialInteractionData continua sendo a fonte única de classificação, passada intacta para o insert (1x)', async () => {
+    const insertedRow = { id: 'int-com-1', leadId: 'lead-1', type: 'call', metadata: { activity_class: 'engagement', outcome: 'connected', source: 'user' } };
+    interactionsApi.insert.mockResolvedValueOnce(insertedRow);
+    const setInteractions = vi.fn();
+
+    const payload = computeCommercialInteractionData('lead-1', 'call_connected', 'user-abc');
+    const result = await insertInteractionAndTrack(payload, setInteractions);
+
+    expect(interactionsApi.insert).toHaveBeenCalledTimes(1);
+    expect(interactionsApi.insert).toHaveBeenCalledWith(payload);
+    expect(payload).toMatchObject({ type: 'call', direction: 'outbound', metadata: { activity_class: 'engagement', outcome: 'connected' } });
+    expect(setInteractions.mock.calls[0][0]([])).toEqual([insertedRow]);
+    expect(result).toBe(insertedRow);
+  });
+
+  it('insert falha: zero atualização de state', async () => {
+    interactionsApi.insert.mockRejectedValueOnce(new Error('Falha de rede simulada'));
+    const setInteractions = vi.fn();
+
+    await expect(
+      insertInteractionAndTrack(computeCommercialInteractionData('lead-1', 'whatsapp_sent', 'user-abc'), setInteractions),
+    ).rejects.toThrow('Falha de rede simulada');
+    expect(setInteractions).not.toHaveBeenCalled();
+  });
+});
+
+describe('Fase 2C.2A.1 — completeTaskWithResult, cabo real (runCompleteTaskWithResult + insertInteractionAndTrack, exatamente como no hook)', () => {
+  // Reproduz a composição exata usada dentro de useAppState.js:
+  //   insertInteraction: (data) => insertInteractionAndTrack(data, setInteractions)
+  // Isso cobre a ligação real interactionsApi.insert -> row do servidor ->
+  // setInteractions (1x), por cima da orquestração pura já testada acima
+  // (Fase 2A.3), sem duplicar nenhuma lógica de produção.
+  const leadAgendaTask = { id: 't1', leadId: 'l1', origem: 'lead-agenda' };
+
+  beforeEach(() => {
+    interactionsApi.insert.mockReset();
+  });
+
+  it('Atendeu: 1 insert + 1 setInteractions + toggleTask chamado depois', async () => {
+    const insertedRow = { id: 'int-1', leadId: 'l1', type: 'call' };
+    interactionsApi.insert.mockResolvedValueOnce(insertedRow);
+    const setInteractions = vi.fn();
+    const toggleTask = vi.fn(async () => {});
+
+    await runCompleteTaskWithResult(leadAgendaTask, 'call_connected', 'user-abc', {
+      insertInteraction: (data) => insertInteractionAndTrack(data, setInteractions),
+      toggleTask,
+    });
+
+    expect(interactionsApi.insert).toHaveBeenCalledTimes(1);
+    expect(setInteractions).toHaveBeenCalledTimes(1);
+    expect(setInteractions.mock.calls[0][0]([])).toEqual([insertedRow]);
+    expect(toggleTask).toHaveBeenCalledWith('t1');
+  });
+
+  it('Não atendeu: 1 insert + 1 setInteractions', async () => {
+    interactionsApi.insert.mockResolvedValueOnce({ id: 'int-2', leadId: 'l1', type: 'call' });
+    const setInteractions = vi.fn();
+    const toggleTask = vi.fn(async () => {});
+
+    await runCompleteTaskWithResult(leadAgendaTask, 'call_no_answer', 'user-abc', {
+      insertInteraction: (data) => insertInteractionAndTrack(data, setInteractions),
+      toggleTask,
+    });
+
+    expect(interactionsApi.insert).toHaveBeenCalledTimes(1);
+    expect(setInteractions).toHaveBeenCalledTimes(1);
+  });
+
+  it('insert falha: zero setInteractions e toggleTask NÃO é chamado', async () => {
+    interactionsApi.insert.mockRejectedValueOnce(new Error('Falha de rede simulada'));
+    const setInteractions = vi.fn();
+    const toggleTask = vi.fn(async () => {});
+
+    await expect(
+      runCompleteTaskWithResult(leadAgendaTask, 'call_connected', 'user-abc', {
+        insertInteraction: (data) => insertInteractionAndTrack(data, setInteractions),
+        toggleTask,
+      }),
+    ).rejects.toThrow('Falha de rede simulada');
+
+    expect(setInteractions).not.toHaveBeenCalled();
+    expect(toggleTask).not.toHaveBeenCalled();
+  });
+
+  it('toggleTask falha depois do insert: a interaction já aplicada ao estado permanece (sem rollback)', async () => {
+    const insertedRow = { id: 'int-3', leadId: 'l1', type: 'call' };
+    interactionsApi.insert.mockResolvedValueOnce(insertedRow);
+    const setInteractions = vi.fn();
+    const toggleTask = vi.fn(async () => { throw new Error('Falha ao concluir a tarefa'); });
+
+    await expect(
+      runCompleteTaskWithResult(leadAgendaTask, 'call_connected', 'user-abc', {
+        insertInteraction: (data) => insertInteractionAndTrack(data, setInteractions),
+        toggleTask,
+      }),
+    ).rejects.toThrow('Falha ao concluir a tarefa');
+
+    expect(setInteractions).toHaveBeenCalledTimes(1);
+    expect(setInteractions.mock.calls[0][0]([])).toEqual([insertedRow]); // permanece, não é desfeita
+  });
+
+  it('nunca chama insertInteractionAndTrack mais de uma vez por chamada (sem duplicidade de interaction no state)', async () => {
+    interactionsApi.insert.mockResolvedValueOnce({ id: 'int-4', leadId: 'l1', type: 'call' });
+    const setInteractions = vi.fn();
+    const toggleTask = vi.fn(async () => {});
+
+    await runCompleteTaskWithResult(leadAgendaTask, 'call_connected', 'user-abc', {
+      insertInteraction: (data) => insertInteractionAndTrack(data, setInteractions),
+      toggleTask,
+    });
+
+    expect(interactionsApi.insert.mock.calls.length).toBe(1);
+    expect(setInteractions.mock.calls.length).toBe(1);
+  });
+
+  // "Só concluir" não passa por runCompleteTaskWithResult/insertInteractionAndTrack
+  // de forma alguma: confirmado por leitura de TaskCompletionControl.jsx
+  // (intocado nesta fase) — o botão "Só concluir" chama onToggleTask(task.id)
+  // DIRETO (linha 64), nunca onCompleteWithResult. Como são caminhos de
+  // código inteiramente separados (toggleTask não importa interactionsApi),
+  // "zero insert + zero state update" é garantido pela própria separação de
+  // responsabilidades, não por este teste — documentado aqui em vez de
+  // simulado artificialmente.
 });
