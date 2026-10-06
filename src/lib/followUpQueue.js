@@ -1,4 +1,6 @@
 import { evaluateFollowUpEligibility, FOLLOW_UP_STATUS, FOLLOW_UP_POLICY } from './followUpEngine.js';
+import { evaluateNextBestAction } from './nextBestAction.js';
+import { presentNextBestAction } from './nextBestActionPresentation.js';
 
 // Fase 2C.2A — camada de domínio da fila de follow-up ("Shadow Mode").
 // Pura: sem Supabase, sem React, sem useAppState, sem fetch, nunca muta
@@ -12,6 +14,19 @@ import { evaluateFollowUpEligibility, FOLLOW_UP_STATUS, FOLLOW_UP_POLICY } from 
 // apresentação (Fase 2C.2B), não desta função. Isso mantém o domínio
 // auditável por completo (inclusive para Shadow Mode conferir blockers
 // de leads terminais, se precisar).
+//
+// Fase 2E.3 — Next Best Action em modo shadow/display-only. Calculado
+// aqui (mesmo lugar que já tem lead+evaluation juntos, sem precisar de
+// uma segunda passagem/indexação) via evaluateNextBestAction (2E.1) +
+// presentNextBestAction (2E.2) — nenhuma das duas reavalia reason/
+// blockers/attemptCount, só leem o que evaluateFollowUpEligibility já
+// decidiu. Só `nbaPresentation` ({actionLabel, reasonLabel} ou null) é
+// exposto no item — o objeto `nba` bruto não tem nenhum consumidor
+// concreto na UI ainda, então não entra no contrato para não aumentá-lo
+// sem necessidade real. `nbaPresentation` é puro metadado informativo:
+// nunca participa de status/reason/dueAt/attemptCount/sort/filtros, e a
+// CTA assistida (2D.1/2D.2) continua decidida exclusivamente por
+// evaluation.suggestedAction, nunca por este campo.
 
 // Agrupa uma lista em um Map<leadId, item[]> numa única passagem —
 // evita O(leads × interactions)/O(leads × tasks): a indexação é
@@ -42,9 +57,11 @@ export function buildFollowUpQueue({ leads, interactions, tasks, now, policy = F
       const leadInteractions = interactionsByLead.get(lead && lead.id) || [];
       const leadTasks = tasksByLead.get(lead && lead.id) || [];
       const evaluation = evaluateFollowUpEligibility({ lead, interactions: leadInteractions, tasks: leadTasks, now, policy });
-      return { lead, evaluation, error: null };
+      const nba = evaluateNextBestAction({ lead, followUpEvaluation: evaluation });
+      const nbaPresentation = presentNextBestAction(nba);
+      return { lead, evaluation, error: null, nbaPresentation };
     } catch (e) {
-      return { lead, evaluation: null, error: (e && e.message) || 'Falha ao avaliar este lead.' };
+      return { lead, evaluation: null, error: (e && e.message) || 'Falha ao avaliar este lead.', nbaPresentation: null };
     }
   });
 }
