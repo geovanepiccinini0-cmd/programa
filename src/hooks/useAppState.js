@@ -257,6 +257,15 @@ export async function insertInteractionAndTrack(data, setInteractions) {
   return inserted;
 }
 
+// Fase 2C.2B — extraída do efeito de bootstrap/retry de interactions só
+// para poder testar, sem renderizar o hook, a única decisão real que o
+// efeito toma antes de disparar a query: sem userId, nem chama
+// fetchAllForUser (zero query). Com userId, delega 100% à API já
+// existente — nenhuma lógica nova de leitura.
+export function fetchInteractionsForUser(userId) {
+  return userId ? interactionsApi.fetchAllForUser(userId) : Promise.resolve([]);
+}
+
 // As tabelas lead_interactions/audit_log são novas (Fase 1 V2): se a
 // migration ainda não foi rodada no Supabase, o insert falha — isso não
 // pode derrubar a troca de etapa em si (já persistida em leads), então
@@ -346,6 +355,9 @@ export function useAppState(userId) {
   const [interactions, setInteractions] = useState([]);
   const [interactionsLoading, setInteractionsLoading] = useState(true);
   const [interactionsError, setInteractionsError] = useState(null);
+  // Fase 2C.2B — bump para refazer o fetch (botão "Tentar novamente" do
+  // Shadow Mode); ver efeito abaixo e refetchInteractions.
+  const [interactionsRetryToken, setInteractionsRetryToken] = useState(0);
   const autoTasksChecked = useRef(false);
 
   useEffect(() => {
@@ -400,23 +412,30 @@ export function useAppState(userId) {
   // (mesma assimetria pré-existente identificada na revisão da Fase
   // 2C.2A — fora do escopo desta sub-fase, que trata só de interactions).
   //
-  // Sem userId (nenhum usuário autenticado ainda): nem chama
-  // fetchAllForUser — não há sentido em depender do RLS para "esconder"
-  // um resultado que nunca deveria ter sido pedido.
+  // Fase 2C.2B — `interactionsRetryToken` é o único motivo além de
+  // `userId` para este efeito rodar de novo: "Tentar novamente" (retry)
+  // só incrementa esse contador (refetchInteractions abaixo), reaproveitando
+  // o MESMO efeito/mesma proteção contra race — nunca uma lógica de fetch
+  // separada. Isso garante de graça que um retry antigo nunca sobrescreve
+  // o state de um usuário novo: se `userId` mudar enquanto um retry está
+  // em voo, o cleanup desta mesma execução já marca `cancelled=true` antes
+  // da próxima rodar, exatamente como já acontecia para a troca de userId.
   useEffect(() => {
     let cancelled = false;
     setInteractions([]);
     setInteractionsError(null);
-    if (!userId) {
-      setInteractionsLoading(false);
-      return () => { cancelled = true; };
-    }
-    setInteractionsLoading(true);
-    interactionsApi.fetchAllForUser(userId)
+    setInteractionsLoading(Boolean(userId));
+    fetchInteractionsForUser(userId)
       .then((data) => { if (!cancelled) { setInteractions(data); setInteractionsLoading(false); } })
       .catch((e) => { if (!cancelled) { setInteractionsError(e); setInteractionsLoading(false); } });
     return () => { cancelled = true; };
-  }, [userId]);
+  }, [userId, interactionsRetryToken]);
+
+  // Fase 2C.2B — só dispara o efeito acima de novo (via o token), nunca
+  // duplica a lógica de fetch/loading/error que já vive ali.
+  const refetchInteractions = useCallback(() => {
+    setInteractionsRetryToken((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     const channel = supabase
@@ -614,7 +633,7 @@ export function useAppState(userId) {
 
   return {
     leads, tasks, templates, loading, error,
-    interactions, interactionsLoading, interactionsError,
+    interactions, interactionsLoading, interactionsError, refetchInteractions,
     saveLead, deleteLead, moveStage, setLeadStage,
     addTask, toggleTask, deleteTask, completeTaskWithResult,
     addRotina, toggleRotinaAtiva, deleteRotina,

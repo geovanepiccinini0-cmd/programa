@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Header from './components/Header.jsx';
 import StatsBar from './components/StatsBar.jsx';
 import HojeView from './components/HojeView.jsx';
@@ -23,6 +23,7 @@ const BACKUP_VERSION = 2;
 function CrmApp({ userId, isAdmin, onSignOut }) {
   const {
     leads, tasks, templates, loading, error,
+    interactions, interactionsLoading, interactionsError, refetchInteractions,
     saveLead, deleteLead, moveStage, setLeadStage,
     addTask, toggleTask, deleteTask, completeTaskWithResult,
     addRotina, toggleRotinaAtiva, deleteRotina,
@@ -39,13 +40,23 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
   const [leadModalOpen, setLeadModalOpen] = useState(false);
   const [editingLead, setEditingLead] = useState(null);
   const [exportModalOpen, setExportModalOpen] = useState(false);
-  const [, forceTick] = useState(0);
   const appointmentAlerts = useAppointmentAlerts(tasks, leads);
 
+  // Fase 2C.2B — heartbeat de 60s existente (antes só `forceTick`, um
+  // contador descartado cujo único efeito era forçar um re-render
+  // periódico). Agora guarda um timestamp e devolve, via useMemo, um
+  // `now` com IDENTIDADE ESTÁVEL entre renders — só muda quando o
+  // heartbeat de fato dispara, nunca a cada re-render por outro motivo
+  // (abrir/fechar modal, trocar de aba etc.), o que evitaria invalidar
+  // sem necessidade o useMemo de FollowUpQueue. Nenhum timer novo:
+  // mesmo único setInterval de sempre. useAppointmentAlerts mantém seu
+  // próprio intervalo de 30s, intocado.
+  const [clockTick, setClockTick] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => forceTick((n) => n + 1), 60000);
+    const id = setInterval(() => setClockTick(Date.now()), 60000);
     return () => clearInterval(id);
   }, []);
+  const now = useMemo(() => new Date(clockTick), [clockTick]);
 
   function handleNewLead() {
     setEditingLead(null);
@@ -156,6 +167,12 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
           onToggleTask={toggleTask}
           onDeleteTask={deleteTask}
           onCompleteWithResult={completeTaskWithResult}
+          interactions={interactions}
+          interactionsLoading={interactionsLoading}
+          interactionsError={interactionsError}
+          now={now}
+          onEditLead={handleEditLead}
+          onRetryInteractions={refetchInteractions}
         />
       )}
 

@@ -3,8 +3,12 @@ import { CATS_TASK } from '../constants.js';
 import { todayStr, tomorrowStr } from '../utils.js';
 import TaskGroupedList from './TaskGroupedList.jsx';
 import WeekAgenda from './WeekAgenda.jsx';
+import FollowUpQueue from './FollowUpQueue.jsx';
 
-export default function HojeView({ leads, tasks, onAddTask, onToggleTask, onDeleteTask, onCompleteWithResult }) {
+export default function HojeView({
+  leads, tasks, onAddTask, onToggleTask, onDeleteTask, onCompleteWithResult,
+  interactions, interactionsLoading, interactionsError, now, onEditLead, onRetryInteractions,
+}) {
   const [title, setTitle] = useState('');
   const [cat, setCat] = useState(CATS_TASK[0]);
   const [date, setDate] = useState(todayStr());
@@ -26,6 +30,17 @@ export default function HojeView({ leads, tasks, onAddTask, onToggleTask, onDele
 
   return (
     <section className="view active">
+      <FollowUpQueue
+        leads={leads}
+        interactions={interactions}
+        tasks={tasks}
+        interactionsLoading={interactionsLoading}
+        interactionsError={interactionsError}
+        now={now}
+        onEditLead={onEditLead}
+        onRetryInteractions={onRetryInteractions}
+      />
+
       <div className="add-task-form">
         <input
           type="text"

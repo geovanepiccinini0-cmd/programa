@@ -97,6 +97,55 @@ export function sortDueFollowUps(items) {
     });
 }
 
+function safeTime(iso) {
+  if (!iso) return 0;
+  const t = new Date(iso).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
+function nomeIdKey(lead) {
+  return `${lead.nome || ''}:${lead.id}`;
+}
+
+// Fase 2C.2B — ranking de 'waiting': só dueAt crescente (mais próximo de
+// vencer primeiro) — sem priority/temperature nesta V1 (reason explícita:
+// é uma aba secundária, não a fila principal; se um dia precisar dos
+// mesmos critérios de due, isso é decisão de produto nova, não um
+// "esquecimento" aqui). dueAt ausente/inválido (não deveria ocorrer para
+// um item realmente 'waiting', mas tratado defensivamente) conta como 0,
+// mesma convenção de sortDueFollowUps. Nunca muta o array recebido.
+export function sortWaitingFollowUps(items) {
+  return items
+    .filter((item) => item.evaluation && item.evaluation.status === FOLLOW_UP_STATUS.WAITING)
+    .sort((a, b) => {
+      const dueA = safeTime(a.evaluation.dueAt);
+      const dueB = safeTime(b.evaluation.dueAt);
+      if (dueA !== dueB) return dueA - dueB;
+
+      const keyA = nomeIdKey(a.lead);
+      const keyB = nomeIdKey(b.lead);
+      if (keyA < keyB) return -1;
+      if (keyA > keyB) return 1;
+      return 0;
+    });
+}
+
+// Fase 2C.2B — ranking de 'blocked': alfabético por nome, id como
+// desempate — determinístico, sem depender de dueAt (blocked nunca tem
+// um prazo real, ver evaluateFollowUpEligibility) nem de priority/
+// temperature. Nunca muta o array recebido.
+export function sortBlockedFollowUps(items) {
+  return items
+    .filter((item) => item.evaluation && item.evaluation.status === FOLLOW_UP_STATUS.BLOCKED)
+    .sort((a, b) => {
+      const keyA = nomeIdKey(a.lead);
+      const keyB = nomeIdKey(b.lead);
+      if (keyA < keyB) return -1;
+      if (keyA > keyB) return 1;
+      return 0;
+    });
+}
+
 // Filtros puros simples para a futura UI (2C.2B) — nenhum estado novo,
 // só derivação sobre o resultado de buildFollowUpQueue.
 export function getDueFollowUps(items) {

@@ -69,6 +69,19 @@ header.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-
 .task-del:hover{color:var(--red);}
 .empty-state{text-align:center;padding:30px 10px;color:var(--text-dim);font-size:13px;border:1px dashed var(--border);border-radius:10px;}
 
+/* SHADOW MODE - FOLLOW-UPS SUGERIDOS (Fase 2C.2B) */
+.followup-section{margin-bottom:24px;}
+.followup-subtitle{font-size:12px;color:var(--text-dim);margin:0 0 14px;}
+.followup-list{display:flex;flex-direction:column;}
+.followup-card{display:block;width:100%;text-align:left;font-family:inherit;cursor:pointer;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:12px;margin-bottom:8px;color:var(--text);}
+.followup-card:hover{border-color:var(--blue);}
+.followup-card.compact{padding:9px 12px;}
+.followup-card-top{display:flex;justify-content:space-between;align-items:center;gap:8px;}
+.followup-card-nome{font-size:13.5px;font-weight:700;}
+.followup-card-reason{font-size:13px;font-weight:600;margin-top:4px;}
+.badge-suggestion{background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border);white-space:nowrap;}
+.followup-warning{font-size:11px;color:var(--orange);font-weight:600;margin-top:4px;}
+
 .add-task-form{display:flex;gap:8px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:22px;}
 .add-task-form input[type=text]{flex:2;min-width:160px;}
 input,select,textarea{background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:8px 10px;font-family:inherit;font-size:13px;}
