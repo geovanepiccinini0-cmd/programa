@@ -228,7 +228,7 @@ export function computeLastActivityAt(interactions) {
 // activity_class='attempt' no Activity Engine (não mexemos nessa
 // classificação), mas não conta para ESTE relógio — enviar uma proposta
 // não deve reiniciar a cadência de tentativa de contato.
-const CONTACT_ATTEMPT_TYPES = ['call', 'whatsapp', 'meeting'];
+export const CONTACT_ATTEMPT_TYPES = ['call', 'whatsapp', 'meeting'];
 
 // last_contact_attempt_at: só tipos de contato (ver acima), só
 // direction='outbound' (fomos nós que agimos — uma resposta do cliente,
