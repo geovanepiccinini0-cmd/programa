@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { buildFollowUpQueue, sortDueFollowUps, sortWaitingFollowUps, sortBlockedFollowUps } from '../lib/followUpQueue.js';
 import { FOLLOW_UP_POLICY } from '../lib/followUpEngine.js';
-import { buildTelHref } from '../lib/followUpAction.js';
+import { buildTelHref, buildWhatsAppHref } from '../lib/followUpAction.js';
 import { useCommercialRegistration } from '../hooks/useCommercialRegistration.js';
 import {
   formatFollowUpReason, formatFollowUpTimeLabel, formatSuggestedAction,
@@ -16,8 +16,17 @@ import {
 // NUNCA registra nada sozinho — é só um atalho de conveniência. O
 // resultado comercial (call_connected/call_no_answer) só é registrado
 // quando o vendedor confirma explicitamente no picker que aparece depois
-// de "Ligar". "Cancelar" não registra nada. WhatsApp/reunião/proposta
-// continuam só texto nesta fase (ver investigação 2D.0).
+// de "Ligar". "Cancelar" não registra nada.
+//
+// Fase 2D.2.B — segunda ação assistida (WhatsApp), mesmo contrato:
+// abrir wa.me NUNCA registra `whatsapp_sent` sozinho. Reutiliza
+// integralmente buildWhatsAppHref (2D.2.A, normalização rígida própria
+// de WhatsApp — nunca duplicada aqui) e a mesma instância de
+// useCommercialRegistration já usada pela ligação — só um picker
+// assistido pode estar aberto por vez (assistedLeadId), e o motor nunca
+// sugere `call` e `whatsapp` para o mesmo lead simultaneamente, então
+// não há risco de uma ação pisar na outra. Reunião/proposta continuam
+// só texto nesta fase (ver investigação 2D.0/2D.2.0).
 
 const TABS = [
   { key: 'due', label: 'Precisa de ação' },
@@ -26,6 +35,11 @@ const TABS = [
 ];
 
 const PAGE_SIZE = 20;
+
+// Fase 2D.2.C.1 — mapa de coerência tipo-congelado -> actionKey
+// permitido (ver handleAssistedResult). Módulo-level: estático, não
+// depende de nenhuma prop/state.
+const ASSISTED_RESULT_ACTIONS = { call: ['call_connected', 'call_no_answer'], whatsapp: ['whatsapp_sent'] };
 
 // Fase 2D.1 — picker de resultado pós-"Ligar". Não decide nada sozinho:
 // cada botão só dispara o callback do pai (que chama
@@ -43,7 +57,29 @@ function CallResultPicker({ registering, error, onResult, onCancel }) {
   );
 }
 
-function DueCard({ item, onEditLead, assistedCallLeadId, callRegistering, callError, onStartCall, onCallResult, onCancelCall }) {
+// Fase 2D.2.B — picker de resultado pós-"WhatsApp". Mesmo contrato do
+// CallResultPicker (nenhum botão decide nada sozinho, só dispara o
+// callback do pai), mas com só 2 estados possíveis — nunca um
+// "Cliente respondeu" aqui: resposta inbound é fato distinto, só
+// registrável quando realmente ocorrer, exclusivamente no LeadTimeline
+// (ver investigação 2D.2.0, seção 18). Também não existe um "Não
+// enviei" separado de Cancelar: diferente de uma ligação atendida vs.
+// não atendida (dois FATOS distintos sobre uma ligação que de fato
+// ocorreu), não enviar a mensagem é equivalente a nunca ter aberto o
+// WhatsApp — zero interaction, Cancelar já cobre isso integralmente.
+function WhatsAppResultPicker({ registering, error, onResult, onCancel }) {
+  return (
+    <div className="followup-call-picker">
+      <div className="followup-card-actions">
+        <button type="button" className="chip" disabled={registering} onClick={() => onResult('whatsapp_sent')}>Mensagem enviada</button>
+        <button type="button" className="chip" disabled={registering} onClick={onCancel}>Cancelar</button>
+      </div>
+      {error && <div className="followup-warning">{error}</div>}
+    </div>
+  );
+}
+
+function DueCard({ item, onEditLead, assistedAction, assistedRegistering, assistedError, onStartAssisted, onAssistedResult, onCancelAssisted }) {
   const { lead, evaluation } = item;
   const reason = formatFollowUpReason(evaluation);
   const time = formatFollowUpTimeLabel(evaluation, item.now);
@@ -53,24 +89,39 @@ function DueCard({ item, onEditLead, assistedCallLeadId, callRegistering, callEr
   const timeLine = [time, attempt].filter(Boolean).join(' · ');
   const etapaProduto = [lead.etapa, lead.produto].filter(Boolean).join(' · ');
 
-  // Fase 2D.1 — só "call" ganha CTA executável nesta fase (whatsapp/
-  // meeting/proposal continuam só texto, ver investigação 2D.0). Sem
-  // telefone utilizável -> buildTelHref devolve null -> sem CTA, sem
-  // botão desabilitado (mesma decisão já tomada para o resto do card:
-  // o aviso "Sem telefone cadastrado" abaixo já é suficiente).
+  // Fase 2D.1/2D.2.B — só "call"/"whatsapp" ganham CTA executável nesta
+  // fase (meeting/proposal continuam só texto, ver investigação 2D.0).
+  // O motor nunca sugere os dois tipos ao mesmo tempo para o mesmo lead
+  // (suggestedAction.type é um valor único), então isCallSuggested e
+  // isWhatsappSuggested são sempre mutuamente exclusivos — nunca os dois
+  // CTAs aparecem juntos. Sem telefone utilizável -> builder devolve
+  // null -> sem CTA, sem botão desabilitado (mesma decisão já tomada
+  // para o resto do card: o aviso "Sem telefone cadastrado" abaixo já é
+  // suficiente). buildWhatsAppHref é bem mais rígido que buildTelHref
+  // (ver 2D.2.A) — pode recusar um telefone que buildTelHref aceitaria;
+  // isso nunca é tratado como erro aqui, só como "sem CTA". Isto decide
+  // SÓ se a CTA aparece agora — nunca decide qual picker renderizar
+  // (ver 2D.2.C.1 abaixo, assistedAction.type é quem decide isso).
   const isCallSuggested = evaluation.suggestedAction && evaluation.suggestedAction.type === 'call';
+  const isWhatsappSuggested = evaluation.suggestedAction && evaluation.suggestedAction.type === 'whatsapp';
   const telHref = isCallSuggested ? buildTelHref(lead.telefone) : null;
-  const isAssistingThisLead = assistedCallLeadId === lead.id;
+  const waHref = isWhatsappSuggested ? buildWhatsAppHref(lead.telefone) : null;
+  // Fase 2D.2.C.1 — qual picker aparece depende do TIPO CONGELADO no
+  // momento do clique (assistedAction.type), nunca da suggestedAction
+  // atual do motor — ver o efeito de invalidação em FollowUpQueue, que
+  // fecha o picker (nunca troca de tipo) se a sugestão mudar antes da
+  // confirmação.
+  const isAssistingThisLead = Boolean(assistedAction) && assistedAction.leadId === lead.id;
 
   return (
     <div className="followup-card">
       {/* Fase 2D.1 — o card deixou de ser um único <button> porque agora
-          pode conter um botão de ação real ("Ligar") ao lado do corpo
-          clicável — botão dentro de botão é HTML inválido e quebra
-          acessibilidade. A região informativa vira seu próprio <button>
-          (reset visual via .followup-card-open, mesma aparência de
-          antes), e "Ligar"/o picker ficam como irmãos dele, nunca
-          aninhados — então nenhum clique neles propaga para o
+          pode conter um botão de ação real ("Ligar"/"WhatsApp") ao lado
+          do corpo clicável — botão dentro de botão é HTML inválido e
+          quebra acessibilidade. A região informativa vira seu próprio
+          <button> (reset visual via .followup-card-open, mesma
+          aparência de antes), e a CTA/o picker ficam como irmãos dele,
+          nunca aninhados — então nenhum clique neles propaga para o
           onEditLead, sem precisar de stopPropagation. */}
       <button type="button" className="followup-card-open" onClick={() => onEditLead(lead)}>
         <div className="followup-card-top">
@@ -86,15 +137,36 @@ function DueCard({ item, onEditLead, assistedCallLeadId, callRegistering, callEr
       </button>
       {telHref && !isAssistingThisLead && (
         <div className="followup-card-actions">
-          <a href={telHref} className="icon-btn" onClick={() => onStartCall(lead.id)}>Ligar</a>
+          <a href={telHref} className="icon-btn" onClick={() => onStartAssisted(lead.id, 'call')}>Ligar</a>
         </div>
       )}
-      {isAssistingThisLead && (
+      {waHref && !isAssistingThisLead && (
+        <div className="followup-card-actions">
+          {/* Fase 2D.2.B — target="_blank"+rel="noopener noreferrer":
+              diferente de tel: (que o SO intercepta sem nunca carregar
+              página na aba), wa.me é uma URL http(s) real — sem isso, a
+              própria aba do CRM navegaria para fora caso não haja app/
+              protocolo instalado (ver investigação 2D.2.0). */}
+          <a href={waHref} className="icon-btn" target="_blank" rel="noopener noreferrer" onClick={() => onStartAssisted(lead.id, 'whatsapp')}>WhatsApp</a>
+        </div>
+      )}
+      {/* Fase 2D.2.C.1 — picker escolhido por assistedAction.type
+          (congelado no clique), nunca por isCallSuggested/isWhatsappSuggested
+          (que refletem a sugestão ATUAL do motor, podendo já ter mudado). */}
+      {isAssistingThisLead && assistedAction.type === 'call' && (
         <CallResultPicker
-          registering={callRegistering}
-          error={callError}
-          onResult={(actionKey) => onCallResult(lead.id, actionKey)}
-          onCancel={() => onCancelCall(lead.id)}
+          registering={assistedRegistering}
+          error={assistedError}
+          onResult={(actionKey) => onAssistedResult(lead.id, actionKey)}
+          onCancel={() => onCancelAssisted(lead.id)}
+        />
+      )}
+      {isAssistingThisLead && assistedAction.type === 'whatsapp' && (
+        <WhatsAppResultPicker
+          registering={assistedRegistering}
+          error={assistedError}
+          onResult={(actionKey) => onAssistedResult(lead.id, actionKey)}
+          onCancel={() => onCancelAssisted(lead.id)}
         />
       )}
     </div>
@@ -150,13 +222,33 @@ export default function FollowUpQueue({
 }) {
   const [tab, setTab] = useState('due');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  // Fase 2D.1 — qual lead (no máximo um por vez) está com o picker de
-  // ligação aberto. Vive aqui (no pai), não dentro de DueCard: se a fila
-  // recalcular e esse lead sumir da aba due, o card desmonta mas este
-  // state sobrevive — o efeito abaixo o limpa de forma previsível, sem
-  // crash e sem registrar nada sozinho.
-  const [assistedCallLeadId, setAssistedCallLeadId] = useState(null);
-  const { registering: callRegistering, error: callError, register: registerCall, clearError: clearCallError } = useCommercialRegistration(onRegisterCommercialInteraction);
+  // Fase 2D.1 — qual lead (no máximo um por vez) está com o picker
+  // assistido aberto. Vive aqui (no pai), não dentro de DueCard: se a
+  // fila recalcular e esse lead sumir da aba due, o card desmonta mas
+  // este state sobrevive — o efeito abaixo o limpa de forma previsível,
+  // sem crash e sem registrar nada sozinho.
+  //
+  // Fase 2D.2.B generalizou para `assistedLeadId` (só o id). A 2D.2.C.1
+  // corrigiu um BLOCKER-class HIGH encontrado na auditoria: com só o
+  // leadId, o picker certo (Call/WhatsApp) era escolhido a cada render
+  // pela suggestedAction ATUAL do motor — se o vendedor editasse a
+  // "Próxima ação" do mesmo lead no LeadModal (alcançável: o corpo do
+  // card continua clicável com o picker aberto) ANTES de confirmar, o
+  // picker podia trocar de tipo silenciosamente (ex. abriu WhatsApp,
+  // confirma "Atendeu" de uma ligação que nunca ocorreu). Por isso o
+  // state agora congela `{ leadId, type }` no momento exato do clique
+  // na CTA — representa "a ação que o vendedor efetivamente iniciou",
+  // nunca "a sugestão atual". O efeito de invalidação abaixo fecha o
+  // picker (nunca troca de tipo, nunca registra nada) se a sugestão ou
+  // a executabilidade mudarem antes da confirmação. Continua um único
+  // state (não dois paralelos) e uma ÚNICA instância do hook abaixo
+  // serve as duas ações — só pode haver um registro assistido em
+  // andamento por vez nesta UI.
+  const [assistedAction, setAssistedAction] = useState(null);
+  const {
+    registering: assistedRegistering, error: assistedError,
+    register: registerAssistedAction, clearError: clearAssistedError,
+  } = useCommercialRegistration(onRegisterCommercialInteraction);
 
   useEffect(() => { setVisibleCount(PAGE_SIZE); }, [tab]);
 
@@ -180,38 +272,74 @@ export default function FollowUpQueue({
   );
   const errorCount = useMemo(() => queue.filter((item) => item.error).length, [queue]);
 
-  // Fase 2D.1 — se o lead que estava com o picker aberto sumir da fila
-  // due (ex.: a fila recalculou por outro motivo enquanto o picker
-  // estava aberto), limpa o state em vez de deixá-lo "pendurado" sem
-  // card correspondente. Nunca registra nada por conta própria aqui.
+  // Fase 2D.2.C.1 — invalidação da ação assistida. Três motivos para
+  // fechar o picker, SEMPRE fechando (nunca trocando de tipo, nunca
+  // registrando nada):
+  // 1) o lead saiu de due (mesma proteção da 2D.1/2D.2.B);
+  // 2) a suggestedAction do motor para esse lead deixou de ser do
+  //    MESMO tipo que foi congelado no clique (ex.: vendedor trocou a
+  //    "Próxima ação" no LeadModal de whatsapp para call enquanto o
+  //    picker de WhatsApp estava aberto — o motor agora sugere call,
+  //    mas a ação que o vendedor efetivamente iniciou foi whatsapp;
+  //    nunca mostramos o picker de call aqui, só fechamos);
+  // 3) a ação congelada deixou de ser executável (telefone mudou para
+  //    algo que buildTelHref/buildWhatsAppHref não aceita mais).
+  // Em QUALQUER um dos três casos: fecha, usuário precisa iniciar de
+  // novo a ação correspondente ao estado atual, se ainda fizer sentido.
   useEffect(() => {
-    if (assistedCallLeadId && !dueItems.some((item) => item.lead.id === assistedCallLeadId)) {
-      setAssistedCallLeadId(null);
+    if (!assistedAction) return;
+    const current = dueItems.find((item) => item.lead.id === assistedAction.leadId);
+    if (!current) {
+      setAssistedAction(null);
+      return;
     }
-  }, [dueItems, assistedCallLeadId]);
+    if (!current.evaluation.suggestedAction || current.evaluation.suggestedAction.type !== assistedAction.type) {
+      setAssistedAction(null);
+      return;
+    }
+    const stillExecutable = assistedAction.type === 'call'
+      ? Boolean(buildTelHref(current.lead.telefone))
+      : Boolean(buildWhatsAppHref(current.lead.telefone));
+    if (!stillExecutable) setAssistedAction(null);
+  }, [dueItems, assistedAction]);
 
-  function handleStartCall(leadId) {
-    if (assistedCallLeadId !== leadId) clearCallError();
-    setAssistedCallLeadId(leadId);
+  // Fase 2D.2.C.1 — o clique na CTA congela o tipo junto com o leadId:
+  // `type` só pode ser 'call'/'whatsapp' (validado defensivamente; um
+  // tipo inesperado nunca abre picker, nunca registra nada).
+  function handleStartAssisted(leadId, type) {
+    if (type !== 'call' && type !== 'whatsapp') return;
+    if (!assistedAction || assistedAction.leadId !== leadId) clearAssistedError();
+    setAssistedAction({ leadId, type });
   }
 
-  function handleCancelCall(leadId) {
-    if (assistedCallLeadId !== leadId) return;
-    setAssistedCallLeadId(null);
-    clearCallError();
+  function handleCancelAssisted(leadId) {
+    if (!assistedAction || assistedAction.leadId !== leadId) return;
+    setAssistedAction(null);
+    clearAssistedError();
   }
 
-  async function handleCallResult(leadId, actionKey) {
+  // Fase 2D.2.B — mesmo handler para call e whatsapp: `actionKey` já
+  // vem do chamador (CallResultPicker passa 'call_connected'/
+  // 'call_no_answer', WhatsAppResultPicker passa 'whatsapp_sent').
+  //
+  // Fase 2D.2.C.1 — guard extra de coerência: mesmo que algum chamador
+  // futuro passe um actionKey incompatível com o tipo congelado (ex.
+  // 'whatsapp_sent' numa ação iniciada como 'call'), nunca chega a
+  // criar um fato comercial incompatível — só ignora, sem registrar.
+  async function handleAssistedResult(leadId, actionKey) {
+    if (!assistedAction || assistedAction.leadId !== leadId) return;
+    const allowed = ASSISTED_RESULT_ACTIONS[assistedAction.type];
+    if (!allowed || !allowed.includes(actionKey)) return;
     try {
-      const inserted = await registerCall(leadId, actionKey);
+      const inserted = await registerAssistedAction(leadId, actionKey);
       if (!inserted) return; // guard de duplo clique (register já em andamento)
-      setAssistedCallLeadId(null);
+      setAssistedAction(null);
       // interactions central já atualiza dentro de registerCommercialInteraction
       // (useAppState.js) — a fila recalcula sozinha a partir da prop, sem
       // atualização manual paralela aqui.
     } catch (e) {
-      // erro já populado em callError pelo hook; picker permanece aberto
-      // (continua montado porque o lead, por enquanto, ainda está em due).
+      // erro já populado em assistedError pelo hook; picker permanece
+      // aberto (continua montado porque o lead, por enquanto, ainda está em due).
     }
   }
 
@@ -266,12 +394,12 @@ export default function FollowUpQueue({
                   key={item.lead.id}
                   item={{ ...item, now }}
                   onEditLead={onEditLead}
-                  assistedCallLeadId={assistedCallLeadId}
-                  callRegistering={callRegistering}
-                  callError={callError}
-                  onStartCall={handleStartCall}
-                  onCallResult={handleCallResult}
-                  onCancelCall={handleCancelCall}
+                  assistedAction={assistedAction}
+                  assistedRegistering={assistedRegistering}
+                  assistedError={assistedError}
+                  onStartAssisted={handleStartAssisted}
+                  onAssistedResult={handleAssistedResult}
+                  onCancelAssisted={handleCancelAssisted}
                 />
               ))}
             </div>
