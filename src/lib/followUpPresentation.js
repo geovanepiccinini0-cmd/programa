@@ -1,4 +1,4 @@
-import { FOLLOW_UP_REASON, FOLLOW_UP_STATUS, FOLLOW_UP_POLICY } from './followUpEngine.js';
+import { FOLLOW_UP_REASON, FOLLOW_UP_STATUS, FOLLOW_UP_POLICY, FOLLOW_UP_BLOCKER } from './followUpEngine.js';
 import { NEXT_ACTION_TYPES } from '../constants.js';
 import { formatRelativeTime } from '../utils.js';
 
@@ -83,6 +83,41 @@ export function getOperationalBlockers(evaluation) {
 
 export function formatOperationalBlocker(blockerCode) {
   return OPERATIONAL_BLOCKER_COPY[blockerCode] || null;
+}
+
+// Fase 2C.2B.1 — blockers estruturais/terminais: um lead nesse estado
+// (Ganho, Perdido ou excluído) nunca deve aparecer na aba "Bloqueados",
+// mesmo que TAMBÉM carregue um blocker operacional residual (ex.:
+// etapa_ganho + proximoContato ainda preenchido — um estado alcançável
+// pela UI normal, já que mover um lead para Ganho/Perdido não limpa
+// proximoContato, só a tarefa "Contato" derivada dele). Mantido só aqui,
+// não duplicado em componente/teste. followUpEngine.js não exporta uma
+// lista "terminal" pronta (ABSOLUTE_BLOCKERS de lá mistura estrutural +
+// operacional, propositalmente — é a lista "o que define status=blocked"
+// do motor, não "o que a apresentação deve esconder") — por isso o Set
+// vive aqui, mas reaproveitando os CÓDIGOS de FOLLOW_UP_BLOCKER (nunca
+// strings soltas).
+const TERMINAL_BLOCKERS = new Set([
+  FOLLOW_UP_BLOCKER.DELETED,
+  FOLLOW_UP_BLOCKER.ETAPA_GANHO,
+  FOLLOW_UP_BLOCKER.ETAPA_PERDIDO,
+]);
+
+function hasTerminalBlocker(evaluation) {
+  return evaluation.blockers.some((b) => TERMINAL_BLOCKERS.has(b));
+}
+
+// Única fonte de verdade de apresentação para "este lead blocked deve
+// aparecer na aba Bloqueados?" — FollowUpQueue usa isto tanto para
+// filtrar os cards quanto para o contador da aba (nunca duas regras
+// divergentes). true somente quando: a avaliação existe, o status é
+// 'blocked', ela NÃO carrega nenhum blocker terminal, e carrega pelo
+// menos um blocker operacional.
+export function shouldShowBlockedFollowUp(evaluation) {
+  if (!evaluation) return false;
+  if (evaluation.status !== FOLLOW_UP_STATUS.BLOCKED) return false;
+  if (hasTerminalBlocker(evaluation)) return false;
+  return getOperationalBlockers(evaluation).length > 0;
 }
 
 export function hasMissingPhoneWarning(evaluation) {

@@ -97,10 +97,20 @@ export function sortDueFollowUps(items) {
     });
 }
 
-function safeTime(iso) {
-  if (!iso) return 0;
+// Fase 2C.2B.1 — diferente do fallback de sortDueFollowUps (dueAt
+// ausente conta como timestamp 0, "mais vencido" — decisão deliberada e
+// já publicada para o cenário real never_contacted), aqui um dueAt
+// ausente/inválido conta como +Infinity: fica DEPOIS de qualquer item
+// com prazo conhecido, nunca antes. Para 'waiting' (ordenado por "mais
+// próximo de vencer"), tratar "não sei quando vence" como "é o mais
+// urgente" seria o oposto do que a lista comunica. Na prática o motor
+// nunca produz um item waiting sem dueAt válido (status só vira 'waiting'
+// quando dueAt existe e é futuro) — isto é só hardening defensivo, não
+// um caminho real hoje.
+function waitingSortTime(iso) {
+  if (!iso) return Infinity;
   const t = new Date(iso).getTime();
-  return Number.isNaN(t) ? 0 : t;
+  return Number.isNaN(t) ? Infinity : t;
 }
 
 function nomeIdKey(lead) {
@@ -111,15 +121,13 @@ function nomeIdKey(lead) {
 // vencer primeiro) — sem priority/temperature nesta V1 (reason explícita:
 // é uma aba secundária, não a fila principal; se um dia precisar dos
 // mesmos critérios de due, isso é decisão de produto nova, não um
-// "esquecimento" aqui). dueAt ausente/inválido (não deveria ocorrer para
-// um item realmente 'waiting', mas tratado defensivamente) conta como 0,
-// mesma convenção de sortDueFollowUps. Nunca muta o array recebido.
+// "esquecimento" aqui). Nunca muta o array recebido.
 export function sortWaitingFollowUps(items) {
   return items
     .filter((item) => item.evaluation && item.evaluation.status === FOLLOW_UP_STATUS.WAITING)
     .sort((a, b) => {
-      const dueA = safeTime(a.evaluation.dueAt);
-      const dueB = safeTime(b.evaluation.dueAt);
+      const dueA = waitingSortTime(a.evaluation.dueAt);
+      const dueB = waitingSortTime(b.evaluation.dueAt);
       if (dueA !== dueB) return dueA - dueB;
 
       const keyA = nomeIdKey(a.lead);

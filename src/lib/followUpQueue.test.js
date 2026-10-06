@@ -407,19 +407,43 @@ describe('Fase 2C.2B — sortWaitingFollowUps', () => {
     expect(sorted.map((i) => i.lead.id)).toEqual(['lead-a', 'lead-b']);
   });
 
-  it('dueAt null/inválido tratado deterministicamente (não lança, não gera NaN na ordenação)', () => {
+  it('Fase 2C.2B.1 — B) dueAt válido antes de dueAt null (null vai para o fim, nunca para o início)', () => {
+    const leadValid = makeLead({ id: 'valid-due' });
     const leadNull = makeLead({ id: 'null-due' });
-    const leadInvalid = makeLead({ id: 'invalid-due' });
-    const leadReal = makeLead({ id: 'real-due' });
+    const itemValid = { lead: leadValid, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: hoursAgo(-5) }, error: null }; // vence em 5h
     const itemNull = { lead: leadNull, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: null }, error: null };
+    const sorted = sortWaitingFollowUps([itemNull, itemValid]);
+    expect(sorted.map((i) => i.lead.id)).toEqual(['valid-due', 'null-due']);
+  });
+
+  it('Fase 2C.2B.1 — C) dueAt válido antes de dueAt undefined', () => {
+    const leadValid = makeLead({ id: 'valid-due' });
+    const leadUndefined = makeLead({ id: 'undefined-due' });
+    const itemValid = { lead: leadValid, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: hoursAgo(-5) }, error: null };
+    const itemUndefined = { lead: leadUndefined, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: undefined }, error: null };
+    const sorted = sortWaitingFollowUps([itemUndefined, itemValid]);
+    expect(sorted.map((i) => i.lead.id)).toEqual(['valid-due', 'undefined-due']);
+  });
+
+  it('Fase 2C.2B.1 — D) dueAt válido antes de dueAt inválido (string não parseável)', () => {
+    const leadValid = makeLead({ id: 'valid-due' });
+    const leadInvalid = makeLead({ id: 'invalid-due' });
+    const itemValid = { lead: leadValid, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: hoursAgo(-5) }, error: null };
     const itemInvalid = { lead: leadInvalid, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: 'not-a-date' }, error: null };
-    const itemReal = { lead: leadReal, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: hoursAgo(-5) }, error: null }; // vence em 5h
-    const queue = [itemReal, itemInvalid, itemNull];
+    const sorted = sortWaitingFollowUps([itemInvalid, itemValid]);
+    expect(sorted.map((i) => i.lead.id)).toEqual(['valid-due', 'invalid-due']);
+  });
+
+  it('Fase 2C.2B.1 — E) todos sem dueAt válido: nome/id determina a ordem, nunca lança/gera NaN', () => {
+    const leadNull = makeLead({ id: 'null-due', nome: 'Bruno' });
+    const leadUndefined = makeLead({ id: 'undefined-due', nome: 'Ana' });
+    const leadInvalid = makeLead({ id: 'invalid-due', nome: 'Carlos' });
+    const itemNull = { lead: leadNull, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: null }, error: null };
+    const itemUndefined = { lead: leadUndefined, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: undefined }, error: null };
+    const itemInvalid = { lead: leadInvalid, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: 'not-a-date' }, error: null };
     let sorted;
-    expect(() => { sorted = sortWaitingFollowUps(queue); }).not.toThrow();
-    // null/inválido contam como timestamp 0 -> ordenam antes do item com dueAt real futuro.
-    expect(sorted.map((i) => i.lead.id).slice(0, 2).sort()).toEqual(['invalid-due', 'null-due']);
-    expect(sorted[2].lead.id).toBe('real-due');
+    expect(() => { sorted = sortWaitingFollowUps([itemNull, itemInvalid, itemUndefined]); }).not.toThrow();
+    expect(sorted.map((i) => i.lead.id)).toEqual(['undefined-due', 'null-due', 'invalid-due']); // Ana, Bruno, Carlos
   });
 
   it('não muta o array recebido', () => {

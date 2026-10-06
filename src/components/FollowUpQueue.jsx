@@ -4,7 +4,7 @@ import { FOLLOW_UP_POLICY } from '../lib/followUpEngine.js';
 import {
   formatFollowUpReason, formatFollowUpTimeLabel, formatSuggestedAction,
   getOperationalBlockers, formatOperationalBlocker, hasMissingPhoneWarning,
-  shouldShowAttemptCount, formatAttemptCount,
+  shouldShowAttemptCount, formatAttemptCount, shouldShowBlockedFollowUp,
 } from '../lib/followUpPresentation.js';
 
 // Fase 2C.2B — UI do Shadow Mode. Só recomenda: a única ação possível é
@@ -101,11 +101,15 @@ export default function FollowUpQueue({ leads, interactions, tasks, interactions
 
   const dueItems = useMemo(() => sortDueFollowUps(queue), [queue]);
   const waitingItems = useMemo(() => sortWaitingFollowUps(queue), [queue]);
-  // Oculta blocked puramente estrutural (Ganho/Perdido/deleted): o motor
-  // continua avaliando tudo (buildFollowUpQueue não filtra nada), só a
-  // apresentação decide o que mostrar na aba "Bloqueados".
+  // Oculta blocked puramente estrutural (Ganho/Perdido/deleted) — mesmo
+  // quando também carrega um blocker operacional residual, ver
+  // shouldShowBlockedFollowUp (Fase 2C.2B.1). O motor continua avaliando
+  // tudo (buildFollowUpQueue não filtra nada), só a apresentação decide
+  // o que mostrar na aba "Bloqueados" — e esta é a ÚNICA lista usada
+  // tanto para os cards quanto para o contador da aba (abaixo), nunca
+  // duas fontes divergentes.
   const blockedItems = useMemo(
-    () => sortBlockedFollowUps(queue).filter((item) => getOperationalBlockers(item.evaluation).length > 0),
+    () => sortBlockedFollowUps(queue).filter((item) => shouldShowBlockedFollowUp(item.evaluation)),
     [queue],
   );
   const errorCount = useMemo(() => queue.filter((item) => item.error).length, [queue]);

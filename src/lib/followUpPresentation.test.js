@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatFollowUpReason, formatFollowUpTimeLabel, formatSuggestedAction,
   getOperationalBlockers, formatOperationalBlocker, hasMissingPhoneWarning,
-  shouldShowAttemptCount, formatAttemptCount,
+  shouldShowAttemptCount, formatAttemptCount, shouldShowBlockedFollowUp,
 } from './followUpPresentation.js';
 import { FOLLOW_UP_STATUS, FOLLOW_UP_REASON } from './followUpEngine.js';
 
@@ -159,5 +159,64 @@ describe('Fase 2C.2B — formatAttemptCount', () => {
 
   it('usa o denominador de uma policy customizada, nunca hardcoded', () => {
     expect(formatAttemptCount(makeEvaluation({ attemptCount: 1 }), { maxAttempts: 5 })).toBe('1/5 tentativas');
+  });
+});
+
+describe('Fase 2C.2B.1 — shouldShowBlockedFollowUp (filtro de apresentação: terminal nunca aparece, mesmo com blocker operacional residual)', () => {
+  function blockedEval(blockers) {
+    return makeEvaluation({ status: FOLLOW_UP_STATUS.BLOCKED, reason: null, dueAt: null, blockers });
+  }
+
+  it('A) blockers=[etapa_ganho] -> NÃO aparece', () => {
+    expect(shouldShowBlockedFollowUp(blockedEval(['etapa_ganho']))).toBe(false);
+  });
+
+  it('B) blockers=[etapa_perdido] -> NÃO aparece', () => {
+    expect(shouldShowBlockedFollowUp(blockedEval(['etapa_perdido']))).toBe(false);
+  });
+
+  it('C) blockers=[deleted] -> NÃO aparece', () => {
+    expect(shouldShowBlockedFollowUp(blockedEval(['deleted']))).toBe(false);
+  });
+
+  it('D) blockers=[etapa_ganho, proximo_contato_agendado] -> NÃO aparece (terminal vence, mesmo com operacional residual)', () => {
+    expect(shouldShowBlockedFollowUp(blockedEval(['etapa_ganho', 'proximo_contato_agendado']))).toBe(false);
+  });
+
+  it('E) blockers=[etapa_perdido, lead_agenda_pendente] -> NÃO aparece', () => {
+    expect(shouldShowBlockedFollowUp(blockedEval(['etapa_perdido', 'lead_agenda_pendente']))).toBe(false);
+  });
+
+  it('F) blockers=[deleted, follow_up_automatico_pendente] -> NÃO aparece', () => {
+    expect(shouldShowBlockedFollowUp(blockedEval(['deleted', 'follow_up_automatico_pendente']))).toBe(false);
+  });
+
+  it('G) blockers=[proximo_contato_agendado] -> aparece', () => {
+    expect(shouldShowBlockedFollowUp(blockedEval(['proximo_contato_agendado']))).toBe(true);
+  });
+
+  it('H) blockers=[lead_agenda_pendente] -> aparece', () => {
+    expect(shouldShowBlockedFollowUp(blockedEval(['lead_agenda_pendente']))).toBe(true);
+  });
+
+  it('I) blockers=[follow_up_automatico_pendente] -> aparece', () => {
+    expect(shouldShowBlockedFollowUp(blockedEval(['follow_up_automatico_pendente']))).toBe(true);
+  });
+
+  it('J) múltiplos operational blockers sem terminal -> aparece', () => {
+    expect(shouldShowBlockedFollowUp(blockedEval(['lead_agenda_pendente', 'follow_up_automatico_pendente']))).toBe(true);
+  });
+
+  it('K) blockers=[] -> NÃO aparece', () => {
+    expect(shouldShowBlockedFollowUp(blockedEval([]))).toBe(false);
+  });
+
+  it('L) evaluation null/undefined -> NÃO aparece', () => {
+    expect(shouldShowBlockedFollowUp(null)).toBe(false);
+    expect(shouldShowBlockedFollowUp(undefined)).toBe(false);
+  });
+
+  it('status diferente de blocked -> NÃO aparece, mesmo com blocker operacional (defensivo)', () => {
+    expect(shouldShowBlockedFollowUp(makeEvaluation({ status: FOLLOW_UP_STATUS.DUE, blockers: ['proximo_contato_agendado'] }))).toBe(false);
   });
 });
