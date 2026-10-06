@@ -227,6 +227,22 @@ export function exportLeadsCSV(leads, produtoFiltro, etapaFiltro) {
   return true;
 }
 
+// --- V2 (Fase 1) — compatibilidade de backup V1 ↔ V2 ---
+
+export function isValidBackup(backup) {
+  return Boolean(backup) && Array.isArray(backup.leads) && Array.isArray(backup.tasks);
+}
+
+export function normalizeBackup(backup) {
+  return {
+    backupVersion: backup.backupVersion || 1,
+    leads: backup.leads || [],
+    tasks: backup.tasks || [],
+    templates: backup.templates || [],
+    interactions: backup.interactions || [],
+  };
+}
+
 export function downloadJSON(data, filename) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);

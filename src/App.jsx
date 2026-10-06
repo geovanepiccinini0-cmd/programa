@@ -16,7 +16,7 @@ import { useAppointmentAlerts } from './hooks/useAppointmentAlerts.js';
 import { isSupabaseConfigured } from './lib/supabaseClient.js';
 import { interactionsApi } from './lib/db.js';
 import { STAGES } from './constants.js';
-import { downloadJSON, todayStr } from './utils.js';
+import { downloadJSON, isValidBackup, todayStr } from './utils.js';
 
 const BACKUP_VERSION = 2;
 
@@ -98,7 +98,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
     try {
       const text = await file.text();
       const backup = JSON.parse(text);
-      if (!Array.isArray(backup.leads) || !Array.isArray(backup.tasks)) throw new Error('Arquivo de backup inválido.');
+      if (!isValidBackup(backup)) throw new Error('Arquivo de backup inválido.');
       const substituir = confirm('Importar este backup vai SUBSTITUIR todos os leads, tarefas e rotinas atuais. Deseja continuar?');
       if (!substituir) return;
       await importBackup(backup);

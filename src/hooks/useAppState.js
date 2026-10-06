@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DIAS_SEMANA } from '../constants.js';
-import { todayStr } from '../utils.js';
+import { todayStr, normalizeBackup } from '../utils.js';
 import { leadsApi, tasksApi, templatesApi, interactionsApi, auditLogApi } from '../lib/db.js';
 import { supabase } from '../lib/supabaseClient.js';
 
-function pendingAutoTasksForLeads(leads, tasks) {
+export function pendingAutoTasksForLeads(leads, tasks) {
   const today = todayStr();
   const pending = [];
   leads.forEach((l) => {
@@ -20,7 +20,7 @@ function pendingAutoTasksForLeads(leads, tasks) {
   return pending;
 }
 
-function autoTaskHorarioUpdates(leads, tasks) {
+export function autoTaskHorarioUpdates(leads, tasks) {
   const updates = [];
   leads.forEach((l) => {
     if (!l.proximoContato) return;
@@ -32,7 +32,7 @@ function autoTaskHorarioUpdates(leads, tasks) {
   return updates;
 }
 
-function pendingRotinaTasks(templates, tasks) {
+export function pendingRotinaTasks(templates, tasks) {
   const todayAbrev = DIAS_SEMANA[new Date().getDay()];
   const today = todayStr();
   const pending = [];
@@ -48,7 +48,7 @@ function pendingRotinaTasks(templates, tasks) {
   return pending;
 }
 
-function computeLeadAgendaTaskData(lead) {
+export function computeLeadAgendaTaskData(lead) {
   const ativo = lead.etapa !== 'Ganho' && lead.etapa !== 'Perdido';
   if (!ativo || !lead.proximoContato) return null;
   return {
@@ -62,7 +62,7 @@ function computeLeadAgendaTaskData(lead) {
   };
 }
 
-function reconcileLeadAgendaActions(affectedLeads, tasks) {
+export function reconcileLeadAgendaActions(affectedLeads, tasks) {
   const actions = [];
   affectedLeads.forEach((lead) => {
     const desired = computeLeadAgendaTaskData(lead);
@@ -333,14 +333,15 @@ export function useAppState(userId) {
     setTemplates((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const importBackup = useCallback(async (backup) => {
+  const importBackup = useCallback(async (rawBackup) => {
+    const backup = normalizeBackup(rawBackup);
     await Promise.all(tasks.map((t) => tasksApi.remove(t.id)));
     await Promise.all(leads.map((l) => leadsApi.remove(l.id)));
     await Promise.all(templates.map((t) => templatesApi.remove(t.id)));
 
     const leadIdMap = new Map();
     const newLeads = [];
-    for (const l of backup.leads || []) {
+    for (const l of backup.leads) {
       const inserted = await leadsApi.insert(l);
       leadIdMap.set(l.id, inserted.id);
       newLeads.push(inserted);
@@ -348,14 +349,14 @@ export function useAppState(userId) {
 
     const templateIdMap = new Map();
     const newTemplates = [];
-    for (const tpl of backup.templates || []) {
+    for (const tpl of backup.templates) {
       const inserted = await templatesApi.insert(tpl);
       templateIdMap.set(tpl.id, inserted.id);
       newTemplates.push(inserted);
     }
 
     const newTasks = [];
-    for (const t of backup.tasks || []) {
+    for (const t of backup.tasks) {
       const inserted = await tasksApi.insert({
         ...t,
         leadId: t.leadId ? leadIdMap.get(t.leadId) || null : null,
@@ -365,11 +366,10 @@ export function useAppState(userId) {
     }
 
     // backup.interactions só existe em backups v2 (backupVersion >= 2);
-    // backups v1 não têm essa chave — .interactions || [] trata isso
-    // como "nenhuma interação a restaurar", sem quebrar o restore.
-    // Os leads antigos já foram excluídos acima, o que já apaga em
-    // cascata (on delete cascade) as interações deles no banco.
-    for (const it of backup.interactions || []) {
+    // normalizeBackup já trata backups v1 (sem essa chave) como [],
+    // sem quebrar o restore. Os leads antigos já foram excluídos acima,
+    // o que já apaga em cascata (on delete cascade) as interações deles.
+    for (const it of backup.interactions) {
       if (!it.leadId || !leadIdMap.has(it.leadId)) continue;
       await interactionsApi.insert({ ...it, leadId: leadIdMap.get(it.leadId) });
     }
