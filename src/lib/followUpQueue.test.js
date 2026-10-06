@@ -239,6 +239,20 @@ describe('Fase 2C.2A — buildFollowUpQueue', () => {
     expect(defaultPolicy[0].evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING); // 2h < 24h padrão
     expect(customPolicy[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE); // 2h >= 1h customizado
   });
+
+  it('Fase 2C.2A.1 — policy customizada (congelada) não é mutada; buildFollowUpQueue só repassa ao engine', () => {
+    const customPolicy = Object.freeze({
+      attempt: Object.freeze({ hoursUntilDue: 1 }),
+      proposal: Object.freeze({ hoursUntilDue: 48 }),
+      noNewAttemptSinceEngagement: Object.freeze({ hoursUntilDue: 96 }),
+      maxAttempts: 3,
+      reactivationAfterMaxAttempts: Object.freeze({ daysUntilDue: 7 }),
+    });
+    const lead = makeLead();
+    const attempt = makeInteraction({ occurredAt: hoursAgo(2) });
+
+    expect(() => build([lead], [attempt], [], NOW, customPolicy)).not.toThrow();
+  });
 });
 
 describe('Fase 2C.2A — sortDueFollowUps', () => {
@@ -316,6 +330,22 @@ describe('Fase 2C.2A — sortDueFollowUps', () => {
     const sorted = sortDueFollowUps(queue);
     expect(sorted).toHaveLength(1);
     expect(sorted[0].lead.id).toBe('due');
+  });
+
+  it('Fase 2C.2A.1 — status due com dueAt=null (never_contacted sem createdAt): comportamento atual CONGELADO — comparator trata null como timestamp 0 (mais vencido dentro da mesma priority)', () => {
+    const leadNullDue = makeLead({ id: 'null-due', createdAt: '' });
+    const leadRealDue = makeLead({ id: 'real-due' });
+    const attempt = makeInteraction({ leadId: 'real-due', occurredAt: hoursAgo(30) });
+
+    const queue = build([leadRealDue, leadNullDue], [attempt]);
+    const nullItem = queue.find((i) => i.lead.id === 'null-due');
+    expect(nullItem.evaluation.status).toBe(FOLLOW_UP_STATUS.DUE);
+    expect(nullItem.evaluation.reason).toBe(FOLLOW_UP_REASON.NEVER_CONTACTED);
+    expect(nullItem.evaluation.dueAt).toBeNull();
+
+    const sorted = sortDueFollowUps(queue);
+    // dueAt=null -> tratado como timestamp 0 (1970), portanto "mais vencido" que qualquer dueAt real dentro da mesma priority.
+    expect(sorted.map((i) => i.lead.id)).toEqual(['null-due', 'real-due']);
   });
 });
 

@@ -244,6 +244,19 @@ export function computeLastCustomerEngagementAt(interactions) {
   return maxOccurredAt(interactions, (it) => it.metadata && it.metadata.activity_class === 'engagement');
 }
 
+// Fase 2C.2A.1 — helper neutro para o único padrão repetido em todos os
+// pontos de escrita de interactions (logStageChange, addInteractionNote,
+// registerCommercialInteraction, completeTaskWithResult): insere e aplica
+// a LINHA DEVOLVIDA PELO SERVIDOR ao estado central, nunca um objeto
+// local reconstruído. Extraído só para poder testar essa ligação direto
+// (mockando interactionsApi.insert), sem precisar renderizar o hook —
+// não reimplementa nem decide nada que já não estivesse em cada chamador.
+export async function insertInteractionAndTrack(data, setInteractions) {
+  const inserted = await interactionsApi.insert(data);
+  setInteractions((prev) => [...prev, inserted]);
+  return inserted;
+}
+
 // As tabelas lead_interactions/audit_log são novas (Fase 1 V2): se a
 // migration ainda não foi rodada no Supabase, o insert falha — isso não
 // pode derrubar a troca de etapa em si (já persistida em leads), então
@@ -252,8 +265,7 @@ export async function logStageChange(prevLead, updatedLead, userId, setInteracti
   const interaction = computeStageChangeInteraction(prevLead, updatedLead.etapa, userId);
   if (!interaction) return;
   try {
-    const inserted = await interactionsApi.insert(interaction);
-    setInteractions((prev) => [...prev, inserted]);
+    await insertInteractionAndTrack(interaction, setInteractions);
     await auditLogApi.insert({
       entityType: 'lead',
       entityId: updatedLead.id,
@@ -377,10 +389,29 @@ export function useAppState(userId) {
 
   // Fase 2C.2A — fetch independente, nunca mistura com o loading/error
   // principal (leads/tasks/templates) acima.
+  //
+  // Fase 2C.2A.1 — hardening: `interactions` é invalidado (volta a [])
+  // IMEDIATAMENTE a cada execução deste efeito, antes de buscar os dados
+  // do `userId` atual. Isso garante que, ao trocar de usuário, dados da
+  // sessão anterior nunca fiquem visíveis — nem durante o fetch nem se
+  // ele falhar (sem isso, uma falha no fetch do novo usuário deixaria os
+  // dados do usuário anterior parados no state). Essa mesma invalidação
+  // NÃO foi aplicada ao bootstrap legado de leads/tasks/templates acima
+  // (mesma assimetria pré-existente identificada na revisão da Fase
+  // 2C.2A — fora do escopo desta sub-fase, que trata só de interactions).
+  //
+  // Sem userId (nenhum usuário autenticado ainda): nem chama
+  // fetchAllForUser — não há sentido em depender do RLS para "esconder"
+  // um resultado que nunca deveria ter sido pedido.
   useEffect(() => {
     let cancelled = false;
-    setInteractionsLoading(true);
+    setInteractions([]);
     setInteractionsError(null);
+    if (!userId) {
+      setInteractionsLoading(false);
+      return () => { cancelled = true; };
+    }
+    setInteractionsLoading(true);
     interactionsApi.fetchAllForUser(userId)
       .then((data) => { if (!cancelled) { setInteractions(data); setInteractionsLoading(false); } })
       .catch((e) => { if (!cancelled) { setInteractionsError(e); setInteractionsLoading(false); } });
@@ -454,17 +485,13 @@ export function useAppState(userId) {
     await logStageChange(lead, updated, userId, setInteractions);
   }, [leads, tasks, userId]);
 
-  const addInteractionNote = useCallback(async (leadId, content) => {
-    const inserted = await interactionsApi.insert(computeNoteInteractionData(leadId, content, userId));
-    setInteractions((prev) => [...prev, inserted]);
-    return inserted;
-  }, [userId]);
+  const addInteractionNote = useCallback((leadId, content) => (
+    insertInteractionAndTrack(computeNoteInteractionData(leadId, content, userId), setInteractions)
+  ), [userId]);
 
-  const registerCommercialInteraction = useCallback(async (leadId, action) => {
-    const inserted = await interactionsApi.insert(computeCommercialInteractionData(leadId, action, userId));
-    setInteractions((prev) => [...prev, inserted]);
-    return inserted;
-  }, [userId]);
+  const registerCommercialInteraction = useCallback((leadId, action) => (
+    insertInteractionAndTrack(computeCommercialInteractionData(leadId, action, userId), setInteractions)
+  ), [userId]);
 
   const addTask = useCallback(async (titulo, categoria, data, horario) => {
     const inserted = await tasksApi.insert({ titulo, categoria, data, horario, concluida: false, leadId: null, origem: 'manual' });
@@ -494,11 +521,7 @@ export function useAppState(userId) {
   const completeTaskWithResult = useCallback(async (id, actionKey) => {
     const t = tasks.find((x) => x.id === id);
     await runCompleteTaskWithResult(t, actionKey, userId, {
-      insertInteraction: async (data) => {
-        const inserted = await interactionsApi.insert(data);
-        setInteractions((prev) => [...prev, inserted]);
-        return inserted;
-      },
+      insertInteraction: (data) => insertInteractionAndTrack(data, setInteractions),
       toggleTask,
     });
   }, [tasks, userId, toggleTask]);
