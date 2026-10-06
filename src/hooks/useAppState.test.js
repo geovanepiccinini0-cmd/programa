@@ -3,6 +3,8 @@ import {
   pendingAutoTasksForLeads, autoTaskHorarioUpdates, pendingRotinaTasks,
   computeLeadAgendaTaskData, reconcileLeadAgendaActions,
   computeStageTimestamps, computeStageChangeInteraction, shouldClearNextContato,
+  computeNoteInteractionData,
+  computeLastActivityAt, computeLastContactAt, computeLastCustomerEngagementAt,
 } from './useAppState.js';
 import { todayStr } from '../utils.js';
 import { DIAS_SEMANA } from '../constants.js';
@@ -145,6 +147,95 @@ describe('computeStageChangeInteraction (geração de interações)', () => {
 
   it('retorna null sem lead anterior (criação de lead novo)', () => {
     expect(computeStageChangeInteraction(null, 'Novo Lead')).toBeNull();
+  });
+});
+
+describe('Fase 2A.1 — fundação de dados do Activity/Interaction Engine', () => {
+  it('1) note: activity_class=internal, source=user, created_by preenchido', () => {
+    const data = computeNoteInteractionData('l1', 'Cliente pediu para ligar semana que vem', 'user-abc');
+    expect(data).toMatchObject({
+      leadId: 'l1',
+      type: 'note',
+      content: 'Cliente pediu para ligar semana que vem',
+      metadata: { activity_class: 'internal', source: 'user' },
+      createdBy: 'user-abc',
+    });
+  });
+
+  it('2) stage_change: activity_class=internal, source=user, created_by preenchido, from_stage/to_stage preservados', () => {
+    const prevLead = { id: 'l1', etapa: 'Proposta' };
+    const interaction = computeStageChangeInteraction(prevLead, 'Negociação', 'user-abc');
+    expect(interaction).toMatchObject({
+      leadId: 'l1',
+      type: 'stage_change',
+      createdBy: 'user-abc',
+      metadata: {
+        from_stage: 'Proposta',
+        to_stage: 'Negociação',
+        activity_class: 'internal',
+        source: 'user',
+      },
+    });
+  });
+
+  it('3) last_activity_at considera qualquer classe (até sem metadata)', () => {
+    const interactions = [
+      { occurredAt: '2026-10-01T10:00:00.000Z', metadata: { activity_class: 'internal' } },
+      { occurredAt: '2026-10-02T10:00:00.000Z', metadata: null },
+      { occurredAt: '2026-10-03T10:00:00.000Z', metadata: { activity_class: 'engagement' } },
+    ];
+    expect(computeLastActivityAt(interactions)).toBe('2026-10-03T10:00:00.000Z');
+  });
+
+  it('4) last_contact_at considera attempt + engagement e ignora internal', () => {
+    const interactions = [
+      { occurredAt: '2026-10-01T09:00:00.000Z', metadata: { activity_class: 'attempt' } },
+      { occurredAt: '2026-10-05T09:00:00.000Z', metadata: { activity_class: 'internal' } }, // mais recente, mas ignorado
+      { occurredAt: '2026-10-02T09:00:00.000Z', metadata: { activity_class: 'engagement' } },
+    ];
+    expect(computeLastContactAt(interactions)).toBe('2026-10-02T09:00:00.000Z');
+  });
+
+  it('5) last_customer_engagement_at considera somente engagement', () => {
+    const interactions = [
+      { occurredAt: '2026-10-01T09:00:00.000Z', metadata: { activity_class: 'attempt' } },
+      { occurredAt: '2026-10-02T09:00:00.000Z', metadata: { activity_class: 'engagement' } },
+      { occurredAt: '2026-10-03T09:00:00.000Z', metadata: { activity_class: 'internal' } },
+    ];
+    expect(computeLastCustomerEngagementAt(interactions)).toBe('2026-10-02T09:00:00.000Z');
+  });
+
+  it('6) eventos fora de ordem de inserção: usa occurred_at, não a ordem do array/created_at', () => {
+    const interactions = [
+      { occurredAt: '2026-10-10T09:00:00.000Z', createdAt: '2026-10-01T00:00:00.000Z', metadata: { activity_class: 'engagement' } },
+      { occurredAt: '2026-10-05T09:00:00.000Z', createdAt: '2026-10-09T00:00:00.000Z', metadata: { activity_class: 'engagement' } },
+    ];
+    expect(computeLastCustomerEngagementAt(interactions)).toBe('2026-10-10T09:00:00.000Z');
+  });
+
+  it('7) coleção vazia: resultado previsível (null) para os três relógios', () => {
+    expect(computeLastActivityAt([])).toBeNull();
+    expect(computeLastContactAt([])).toBeNull();
+    expect(computeLastCustomerEngagementAt([])).toBeNull();
+  });
+
+  it('8) apenas eventos internal: last_contact_at e last_customer_engagement_at ficam null (last_activity_at não)', () => {
+    const interactions = [
+      { occurredAt: '2026-10-01T09:00:00.000Z', metadata: { activity_class: 'internal' } },
+      { occurredAt: '2026-10-02T09:00:00.000Z', metadata: { activity_class: 'internal' } },
+    ];
+    expect(computeLastContactAt(interactions)).toBeNull();
+    expect(computeLastCustomerEngagementAt(interactions)).toBeNull();
+    expect(computeLastActivityAt(interactions)).toBe('2026-10-02T09:00:00.000Z');
+  });
+
+  it('9) WhatsApp enviado (attempt) e depois cliente responde (engagement): os dois relógios de contato avançam juntos, conforme o exemplo aprovado', () => {
+    const interactions = [
+      { occurredAt: '2026-10-10T09:00:00.000Z', metadata: { activity_class: 'attempt' } },
+      { occurredAt: '2026-10-10T11:00:00.000Z', metadata: { activity_class: 'engagement' } },
+    ];
+    expect(computeLastContactAt(interactions)).toBe('2026-10-10T11:00:00.000Z');
+    expect(computeLastCustomerEngagementAt(interactions)).toBe('2026-10-10T11:00:00.000Z');
   });
 });
 

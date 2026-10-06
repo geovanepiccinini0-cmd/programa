@@ -117,7 +117,7 @@ export function computeStageTimestamps(etapa) {
   return { wonAt: null, lostAt: null };
 }
 
-export function computeStageChangeInteraction(prevLead, newEtapa) {
+export function computeStageChangeInteraction(prevLead, newEtapa, userId) {
   if (!prevLead || prevLead.etapa === newEtapa) return null;
   return {
     leadId: prevLead.id,
@@ -125,16 +125,74 @@ export function computeStageChangeInteraction(prevLead, newEtapa) {
     channel: 'crm',
     direction: 'internal',
     content: `Etapa alterada de "${prevLead.etapa}" para "${newEtapa}"`,
-    metadata: { from_stage: prevLead.etapa, to_stage: newEtapa },
+    // from_stage/to_stage são o conteúdo original (Fase 1 V2); activity_class/
+    // source são o contrato de metadata da Fase 2A (Activity/Interaction
+    // Engine) — stage_change é sempre atividade interna, nunca contato com
+    // o cliente, mesmo sendo uma ação de um usuário autenticado.
+    metadata: { from_stage: prevLead.etapa, to_stage: newEtapa, activity_class: 'internal', source: 'user' },
+    createdBy: userId || null,
   };
+}
+
+// Nota manual (Fase 2A — Activity/Interaction Engine): também é atividade
+// interna por definição, nunca contato com o cliente.
+export function computeNoteInteractionData(leadId, content, userId) {
+  return {
+    leadId,
+    type: 'note',
+    channel: 'manual',
+    direction: 'internal',
+    content,
+    metadata: { activity_class: 'internal', source: 'user' },
+    createdBy: userId || null,
+  };
+}
+
+// --- Fase 2A.1 — três relógios de atividade/contato, a partir de uma
+// coleção de lead_interactions. Usam occurred_at (não a ordem do array
+// nem created_at). Coleção vazia, ou nenhuma interação da classe
+// buscada, retornam null (documentado: "sem dado" != "contato há muito
+// tempo" — quem consumir isso não deve tratar null como data remota).
+
+function maxOccurredAt(interactions, predicate) {
+  let maxTime = -Infinity;
+  let max = null;
+  interactions.forEach((it) => {
+    if (predicate && !predicate(it)) return;
+    if (!it.occurredAt) return;
+    const t = new Date(it.occurredAt).getTime();
+    if (Number.isNaN(t) || t <= maxTime) return;
+    maxTime = t;
+    max = it.occurredAt;
+  });
+  return max;
+}
+
+// last_activity_at: qualquer interação, qualquer activity_class.
+export function computeLastActivityAt(interactions) {
+  return maxOccurredAt(interactions);
+}
+
+// last_contact_at: activity_class 'attempt' ou 'engagement' — ignora
+// 'internal' (nota manual e troca de etapa não contam como contato).
+export function computeLastContactAt(interactions) {
+  return maxOccurredAt(interactions, (it) => {
+    const cls = it.metadata && it.metadata.activity_class;
+    return cls === 'attempt' || cls === 'engagement';
+  });
+}
+
+// last_customer_engagement_at: só 'engagement' (interação efetiva).
+export function computeLastCustomerEngagementAt(interactions) {
+  return maxOccurredAt(interactions, (it) => it.metadata && it.metadata.activity_class === 'engagement');
 }
 
 // As tabelas lead_interactions/audit_log são novas (Fase 1 V2): se a
 // migration ainda não foi rodada no Supabase, o insert falha — isso não
 // pode derrubar a troca de etapa em si (já persistida em leads), então
 // o erro é só avisado no console.
-async function logStageChange(prevLead, updatedLead) {
-  const interaction = computeStageChangeInteraction(prevLead, updatedLead.etapa);
+async function logStageChange(prevLead, updatedLead, userId) {
+  const interaction = computeStageChangeInteraction(prevLead, updatedLead.etapa, userId);
   if (!interaction) return;
   try {
     await interactionsApi.insert(interaction);
@@ -241,14 +299,14 @@ export function useAppState(userId) {
       ? await leadsApi.update(id, { ...data, ...stageFields, ultimaAtualizacao: todayStr() })
       : await leadsApi.insert({ ...data, criadoEm: todayStr(), ultimaAtualizacao: todayStr() });
     setLeads((prev) => (id ? prev.map((l) => (l.id === id ? saved : l)) : [...prev, saved]));
-    if (etapaChanged) await logStageChange(prevLead, saved);
+    if (etapaChanged) await logStageChange(prevLead, saved, userId);
     // proximoContato é um AGENDAMENTO: gera/reconcilia só a tarefa
     // "Contato" (lead-agenda). NÃO dispara pendingAutoTasksForLeads
     // (Follow-up/origem 'auto') — isso ficou reservado para uma automação
     // futura com condição própria, não para o simples preenchimento de
     // próximo contato. Ver comentário nas duas funções acima.
     await applyLeadAgendaActions(reconcileLeadAgendaActions([saved], tasks), setTasks);
-  }, [tasks, leads]);
+  }, [tasks, leads, userId]);
 
   const deleteLead = useCallback(async (id) => {
     const relatedTasks = tasks.filter((t) => t.leadId === id);
@@ -269,8 +327,8 @@ export function useAppState(userId) {
     const updated = await leadsApi.update(id, { ...lead, etapa: novaEtapa, ...stageFields, ultimaAtualizacao: todayStr() });
     setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
     await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
-    await logStageChange(lead, updated);
-  }, [leads, tasks]);
+    await logStageChange(lead, updated, userId);
+  }, [leads, tasks, userId]);
 
   const setLeadStage = useCallback(async (id, etapa) => {
     const lead = leads.find((l) => l.id === id);
@@ -279,12 +337,12 @@ export function useAppState(userId) {
     const updated = await leadsApi.update(id, { ...lead, etapa, ...stageFields, ultimaAtualizacao: todayStr() });
     setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
     await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
-    await logStageChange(lead, updated);
-  }, [leads, tasks]);
+    await logStageChange(lead, updated, userId);
+  }, [leads, tasks, userId]);
 
   const addInteractionNote = useCallback(async (leadId, content) => {
-    return interactionsApi.insert({ leadId, type: 'note', channel: 'manual', direction: 'internal', content });
-  }, []);
+    return interactionsApi.insert(computeNoteInteractionData(leadId, content, userId));
+  }, [userId]);
 
   const addTask = useCallback(async (titulo, categoria, data, horario) => {
     const inserted = await tasksApi.insert({ titulo, categoria, data, horario, concluida: false, leadId: null, origem: 'manual' });

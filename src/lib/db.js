@@ -106,6 +106,7 @@ function interactionFromRow(r) {
     metadata: r.metadata || null,
     occurredAt: r.occurred_at,
     createdAt: r.created_at,
+    createdBy: r.created_by || null,
   };
 }
 
@@ -117,6 +118,7 @@ function interactionToRow(data) {
     channel: data.channel || null,
     content: data.content || null,
     metadata: data.metadata || null,
+    created_by: data.createdBy || null,
     ...(data.occurredAt ? { occurred_at: data.occurredAt } : {}),
   };
 }
