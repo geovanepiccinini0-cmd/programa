@@ -1,4 +1,4 @@
-import { CONTACT_ATTEMPT_TYPES } from '../hooks/useAppState.js';
+import { CONTACT_ATTEMPT_TYPES } from '../constants.js';
 
 // Fase 2C.1 — Follow-up Eligibility Engine.
 //
@@ -8,10 +8,13 @@ import { CONTACT_ATTEMPT_TYPES } from '../hooks/useAppState.js';
 // não altera etapa, não escreve nada. `now` é sempre injetado pelo
 // chamador (nunca `Date.now()`/`new Date()` interno).
 //
-// Reaproveita deliberadamente CONTACT_ATTEMPT_TYPES de useAppState.js —
-// a mesma lista de tipos que já define "última tentativa" nos relógios
-// de atividade (computeLastContactAttemptAt). Isso garante que a noção
-// de "tentativa de contato" nunca diverge entre os dois módulos.
+// Reaproveita deliberadamente CONTACT_ATTEMPT_TYPES de constants.js — a
+// mesma lista de tipos que já define "última tentativa" nos relógios de
+// atividade (computeLastContactAttemptAt, em useAppState.js). Isso
+// garante que a noção de "tentativa de contato" nunca diverge entre os
+// dois módulos, SEM que este módulo dependa de useAppState.js (que
+// carrega React/Supabase) — constants.js é um módulo-folha, zero
+// imports (Fase 2C.1.1 — hardening arquitetural).
 
 export const FOLLOW_UP_STATUS = { DUE: 'due', WAITING: 'waiting', BLOCKED: 'blocked' };
 

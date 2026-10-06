@@ -406,3 +406,142 @@ describe('Fase 2C.1 — pureza: now injetável, imutabilidade, timezone', () => 
     expect(tasks).toEqual([task]);
   });
 });
+
+// Fase 2C.1.1 — hardening: casos identificados na revisão estática do
+// commit 72a206a, agora congelados explicitamente em teste. Nenhuma
+// mudança de comportamento foi feita — estes testes só tornam
+// observável o que o motor já fazia.
+describe('Fase 2C.1.1 — reset completo da cadência (cenário composto de 4 passos)', () => {
+  it('Dia1/Dia2 (tentativas pré-engajamento) ficam fora do ciclo atual; attemptCount=1; reason reflete a tentativa do Dia4', () => {
+    const dia1 = makeInteraction({ type: 'whatsapp', channel: 'whatsapp', direction: 'outbound', occurredAt: daysAgo(4), metadata: { activity_class: 'attempt', source: 'user' } });
+    const dia2 = makeInteraction({ type: 'whatsapp', channel: 'whatsapp', direction: 'outbound', occurredAt: daysAgo(3), metadata: { activity_class: 'attempt', source: 'user' } });
+    const dia3 = makeInteraction({ type: 'whatsapp', channel: 'whatsapp', direction: 'inbound', occurredAt: daysAgo(2), metadata: { activity_class: 'engagement', source: 'user' } });
+    const dia4 = makeInteraction({ type: 'call', channel: 'phone', direction: 'outbound', occurredAt: daysAgo(1), metadata: { activity_class: 'attempt', outcome: 'no_answer', source: 'user' } });
+
+    const r = evaluate(makeLead(), [dia1, dia2, dia3, dia4]);
+
+    // attemptCount=1 só é possível se o Dia3 (engajamento) tiver sido
+    // usado como fronteira — se a fronteira fosse "sempre", dia1+dia2+dia4
+    // dariam attemptCount=3; se fosse "nunca houve engajamento", também
+    // dariam 3. Logo attemptCount=1 prova que lastEngagement=Dia3 foi
+    // corretamente usado.
+    expect(r.attemptCount).toBe(1);
+    expect(r.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_ATTEMPT);
+    expect(r.anchorInteractionId).toBe(dia4.id);
+    expect(r.anchorOccurredAt).toBe(dia4.occurredAt);
+  });
+});
+
+describe('Fase 2C.1.1 — interação com duplo papel (attempt + engagement na mesma linha)', () => {
+  it('09:00 call_no_answer, 10:00 call_connected -> lastEngagement=10:00, attemptCount=0, no_new_attempt_since_engagement', () => {
+    const noAnswer = makeInteraction({ occurredAt: '2026-10-09T09:00:00.000Z', metadata: { activity_class: 'attempt', outcome: 'no_answer', source: 'user' } });
+    const connected = makeInteraction({ occurredAt: '2026-10-09T10:00:00.000Z', metadata: { activity_class: 'engagement', outcome: 'connected', source: 'user' } });
+    const r = evaluate(makeLead(), [noAnswer, connected]);
+    expect(r.anchorOccurredAt).toBe(connected.occurredAt);
+    expect(r.anchorInteractionId).toBe(connected.id);
+    // a própria call_connected não pode contar como tentativa posterior a si mesma
+    expect(r.attemptCount).toBe(0);
+    expect(r.reason).toBe(FOLLOW_UP_REASON.NO_NEW_ATTEMPT_SINCE_ENGAGEMENT);
+  });
+
+  it('09:00 call_connected, 11:00 whatsapp_sent -> lastEngagement=09:00, attemptCount=1, no_response_after_attempt', () => {
+    const connected = makeInteraction({ occurredAt: '2026-10-09T09:00:00.000Z', metadata: { activity_class: 'engagement', outcome: 'connected', source: 'user' } });
+    const sent = makeInteraction({ type: 'whatsapp', channel: 'whatsapp', direction: 'outbound', occurredAt: '2026-10-09T11:00:00.000Z', metadata: { activity_class: 'attempt', source: 'user' } });
+    const r = evaluate(makeLead(), [connected, sent]);
+    expect(r.anchorOccurredAt).toBe(sent.occurredAt);
+    expect(r.attemptCount).toBe(1);
+    expect(r.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_ATTEMPT);
+  });
+});
+
+describe('Fase 2C.1.1 — ciclo completo cadence_exhausted -> reactivation_due', () => {
+  it('nunca existe status=due com reason=cadence_exhausted; dedupeKey muda entre os dois estágios', () => {
+    const a1 = makeInteraction({ occurredAt: daysAgo(20) });
+    const a2 = makeInteraction({ occurredAt: daysAgo(15) });
+    const a3 = makeInteraction({ occurredAt: daysAgo(10) }); // anchor: attemptCount atinge 3 aqui
+
+    const anchorTime = new Date(a3.occurredAt).getTime();
+    const sixDaysAfter = new Date(anchorTime + 6 * 24 * 3600000); // ainda dentro da janela de 7 dias
+    const sevenDaysAfter = new Date(anchorTime + 7 * 24 * 3600000); // boundary exato
+
+    const beforeBoundary = evaluate(makeLead(), [a1, a2, a3], [], sixDaysAfter);
+    expect(beforeBoundary.status).toBe(FOLLOW_UP_STATUS.WAITING);
+    expect(beforeBoundary.reason).toBe(FOLLOW_UP_REASON.CADENCE_EXHAUSTED);
+
+    const atBoundary = evaluate(makeLead(), [a1, a2, a3], [], sevenDaysAfter);
+    expect(atBoundary.status).toBe(FOLLOW_UP_STATUS.DUE);
+    expect(atBoundary.reason).toBe(FOLLOW_UP_REASON.REACTIVATION_DUE);
+
+    // nunca a combinação contraditória status=due + reason=cadence_exhausted
+    expect(beforeBoundary.status === FOLLOW_UP_STATUS.DUE && beforeBoundary.reason === FOLLOW_UP_REASON.CADENCE_EXHAUSTED).toBe(false);
+    expect(atBoundary.status === FOLLOW_UP_STATUS.DUE && atBoundary.reason === FOLLOW_UP_REASON.CADENCE_EXHAUSTED).toBe(false);
+
+    // dedupeKey muda porque `reason` faz parte da chave — mesma âncora, chaves diferentes
+    expect(beforeBoundary.dedupeKey).toBe(`lead-1:cadence_exhausted:${a3.id}`);
+    expect(atBoundary.dedupeKey).toBe(`lead-1:reactivation_due:${a3.id}`);
+    expect(beforeBoundary.dedupeKey).not.toBe(atBoundary.dedupeKey);
+  });
+});
+
+describe('Fase 2C.1.1 — precedência em timestamp idêntico (congelando o comportamento atual)', () => {
+  it('proposal_sent e whatsapp_sent no mesmo instante -> attempt vence proposal', () => {
+    const sameTime = hoursAgo(10);
+    const proposal = makeInteraction({ type: 'proposal', direction: 'outbound', channel: 'manual', occurredAt: sameTime, metadata: { activity_class: 'attempt', outcome: 'sent', source: 'user' } });
+    const whatsapp = makeInteraction({ type: 'whatsapp', direction: 'outbound', channel: 'whatsapp', occurredAt: sameTime, metadata: { activity_class: 'attempt', source: 'user' } });
+    const r = evaluate(makeLead(), [proposal, whatsapp]);
+    expect(r.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_ATTEMPT);
+  });
+
+  it('customer engagement (inbound) e proposal_sent no mesmo instante -> engagement vence proposal', () => {
+    const sameTime = hoursAgo(10);
+    const proposal = makeInteraction({ type: 'proposal', direction: 'outbound', channel: 'manual', occurredAt: sameTime, metadata: { activity_class: 'attempt', outcome: 'sent', source: 'user' } });
+    const received = makeInteraction({ type: 'whatsapp', direction: 'inbound', channel: 'whatsapp', occurredAt: sameTime, metadata: { activity_class: 'engagement', source: 'user' } });
+    const r = evaluate(makeLead(), [proposal, received]);
+    expect(r.reason).toBe(FOLLOW_UP_REASON.NO_NEW_ATTEMPT_SINCE_ENGAGEMENT);
+    expect(r.anchorInteractionId).toBe(received.id);
+  });
+});
+
+describe('Fase 2C.1.1 — blocker de automation é incondicional (vence qualquer reason subjacente)', () => {
+  it('sem task automation -> no_response_after_attempt; com task automation pendente -> blocked, independente do reason que existiria', () => {
+    const attempt = makeInteraction({ occurredAt: hoursAgo(30) });
+    const withoutAutomation = evaluate(makeLead(), [attempt], []);
+    expect(withoutAutomation.status).toBe(FOLLOW_UP_STATUS.DUE);
+    expect(withoutAutomation.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_ATTEMPT);
+
+    const withAutomation = evaluate(makeLead(), [attempt], [makeTask({ origem: 'automation', categoria: 'Follow-up', concluida: false })]);
+    expect(withAutomation.status).toBe(FOLLOW_UP_STATUS.BLOCKED);
+    expect(withAutomation.reason).toBeNull();
+    expect(withAutomation.blockers).toContain(FOLLOW_UP_BLOCKER.FOLLOW_UP_AUTOMATICO_PENDENTE);
+  });
+
+  it('o mesmo vale quando o reason subjacente seria no_response_after_proposal', () => {
+    const proposal = makeInteraction({ type: 'proposal', direction: 'outbound', channel: 'manual', occurredAt: hoursAgo(49), metadata: { activity_class: 'attempt', outcome: 'sent', source: 'user' } });
+    const withoutAutomation = evaluate(makeLead(), [proposal], []);
+    expect(withoutAutomation.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_PROPOSAL);
+
+    const withAutomation = evaluate(makeLead(), [proposal], [makeTask({ origem: 'automation', concluida: false })]);
+    expect(withAutomation.status).toBe(FOLLOW_UP_STATUS.BLOCKED);
+  });
+});
+
+describe('Fase 2C.1.1 — [semântica V1, sujeita a revisão futura] nova tentativa empurra a janela de reativação', () => {
+  it('uma nova tentativa antes do vencimento muda a âncora e reinicia os 7 dias a partir dela', () => {
+    const lead = makeLead();
+    const a1 = makeInteraction({ occurredAt: '2026-09-01T00:00:00.000Z' });
+    const a2 = makeInteraction({ occurredAt: '2026-09-10T00:00:00.000Z' });
+    const a3 = makeInteraction({ occurredAt: '2026-09-20T00:00:00.000Z' }); // anchor original -> due em 2026-09-27
+    const now1 = new Date('2026-09-26T00:00:00.000Z'); // antes do vencimento original
+
+    const before = evaluate(lead, [a1, a2, a3], [], now1);
+    expect(before.anchorOccurredAt).toBe(a3.occurredAt);
+    expect(before.dueAt).toBe('2026-09-27T00:00:00.000Z');
+    expect(before.reason).toBe(FOLLOW_UP_REASON.CADENCE_EXHAUSTED);
+
+    const a4 = makeInteraction({ occurredAt: '2026-09-24T00:00:00.000Z' }); // nova tentativa Y, antes do vencimento de a3
+    const after = evaluate(lead, [a1, a2, a3, a4], [], now1);
+    expect(after.anchorOccurredAt).toBe(a4.occurredAt); // âncora mudou para Y
+    expect(after.dueAt).toBe('2026-10-01T00:00:00.000Z'); // Y + 7 dias — janela reiniciada
+    expect(after.reason).toBe(FOLLOW_UP_REASON.CADENCE_EXHAUSTED); // ainda dentro da nova janela, com now1 fixo
+  });
+});
