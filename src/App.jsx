@@ -28,6 +28,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
     addRotina, toggleRotinaAtiva, deleteRotina,
     importBackup,
     addInteractionNote,
+    registerCommercialInteraction,
   } = useAppState(userId);
 
   const [activeTab, setActiveTab] = useState('hoje');
@@ -191,6 +192,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
           onClose={() => setLeadModalOpen(false)}
           onSave={handleSaveLead}
           onAddInteractionNote={addInteractionNote}
+          onRegisterCommercialInteraction={registerCommercialInteraction}
         />
       )}
 

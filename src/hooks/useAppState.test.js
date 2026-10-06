@@ -5,6 +5,7 @@ import {
   computeStageTimestamps, computeStageChangeInteraction, shouldClearNextContato,
   computeNoteInteractionData,
   computeLastActivityAt, computeLastContactAt, computeLastCustomerEngagementAt,
+  computeCommercialInteractionData,
 } from './useAppState.js';
 import { todayStr } from '../utils.js';
 import { DIAS_SEMANA } from '../constants.js';
@@ -337,5 +338,73 @@ describe('Correção: agendamento (proximoContato) não deve mais gerar Follow-u
     expect(actions).toEqual([{ type: 'delete', id: tasks[0].id }]);
     tasks = applyActionsToTasks(actions, tasks);
     expect(tasks).toHaveLength(0);
+  });
+});
+
+describe('Fase 2A.2 — computeCommercialInteractionData (registro rápido de interações)', () => {
+  it('1) call_connected -> engagement', () => {
+    const data = computeCommercialInteractionData('l1', 'call_connected', 'user-abc');
+    expect(data).toMatchObject({
+      leadId: 'l1', type: 'call', direction: 'outbound', channel: 'phone',
+      metadata: { activity_class: 'engagement', outcome: 'connected' },
+    });
+  });
+
+  it('2) call_no_answer -> attempt', () => {
+    const data = computeCommercialInteractionData('l1', 'call_no_answer', 'user-abc');
+    expect(data).toMatchObject({
+      leadId: 'l1', type: 'call', direction: 'outbound', channel: 'phone',
+      metadata: { activity_class: 'attempt', outcome: 'no_answer' },
+    });
+  });
+
+  it('3) whatsapp_sent (outbound) -> attempt', () => {
+    const data = computeCommercialInteractionData('l1', 'whatsapp_sent', 'user-abc');
+    expect(data).toMatchObject({
+      leadId: 'l1', type: 'whatsapp', direction: 'outbound', channel: 'whatsapp',
+      metadata: { activity_class: 'attempt' },
+    });
+  });
+
+  it('4) whatsapp_received (inbound) -> engagement', () => {
+    const data = computeCommercialInteractionData('l1', 'whatsapp_received', 'user-abc');
+    expect(data).toMatchObject({
+      leadId: 'l1', type: 'whatsapp', direction: 'inbound', channel: 'whatsapp',
+      metadata: { activity_class: 'engagement' },
+    });
+  });
+
+  it('5) meeting_held -> engagement', () => {
+    const data = computeCommercialInteractionData('l1', 'meeting_held', 'user-abc');
+    expect(data).toMatchObject({
+      leadId: 'l1', type: 'meeting', direction: 'outbound', channel: 'in_person',
+      metadata: { activity_class: 'engagement', outcome: 'held' },
+    });
+  });
+
+  it('6) proposal_sent -> attempt (ação do vendedor, não confirmação do cliente)', () => {
+    const data = computeCommercialInteractionData('l1', 'proposal_sent', 'user-abc');
+    expect(data).toMatchObject({
+      leadId: 'l1', type: 'proposal', direction: 'outbound', channel: 'manual',
+      metadata: { activity_class: 'attempt', outcome: 'sent' },
+    });
+  });
+
+  it('7) todas as ações preenchem metadata.source = "user"', () => {
+    const actions = ['call_connected', 'call_no_answer', 'whatsapp_sent', 'whatsapp_received', 'meeting_held', 'proposal_sent'];
+    actions.forEach((action) => {
+      expect(computeCommercialInteractionData('l1', action, 'user-abc').metadata.source).toBe('user');
+    });
+  });
+
+  it('8) todas as ações preservam createdBy = userId', () => {
+    const actions = ['call_connected', 'call_no_answer', 'whatsapp_sent', 'whatsapp_received', 'meeting_held', 'proposal_sent'];
+    actions.forEach((action) => {
+      expect(computeCommercialInteractionData('l1', action, 'user-abc').createdBy).toBe('user-abc');
+    });
+  });
+
+  it('9) ação inválida falha de maneira previsível (erro explícito, não payload incorreto)', () => {
+    expect(() => computeCommercialInteractionData('l1', 'acao_que_nao_existe', 'user-abc')).toThrow();
   });
 });
