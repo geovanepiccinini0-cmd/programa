@@ -95,3 +95,15 @@ export const COMMERCIAL_INTERACTION_GROUPS = [
   { value: 'whatsapp', label: '💬 WhatsApp' },
   { value: 'more', label: '+ Mais' },
 ];
+
+// Fase 2B/2C.1 — tipos que representam contato comercial de verdade
+// (ligação, WhatsApp, reunião). 'proposal' fica deliberadamente de fora:
+// continua activity_class='attempt' no Activity Engine (não mexe nessa
+// classificação), mas não conta como "tentativa de contato" para
+// computeLastContactAttemptAt (useAppState.js) nem para o
+// Follow-up Eligibility Engine (followUpEngine.js) — enviar uma
+// proposta não deve reiniciar a cadência de tentativa de contato.
+// Vive aqui (módulo-folha, zero imports) de propósito: tanto
+// useAppState.js quanto followUpEngine.js importam daqui, nunca um do
+// outro — followUpEngine.js não pode depender de React/Supabase.
+export const CONTACT_ATTEMPT_TYPES = ['call', 'whatsapp', 'meeting'];

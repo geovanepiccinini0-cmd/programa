@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { DIAS_SEMANA } from '../constants.js';
+import { DIAS_SEMANA, CONTACT_ATTEMPT_TYPES } from '../constants.js';
 import { todayStr, normalizeBackup } from '../utils.js';
 import { leadsApi, tasksApi, templatesApi, interactionsApi, auditLogApi } from '../lib/db.js';
 import { supabase } from '../lib/supabaseClient.js';
@@ -223,14 +223,10 @@ export function computeLastActivityAt(interactions) {
   return maxOccurredAt(interactions);
 }
 
-// Fase 2B — tipos que representam contato comercial de verdade (ligação,
-// WhatsApp, reunião). 'proposal' fica deliberadamente de fora: continua
-// activity_class='attempt' no Activity Engine (não mexemos nessa
-// classificação), mas não conta para ESTE relógio — enviar uma proposta
-// não deve reiniciar a cadência de tentativa de contato.
-const CONTACT_ATTEMPT_TYPES = ['call', 'whatsapp', 'meeting'];
-
-// last_contact_attempt_at: só tipos de contato (ver acima), só
+// last_contact_attempt_at: só tipos de contato (CONTACT_ATTEMPT_TYPES,
+// agora em constants.js — reaproveitado também pelo Follow-up
+// Eligibility Engine em followUpEngine.js, sem que nenhum dos dois
+// módulos dependa do outro), só
 // direction='outbound' (fomos nós que agimos — uma resposta do cliente,
 // ex. whatsapp inbound, é engajamento dele, não "nossa tentativa"), e só
 // activity_class 'attempt' ou 'engagement' (ignora 'internal').
