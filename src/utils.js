@@ -83,6 +83,28 @@ export function fmtDate(d) {
   return day + '/' + m;
 }
 
+// Fase 2B — tempo relativo para os relógios de atividade do lead. Usa
+// Intl.RelativeTimeFormat nativo (sem dependência nova). `now` é
+// injetável (default new Date()) para testes determinísticos — nunca
+// depender só do relógio real da máquina em teste.
+const relativeTimeFormatter = new Intl.RelativeTimeFormat('pt-BR', { numeric: 'auto', style: 'short' });
+
+export function formatRelativeTime(iso, now = new Date()) {
+  if (!iso) return '—';
+  const diffMs = new Date(iso).getTime() - now.getTime();
+  if (Number.isNaN(diffMs)) return '—';
+  const diffSec = Math.round(diffMs / 1000);
+  if (Math.abs(diffSec) < 60) return 'agora';
+  const diffMin = Math.round(diffSec / 60);
+  if (Math.abs(diffMin) < 60) return relativeTimeFormatter.format(diffMin, 'minute');
+  const diffHour = Math.round(diffMin / 60);
+  if (Math.abs(diffHour) < 24) return relativeTimeFormatter.format(diffHour, 'hour');
+  const diffDay = Math.round(diffHour / 24);
+  if (Math.abs(diffDay) < 30) return relativeTimeFormatter.format(diffDay, 'day');
+  const diffMonth = Math.round(diffDay / 30);
+  return relativeTimeFormatter.format(diffMonth, 'month');
+}
+
 export function diasDesde(d) {
   if (!d) return null;
   const then = new Date(d + 'T00:00:00');

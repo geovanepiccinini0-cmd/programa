@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react';
-import { interactionsApi } from '../lib/db.js';
+import { useState } from 'react';
 import {
   INTERACTION_TYPE_LABEL, INTERACTION_CHANNEL_LABEL,
   COMMERCIAL_INTERACTION_ACTIONS, COMMERCIAL_INTERACTION_GROUPS,
@@ -36,10 +35,13 @@ function describeInteraction(it) {
   return null;
 }
 
-export default function LeadTimeline({ leadId, onAddNote, onRegisterInteraction }) {
-  const [interactions, setInteractions] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+// Fase 2B — interactions/loading/error passam a vir do LeadModal (estado
+// içado), que é quem busca e também calcula os relógios de atividade a
+// partir da mesma lista. LeadTimeline deixou de ter seu próprio fetch;
+// continua controlando só a UX local (nota/registro rápido) e, ao ter
+// sucesso, atualiza a lista do pai via onInteractionAdded — mesma
+// atualização otimista de sempre, sem refetch adicional.
+export default function LeadTimeline({ leadId, interactions, loading, error, onInteractionAdded, onAddNote, onRegisterInteraction }) {
   const [noteText, setNoteText] = useState('');
   const [saving, setSaving] = useState(false);
   const [activeGroup, setActiveGroup] = useState(null);
@@ -47,23 +49,13 @@ export default function LeadTimeline({ leadId, onAddNote, onRegisterInteraction 
   const [registerError, setRegisterError] = useState('');
   const [successFlash, setSuccessFlash] = useState('');
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(false);
-    interactionsApi.fetchForLead(leadId)
-      .then((data) => { if (!cancelled) { setInteractions(data); setLoading(false); } })
-      .catch(() => { if (!cancelled) { setError(true); setLoading(false); } });
-    return () => { cancelled = true; };
-  }, [leadId]);
-
   async function handleAddNote() {
     const trimmed = noteText.trim();
     if (!trimmed || saving) return;
     setSaving(true);
     try {
       const inserted = await onAddNote(leadId, trimmed);
-      setInteractions((prev) => [inserted, ...prev]);
+      onInteractionAdded(inserted);
       setNoteText('');
     } catch (e) {
       alert('Não foi possível salvar a nota: ' + e.message);
@@ -78,7 +70,7 @@ export default function LeadTimeline({ leadId, onAddNote, onRegisterInteraction 
     setRegisterError('');
     try {
       const inserted = await onRegisterInteraction(leadId, actionValue);
-      setInteractions((prev) => [inserted, ...prev]);
+      onInteractionAdded(inserted);
       setActiveGroup(null);
       setSuccessFlash(actionLabel);
       setTimeout(() => setSuccessFlash(''), 2500);

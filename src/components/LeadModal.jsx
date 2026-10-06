@@ -3,9 +3,15 @@ import {
   CANAIS, PRODUTOS, STAGES, TAGS_LEAD, TAG_COLOR,
   NEXT_ACTION_TYPES, LEAD_TEMPERATURES, PRIORITIES, LOST_REASONS,
 } from '../constants.js';
-import { availableTimeSlots, formatPhoneBR, moneyFormat, parseMoneyValue } from '../utils.js';
+import { availableTimeSlots, formatPhoneBR, formatRelativeTime, moneyFormat, parseMoneyValue } from '../utils.js';
+import { interactionsApi } from '../lib/db.js';
+import { computeLastActivityAt, computeLastContactAttemptAt, computeLastCustomerEngagementAt } from '../hooks/useAppState.js';
 import ProdutoFields from './ProdutoFields.jsx';
 import LeadTimeline from './LeadTimeline.jsx';
+
+function fmtAbsolute(iso) {
+  return iso ? new Date(iso).toLocaleString('pt-BR') : undefined;
+}
 
 const EMPTY_EXTRA = { tipo: '', credito: '', entrada: '', parcela: '', lance: '', valor: '', valorImovel: '' };
 
@@ -41,6 +47,32 @@ export default function LeadModal({ lead, tasks, onClose, onSave, onAddInteracti
   const [priority, setPriority] = useState('normal');
   const [lostReason, setLostReason] = useState('');
   const [lostReasonNote, setLostReasonNote] = useState('');
+  const [interactions, setInteractions] = useState([]);
+  const [interactionsLoading, setInteractionsLoading] = useState(true);
+  const [interactionsError, setInteractionsError] = useState(false);
+
+  // Fase 2B — içado de LeadTimeline: o modal passa a ser a única fonte de
+  // estado das interações do lead aberto, usada tanto pela lista do
+  // histórico quanto pelos três relógios de atividade (useMemo abaixo),
+  // sem fetch duplicado.
+  useEffect(() => {
+    if (!lead) { setInteractions([]); return; }
+    let cancelled = false;
+    setInteractionsLoading(true);
+    setInteractionsError(false);
+    interactionsApi.fetchForLead(lead.id)
+      .then((data) => { if (!cancelled) { setInteractions(data); setInteractionsLoading(false); } })
+      .catch(() => { if (!cancelled) { setInteractionsError(true); setInteractionsLoading(false); } });
+    return () => { cancelled = true; };
+  }, [lead?.id]);
+
+  function handleInteractionAdded(inserted) {
+    setInteractions((prev) => [inserted, ...prev]);
+  }
+
+  const lastActivityAt = useMemo(() => computeLastActivityAt(interactions), [interactions]);
+  const lastContactAttemptAt = useMemo(() => computeLastContactAttemptAt(interactions), [interactions]);
+  const lastCustomerEngagementAt = useMemo(() => computeLastCustomerEngagementAt(interactions), [interactions]);
 
   useEffect(() => {
     setNome(lead ? lead.nome : '');
@@ -263,6 +295,16 @@ export default function LeadModal({ lead, tasks, onClose, onSave, onAddInteracti
               />
             </div>
           </div>
+          {lead && (
+            <div className="field">
+              <label>Atividade</label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: 12.5, color: 'var(--text-dim)' }}>
+                <div title={fmtAbsolute(lastActivityAt)}>Última atividade: {formatRelativeTime(lastActivityAt)}</div>
+                <div title={fmtAbsolute(lastContactAttemptAt)}>Última tentativa: {formatRelativeTime(lastContactAttemptAt)}</div>
+                <div title={fmtAbsolute(lastCustomerEngagementAt)}>Último engajamento: {formatRelativeTime(lastCustomerEngagementAt)}</div>
+              </div>
+            </div>
+          )}
           <div className="field">
             <label>Tags</label>
             <div className="filters" style={{ marginBottom: 0 }}>
@@ -289,6 +331,10 @@ export default function LeadModal({ lead, tasks, onClose, onSave, onAddInteracti
           {lead && (
             <LeadTimeline
               leadId={lead.id}
+              interactions={interactions}
+              loading={interactionsLoading}
+              error={interactionsError}
+              onInteractionAdded={handleInteractionAdded}
               onAddNote={onAddInteractionNote}
               onRegisterInteraction={onRegisterCommercialInteraction}
             />

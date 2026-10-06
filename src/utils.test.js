@@ -3,6 +3,7 @@ import {
   formatPhoneBR, fmtDate, moneyFormat, parseMoneyValue, leadMatchesSearch,
   isTaskOverdue, minutesUntil, upcomingAppointments, leadHasNoNextAction,
   classifyLeadPriority, isValidBackup, normalizeBackup, todayStr,
+  formatRelativeTime,
 } from './utils.js';
 
 describe('formatPhoneBR', () => {
@@ -165,5 +166,44 @@ describe('isValidBackup / normalizeBackup (compatibilidade V1/V2)', () => {
     const normalized = normalizeBackup(v2);
     expect(normalized.backupVersion).toBe(2);
     expect(normalized.interactions).toHaveLength(1);
+  });
+});
+
+describe('formatRelativeTime (Fase 2B — relógios de atividade)', () => {
+  const NOW = new Date('2026-10-10T12:00:00.000Z');
+
+  it('null -> "—"', () => {
+    expect(formatRelativeTime(null, NOW)).toBe('—');
+    expect(formatRelativeTime('', NOW)).toBe('—');
+  });
+
+  it('menos de 1 minuto -> "agora"', () => {
+    expect(formatRelativeTime('2026-10-10T11:59:40.000Z', NOW)).toBe('agora');
+  });
+
+  it('minutos', () => {
+    expect(formatRelativeTime('2026-10-10T11:52:00.000Z', NOW)).toBe('há 8 min.');
+  });
+
+  it('horas', () => {
+    expect(formatRelativeTime('2026-10-10T09:00:00.000Z', NOW)).toBe('há 3 h');
+  });
+
+  it('ontem', () => {
+    expect(formatRelativeTime('2026-10-09T12:00:00.000Z', NOW)).toBe('ontem');
+  });
+
+  it('dias', () => {
+    expect(formatRelativeTime('2026-10-06T12:00:00.000Z', NOW)).toBe('há 4 dias');
+  });
+
+  it('meses', () => {
+    expect(formatRelativeTime('2026-08-10T12:00:00.000Z', NOW)).toBe('há 2 meses');
+  });
+
+  it('usa o `now` injetado, não Date.now() real', () => {
+    const past = new Date(NOW.getTime() - 5 * 60000).toISOString();
+    expect(formatRelativeTime(past, NOW)).toBe('há 5 min.');
+    expect(formatRelativeTime(past, new Date(NOW.getTime() + 60 * 60000))).not.toBe('há 5 min.');
   });
 });
