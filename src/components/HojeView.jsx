@@ -4,7 +4,7 @@ import { todayStr, tomorrowStr } from '../utils.js';
 import TaskGroupedList from './TaskGroupedList.jsx';
 import WeekAgenda from './WeekAgenda.jsx';
 
-export default function HojeView({ leads, tasks, onAddTask, onToggleTask, onDeleteTask }) {
+export default function HojeView({ leads, tasks, onAddTask, onToggleTask, onDeleteTask, onCompleteWithResult }) {
   const [title, setTitle] = useState('');
   const [cat, setCat] = useState(CATS_TASK[0]);
   const [date, setDate] = useState(todayStr());
@@ -48,6 +48,7 @@ export default function HojeView({ leads, tasks, onAddTask, onToggleTask, onDele
         leads={leads}
         onToggleTask={onToggleTask}
         onDeleteTask={onDeleteTask}
+        onCompleteWithResult={onCompleteWithResult}
         emptyMessage="Nenhuma tarefa para hoje. Adicione a primeira acima ou cadastre um lead com data de próximo contato."
       />
 
@@ -57,6 +58,7 @@ export default function HojeView({ leads, tasks, onAddTask, onToggleTask, onDele
         leads={leads}
         onToggleTask={onToggleTask}
         onDeleteTask={onDeleteTask}
+        onCompleteWithResult={onCompleteWithResult}
         emptyMessage="Nenhuma tarefa para amanhã ainda."
       />
 
@@ -66,6 +68,7 @@ export default function HojeView({ leads, tasks, onAddTask, onToggleTask, onDele
         leads={leads}
         onToggleTask={onToggleTask}
         onDeleteTask={onDeleteTask}
+        onCompleteWithResult={onCompleteWithResult}
       />
     </section>
   );

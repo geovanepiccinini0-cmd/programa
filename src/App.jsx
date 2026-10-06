@@ -24,7 +24,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
   const {
     leads, tasks, templates, loading, error,
     saveLead, deleteLead, moveStage, setLeadStage,
-    addTask, toggleTask, deleteTask,
+    addTask, toggleTask, deleteTask, completeTaskWithResult,
     addRotina, toggleRotinaAtiva, deleteRotina,
     importBackup,
     addInteractionNote,
@@ -155,6 +155,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
           onAddTask={addTask}
           onToggleTask={toggleTask}
           onDeleteTask={deleteTask}
+          onCompleteWithResult={completeTaskWithResult}
         />
       )}
 

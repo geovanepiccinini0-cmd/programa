@@ -2,8 +2,9 @@ import { useMemo } from 'react';
 import { CATS_TASK } from '../constants.js';
 import { fmtDate, isTaskOverdue } from '../utils.js';
 import TaskLeadBadges from './TaskLeadBadges.jsx';
+import TaskCompletionControl from './TaskCompletionControl.jsx';
 
-export default function TaskGroupedList({ tasks, leads, onToggleTask, onDeleteTask, emptyMessage }) {
+export default function TaskGroupedList({ tasks, leads, onToggleTask, onDeleteTask, onCompleteWithResult, emptyMessage }) {
   const groups = useMemo(() => {
     const g = {};
     CATS_TASK.forEach((c) => { g[c] = []; });
@@ -38,7 +39,7 @@ export default function TaskGroupedList({ tasks, leads, onToggleTask, onDeleteTa
               const lead = t.leadId ? leads.find((l) => l.id === t.leadId) : null;
               return (
                 <div key={t.id} className={`task-row ${overdue ? 'overdue' : ''} ${t.concluida ? 'done' : ''}`}>
-                  <button className="task-check" onClick={() => onToggleTask(t.id)} />
+                  <TaskCompletionControl task={t} onToggleTask={onToggleTask} onCompleteWithResult={onCompleteWithResult} />
                   <div className="task-body">
                     <div className="task-title">{t.titulo}</div>
                     <div className="task-meta">

@@ -94,6 +94,20 @@ describe('interactionToRow — fronteira de serialização para o Supabase', () 
     });
   });
 
+  it('G) Fase 2A.3 — computeCommercialInteractionData + metadata.task_id -> interactionToRow preserva tudo até o payload final', () => {
+    const data = computeCommercialInteractionData('l1', 'call_connected', 'user-abc');
+    const withTaskId = { ...data, metadata: { ...data.metadata, task_id: 'task-contato-lilliane' } };
+    const row = interactionToRow(withTaskId);
+    expect(row).toMatchObject({
+      lead_id: 'l1',
+      type: 'call',
+      direction: 'outbound',
+      channel: 'phone',
+      metadata: { activity_class: 'engagement', outcome: 'connected', source: 'user', task_id: 'task-contato-lilliane' },
+      created_by: 'user-abc',
+    });
+  });
+
   it('D) round-trip interactionToRow -> interactionFromRow preserva metadata, created_by e occurred_at', () => {
     const data = computeNoteInteractionData('l1', 'Nota de teste', 'user-abc');
     const occurredAt = '2026-10-10T11:00:00.000Z';

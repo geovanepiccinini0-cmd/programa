@@ -265,6 +265,30 @@ export function shouldClearNextContato(task, concluindo) {
   return Boolean(concluindo && task.leadId && (task.origem === 'auto' || task.origem === 'lead-agenda'));
 }
 
+// Fase 2A.3 — só tarefas lead-agenda (a Contato: {nome} gerada a partir de
+// proximoContato) oferecem captura de resultado comercial ao concluir.
+// Deliberadamente NÃO inclui 'auto': é infraestrutura reservada e não deve
+// voltar a participar de nenhum fluxo novo.
+export function shouldOfferResultCapture(task) {
+  return Boolean(task.leadId) && task.origem === 'lead-agenda';
+}
+
+// Fase 2A.3 — orquestração pura (efeitos colaterais injetados em `deps`,
+// testável sem Supabase/React): registra a interação comercial PRIMEIRO
+// via computeCommercialInteractionData (classificação nunca duplicada
+// aqui, só acrescenta metadata.task_id como contexto) e só conclui a
+// tarefa se o insert tiver sucesso. Se insertInteraction falhar, deps.
+// toggleTask nunca é chamado. Se deps.toggleTask falhar depois, o erro
+// propaga e a interação já gravada não é desfeita (sem rollback
+// automático, decisão explícita desta fase). "Só concluir" não passa
+// por aqui — é só o toggleTask de sempre, chamado direto pela UI.
+export async function runCompleteTaskWithResult(task, actionKey, userId, deps) {
+  if (!task || !shouldOfferResultCapture(task)) return;
+  const data = computeCommercialInteractionData(task.leadId, actionKey, userId);
+  await deps.insertInteraction({ ...data, metadata: { ...data.metadata, task_id: task.id } });
+  await deps.toggleTask(task.id);
+}
+
 function applyRealtimeChange(setState, fromRow, payload) {
   if (payload.eventType === 'DELETE') {
     setState((prev) => prev.filter((item) => item.id !== payload.old.id));
@@ -420,6 +444,17 @@ export function useAppState(userId) {
     }
   }, [tasks, leads]);
 
+  // Fase 2A.3 — conecta a conclusão de uma tarefa lead-agenda ao Activity
+  // Engine (2A.2). A sequência (interação antes da tarefa, sem reimplementar
+  // toggleTask) está em runCompleteTaskWithResult, testável isoladamente.
+  const completeTaskWithResult = useCallback(async (id, actionKey) => {
+    const t = tasks.find((x) => x.id === id);
+    await runCompleteTaskWithResult(t, actionKey, userId, {
+      insertInteraction: (data) => interactionsApi.insert(data),
+      toggleTask,
+    });
+  }, [tasks, userId, toggleTask]);
+
   const deleteTask = useCallback(async (id) => {
     await tasksApi.remove(id);
     setTasks((prev) => prev.filter((t) => t.id !== id));
@@ -504,7 +539,7 @@ export function useAppState(userId) {
   return {
     leads, tasks, templates, loading, error,
     saveLead, deleteLead, moveStage, setLeadStage,
-    addTask, toggleTask, deleteTask,
+    addTask, toggleTask, deleteTask, completeTaskWithResult,
     addRotina, toggleRotinaAtiva, deleteRotina,
     importBackup,
     addInteractionNote,

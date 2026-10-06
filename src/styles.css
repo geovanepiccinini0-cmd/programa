@@ -54,7 +54,7 @@ header.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-
 .section-title:first-of-type{margin-top:0;padding-top:0;border-top:none;}
 .task-group{margin-bottom:18px;}
 .task-group h3{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-dim);margin:0 0 8px;font-weight:600;}
-.task-row{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:6px;}
+.task-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:6px;}
 .task-row.overdue{border-color:var(--red);background:#2a1418;}
 .task-row.done{opacity:.45;}
 .task-check{width:18px;height:18px;border-radius:5px;border:2px solid var(--text-dim);cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:transparent;}

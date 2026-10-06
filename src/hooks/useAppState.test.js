@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   pendingAutoTasksForLeads, autoTaskHorarioUpdates, pendingRotinaTasks,
   computeLeadAgendaTaskData, reconcileLeadAgendaActions,
@@ -6,6 +6,7 @@ import {
   computeNoteInteractionData,
   computeLastActivityAt, computeLastContactAt, computeLastCustomerEngagementAt,
   computeCommercialInteractionData,
+  shouldOfferResultCapture, runCompleteTaskWithResult,
 } from './useAppState.js';
 import { todayStr } from '../utils.js';
 import { DIAS_SEMANA } from '../constants.js';
@@ -406,5 +407,96 @@ describe('Fase 2A.2 — computeCommercialInteractionData (registro rápido de in
 
   it('9) ação inválida falha de maneira previsível (erro explícito, não payload incorreto)', () => {
     expect(() => computeCommercialInteractionData('l1', 'acao_que_nao_existe', 'user-abc')).toThrow();
+  });
+});
+
+describe('Fase 2A.3 — shouldOfferResultCapture (tarefa → resultado → interação)', () => {
+  it('1) true para lead-agenda com leadId', () => {
+    expect(shouldOfferResultCapture({ id: 't1', leadId: 'l1', origem: 'lead-agenda' })).toBe(true);
+  });
+
+  it('2) false para lead-agenda sem leadId', () => {
+    expect(shouldOfferResultCapture({ id: 't1', leadId: null, origem: 'lead-agenda' })).toBe(false);
+  });
+
+  it('3) false para auto, mesmo com leadId (auto permanece fora de qualquer fluxo novo)', () => {
+    expect(shouldOfferResultCapture({ id: 't1', leadId: 'l1', origem: 'auto' })).toBe(false);
+  });
+
+  it('4) false para manual', () => {
+    expect(shouldOfferResultCapture({ id: 't1', leadId: null, origem: 'manual' })).toBe(false);
+  });
+
+  it('5) false para rotina', () => {
+    expect(shouldOfferResultCapture({ id: 't1', leadId: null, origem: 'rotina' })).toBe(false);
+  });
+});
+
+describe('Fase 2A.3 — runCompleteTaskWithResult (orquestração: interação primeiro, task depois)', () => {
+  const leadAgendaTask = { id: 't1', leadId: 'l1', origem: 'lead-agenda' };
+
+  it('6) Atendeu: insertInteraction (call_connected) acontece antes de toggleTask', async () => {
+    const order = [];
+    const insertInteraction = vi.fn(async (data) => { order.push(['insert', data]); return { id: 'int-1', ...data }; });
+    const toggleTask = vi.fn(async (id) => { order.push(['toggle', id]); });
+
+    await runCompleteTaskWithResult(leadAgendaTask, 'call_connected', 'user-abc', { insertInteraction, toggleTask });
+
+    expect(order.map((o) => o[0])).toEqual(['insert', 'toggle']);
+    expect(insertInteraction).toHaveBeenCalledTimes(1);
+    expect(insertInteraction.mock.calls[0][0]).toMatchObject({ type: 'call', metadata: { activity_class: 'engagement', outcome: 'connected' } });
+    expect(toggleTask).toHaveBeenCalledWith('t1');
+  });
+
+  it('7) Não atendeu: insertInteraction (call_no_answer) acontece antes de toggleTask', async () => {
+    const order = [];
+    const insertInteraction = vi.fn(async (data) => { order.push(['insert', data]); return { id: 'int-1', ...data }; });
+    const toggleTask = vi.fn(async (id) => { order.push(['toggle', id]); });
+
+    await runCompleteTaskWithResult(leadAgendaTask, 'call_no_answer', 'user-abc', { insertInteraction, toggleTask });
+
+    expect(order.map((o) => o[0])).toEqual(['insert', 'toggle']);
+    expect(insertInteraction.mock.calls[0][0]).toMatchObject({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' } });
+  });
+
+  it('8) metadata.task_id é incluído no objeto passado para insertInteraction (chegaria intacto até interactionToRow)', async () => {
+    const insertInteraction = vi.fn(async (data) => ({ id: 'int-1', ...data }));
+    const toggleTask = vi.fn(async () => {});
+
+    await runCompleteTaskWithResult(leadAgendaTask, 'call_connected', 'user-abc', { insertInteraction, toggleTask });
+
+    expect(insertInteraction.mock.calls[0][0].metadata).toMatchObject({
+      activity_class: 'engagement', outcome: 'connected', source: 'user', task_id: 't1',
+    });
+    expect(insertInteraction.mock.calls[0][0].createdBy).toBe('user-abc');
+  });
+
+  it('10) falha no insert: toggleTask NÃO é chamado', async () => {
+    const insertInteraction = vi.fn(async () => { throw new Error('Falha de rede simulada'); });
+    const toggleTask = vi.fn(async () => {});
+
+    await expect(runCompleteTaskWithResult(leadAgendaTask, 'call_connected', 'user-abc', { insertInteraction, toggleTask }))
+      .rejects.toThrow('Falha de rede simulada');
+    expect(toggleTask).not.toHaveBeenCalled();
+  });
+
+  it('11) falha no toggle depois do insert: erro propaga, insertInteraction não é chamado de novo (interação não é desfeita)', async () => {
+    const insertInteraction = vi.fn(async (data) => ({ id: 'int-1', ...data }));
+    const toggleTask = vi.fn(async () => { throw new Error('Falha ao concluir a tarefa'); });
+
+    await expect(runCompleteTaskWithResult(leadAgendaTask, 'call_connected', 'user-abc', { insertInteraction, toggleTask }))
+      .rejects.toThrow('Falha ao concluir a tarefa');
+    expect(insertInteraction).toHaveBeenCalledTimes(1);
+  });
+
+  it('não oferece resultado (ex. rotina): não chama insertInteraction nem toggleTask', async () => {
+    const insertInteraction = vi.fn();
+    const toggleTask = vi.fn();
+    const rotinaTask = { id: 't2', leadId: null, origem: 'rotina' };
+
+    await runCompleteTaskWithResult(rotinaTask, 'call_connected', 'user-abc', { insertInteraction, toggleTask });
+
+    expect(insertInteraction).not.toHaveBeenCalled();
+    expect(toggleTask).not.toHaveBeenCalled();
   });
 });
