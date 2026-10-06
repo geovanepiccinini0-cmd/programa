@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CANAIS, PRODUTOS, STAGES, TAGS_LEAD, TAG_COLOR } from '../constants.js';
+import {
+  CANAIS, PRODUTOS, STAGES, TAGS_LEAD, TAG_COLOR,
+  NEXT_ACTION_TYPES, LEAD_TEMPERATURES, PRIORITIES, LOST_REASONS,
+} from '../constants.js';
 import { availableTimeSlots, formatPhoneBR, moneyFormat, parseMoneyValue } from '../utils.js';
 import ProdutoFields from './ProdutoFields.jsx';
+import LeadTimeline from './LeadTimeline.jsx';
 
 const EMPTY_EXTRA = { tipo: '', credito: '', entrada: '', parcela: '', lance: '', valor: '', valorImovel: '' };
 
@@ -18,7 +22,7 @@ function extraFromLead(lead) {
   };
 }
 
-export default function LeadModal({ lead, tasks, onClose, onSave }) {
+export default function LeadModal({ lead, tasks, onClose, onSave, onAddInteractionNote }) {
   const [nome, setNome] = useState('');
   const [telefone, setTelefone] = useState('');
   const [cidade, setCidade] = useState('');
@@ -31,6 +35,12 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
   const [tags, setTags] = useState([]);
   const [extra, setExtra] = useState({ ...EMPTY_EXTRA });
   const [error, setError] = useState('');
+  const [nextActionType, setNextActionType] = useState('');
+  const [nextActionNote, setNextActionNote] = useState('');
+  const [leadTemperature, setLeadTemperature] = useState('');
+  const [priority, setPriority] = useState('normal');
+  const [lostReason, setLostReason] = useState('');
+  const [lostReasonNote, setLostReasonNote] = useState('');
 
   useEffect(() => {
     setNome(lead ? lead.nome : '');
@@ -44,6 +54,12 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
     setNotas(lead ? lead.notas || '' : '');
     setTags(lead ? lead.tags || [] : []);
     setExtra(extraFromLead(lead));
+    setNextActionType(lead ? lead.nextActionType || '' : '');
+    setNextActionNote(lead ? lead.nextActionNote || '' : '');
+    setLeadTemperature(lead ? lead.leadTemperature || '' : '');
+    setPriority(lead ? lead.priority || 'normal' : 'normal');
+    setLostReason(lead ? lead.lostReason || '' : '');
+    setLostReasonNote(lead ? lead.lostReasonNote || '' : '');
     setError('');
   }, [lead]);
 
@@ -97,6 +113,12 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
       proximoContatoHorario: proximoContato ? proximoContatoHorario : '',
       notas: notas.trim(),
       tags,
+      nextActionType,
+      nextActionNote: nextActionNote.trim(),
+      leadTemperature,
+      priority,
+      lostReason: etapa === 'Perdido' ? lostReason : '',
+      lostReasonNote: etapa === 'Perdido' ? lostReasonNote.trim() : '',
       ...buildExtraForSave(),
     };
     onSave(lead ? lead.id : null, data);
@@ -148,6 +170,48 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
               </select>
             </div>
           </div>
+          <div className="field-row">
+            <div className="field">
+              <label>Temperatura</label>
+              <div className="filters" style={{ marginBottom: 0 }}>
+                {LEAD_TEMPERATURES.map((t) => {
+                  const active = leadTemperature === t.value;
+                  return (
+                    <button
+                      type="button"
+                      key={t.value}
+                      className={`chip ${active ? 'active' : ''}`}
+                      style={active ? { background: t.color, color: '#fff', borderColor: 'transparent' } : undefined}
+                      onClick={() => setLeadTemperature(active ? '' : t.value)}
+                    >
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="field">
+              <label htmlFor="f-prioridade">Prioridade</label>
+              <select id="f-prioridade" value={priority} onChange={(e) => setPriority(e.target.value)}>
+                {PRIORITIES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+              </select>
+            </div>
+          </div>
+          {etapa === 'Perdido' && (
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="f-lost-reason">Motivo de perda</label>
+                <select id="f-lost-reason" value={lostReason} onChange={(e) => setLostReason(e.target.value)}>
+                  <option value="">Selecione...</option>
+                  {LOST_REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="f-lost-note">Observação</label>
+                <input type="text" id="f-lost-note" value={lostReasonNote} onChange={(e) => setLostReasonNote(e.target.value)} />
+              </div>
+            </div>
+          )}
           <ProdutoFields produto={produto} extra={extra} onExtraChange={setExtra} />
           <div className="field-row">
             <div className="field">
@@ -180,6 +244,25 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
               </div>
             </div>
           )}
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="f-next-action-type">Próxima ação</label>
+              <select id="f-next-action-type" value={nextActionType} onChange={(e) => setNextActionType(e.target.value)}>
+                <option value="">Não definida</option>
+                {NEXT_ACTION_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="f-next-action-note">O que precisa ser feito</label>
+              <input
+                type="text"
+                id="f-next-action-note"
+                placeholder="Ex: Retomar proposta após conversar com a esposa"
+                value={nextActionNote}
+                onChange={(e) => setNextActionNote(e.target.value)}
+              />
+            </div>
+          </div>
           <div className="field">
             <label>Tags</label>
             <div className="filters" style={{ marginBottom: 0 }}>
@@ -203,6 +286,7 @@ export default function LeadModal({ lead, tasks, onClose, onSave }) {
             <label htmlFor="f-notas">Notas</label>
             <textarea id="f-notas" rows={3} value={notas} onChange={(e) => setNotas(e.target.value)} />
           </div>
+          {lead && <LeadTimeline leadId={lead.id} onAddNote={onAddInteractionNote} />}
           <div className="modal-actions">
             <button type="button" className="btn-ghost" onClick={onClose}>Cancelar</button>
             <button type="button" className="btn-primary" onClick={handleSave}>Salvar lead</button>

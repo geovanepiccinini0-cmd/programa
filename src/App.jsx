@@ -14,8 +14,11 @@ import { useAppState } from './hooks/useAppState.js';
 import { useAuth } from './hooks/useAuth.js';
 import { useAppointmentAlerts } from './hooks/useAppointmentAlerts.js';
 import { isSupabaseConfigured } from './lib/supabaseClient.js';
+import { interactionsApi } from './lib/db.js';
 import { STAGES } from './constants.js';
 import { downloadJSON, todayStr } from './utils.js';
+
+const BACKUP_VERSION = 2;
 
 function CrmApp({ userId, isAdmin, onSignOut }) {
   const {
@@ -24,6 +27,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
     addTask, toggleTask, deleteTask,
     addRotina, toggleRotinaAtiva, deleteRotina,
     importBackup,
+    addInteractionNote,
   } = useAppState(userId);
 
   const [activeTab, setActiveTab] = useState('hoje');
@@ -77,8 +81,16 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
     }
   }
 
-  function handleExportBackup() {
-    const backup = { leads, tasks, templates, exportadoEm: new Date().toISOString() };
+  async function handleExportBackup() {
+    let interactions = [];
+    try {
+      interactions = await interactionsApi.fetchAllForUser(userId);
+    } catch (e) {
+      console.warn('Não foi possível incluir o histórico no backup (migration 007 já foi rodada no Supabase?):', e);
+    }
+    const backup = {
+      backupVersion: BACKUP_VERSION, leads, tasks, templates, interactions, exportadoEm: new Date().toISOString(),
+    };
     downloadJSON(backup, `backup-crm-piccinini-${todayStr()}.json`);
   }
 
@@ -178,6 +190,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
           tasks={tasks}
           onClose={() => setLeadModalOpen(false)}
           onSave={handleSaveLead}
+          onAddInteractionNote={addInteractionNote}
         />
       )}
 

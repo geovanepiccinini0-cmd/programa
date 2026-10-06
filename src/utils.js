@@ -1,3 +1,5 @@
+import { STALE_DAYS } from './constants.js';
+
 export function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -132,6 +134,30 @@ export function leadMatchesSearch(lead, query) {
   const qDigits = q.replace(/\D/g, '');
   const telefoneMatch = qDigits.length > 0 && (lead.telefone || '').replace(/\D/g, '').includes(qDigits);
   return nomeMatch || telefoneMatch;
+}
+
+// --- V2 (Fase 1) — "próxima ação" e classificação de prioridade (dados e
+// lógica preparados; ainda não usados para reconstruir a tela Hoje). ---
+
+export function leadIsActive(lead) {
+  return lead.etapa !== 'Ganho' && lead.etapa !== 'Perdido';
+}
+
+export function leadHasNoNextAction(lead) {
+  return leadIsActive(lead) && !lead.proximoContato;
+}
+
+export function classifyLeadPriority(lead) {
+  const tags = [];
+  if (!leadIsActive(lead)) return tags;
+  const today = todayStr();
+  if (lead.proximoContato && lead.proximoContato < today) tags.push('ATRASADO');
+  if (lead.proximoContato === today) tags.push('HOJE');
+  if (lead.leadTemperature === 'hot') tags.push('QUENTE');
+  if (lead.priority === 'urgent') tags.push('URGENTE');
+  if (!lead.proximoContato) tags.push('SEM PRÓXIMA AÇÃO');
+  if (diasDesde(lead.ultimaAtualizacao || lead.criadoEm) >= STALE_DAYS) tags.push('PARADO');
+  return tags;
 }
 
 export function leadValor(l) {

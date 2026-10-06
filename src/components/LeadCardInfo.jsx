@@ -1,5 +1,5 @@
 import { PROD_COLOR, TAG_COLOR } from '../constants.js';
-import { diasDesde, fmtBRL, fmtDate, leadValor, todayStr } from '../utils.js';
+import { diasDesde, fmtBRL, fmtDate, leadHasNoNextAction, leadValor, todayStr } from '../utils.js';
 
 export function DetailLine({ lead }) {
   if (lead.produto === 'Carta Contemplada') {
@@ -44,15 +44,18 @@ export function LeadCardBody({ lead, footer }) {
           {lead.tipo && <span className="badge" style={{ background: 'var(--surface-2)', color: 'var(--text)', whiteSpace: 'nowrap' }}>{lead.tipo}</span>}
         </div>
       </div>
-      {lead.tags && lead.tags.length > 0 && (
+      {(lead.tags && lead.tags.length > 0) || leadHasNoNextAction(lead) ? (
         <div className="card-meta" style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          {lead.tags.map((tag) => (
+          {lead.tags && lead.tags.map((tag) => (
             <span key={tag} className="badge" style={{ background: TAG_COLOR[tag] || 'var(--surface-2)', color: '#fff' }}>
               {tag}
             </span>
           ))}
+          {leadHasNoNextAction(lead) && (
+            <span className="badge" style={{ background: 'var(--red)', color: '#fff' }}>SEM PRÓXIMA AÇÃO</span>
+          )}
         </div>
-      )}
+      ) : null}
       <div className="card-valor">{fmtBRL(leadValor(lead))}</div>
       <DetailLine lead={lead} />
       <div className={`card-meta ${late ? 'late' : ''}`}>
