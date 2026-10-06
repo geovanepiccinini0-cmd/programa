@@ -1,15 +1,23 @@
 import { useEffect, useMemo, useState } from 'react';
 import { buildFollowUpQueue, sortDueFollowUps, sortWaitingFollowUps, sortBlockedFollowUps } from '../lib/followUpQueue.js';
 import { FOLLOW_UP_POLICY } from '../lib/followUpEngine.js';
+import { buildTelHref } from '../lib/followUpAction.js';
+import { useCommercialRegistration } from '../hooks/useCommercialRegistration.js';
 import {
   formatFollowUpReason, formatFollowUpTimeLabel, formatSuggestedAction,
   getOperationalBlockers, formatOperationalBlocker, hasMissingPhoneWarning,
   shouldShowAttemptCount, formatAttemptCount, shouldShowBlockedFollowUp,
 } from '../lib/followUpPresentation.js';
 
-// Fase 2C.2B — UI do Shadow Mode. Só recomenda: a única ação possível é
-// abrir o LeadModal (via onEditLead) para o vendedor decidir o que fazer.
-// Nenhum botão comercial (Ligar/WhatsApp/Criar tarefa) existe aqui.
+// Fase 2C.2B — UI do Shadow Mode. Só recomenda: a ação comercial sempre
+// exige confirmação explícita do vendedor.
+//
+// Fase 2D.1 — primeira ação assistida real (só "Ligar"): abrir `tel:`
+// NUNCA registra nada sozinho — é só um atalho de conveniência. O
+// resultado comercial (call_connected/call_no_answer) só é registrado
+// quando o vendedor confirma explicitamente no picker que aparece depois
+// de "Ligar". "Cancelar" não registra nada. WhatsApp/reunião/proposta
+// continuam só texto nesta fase (ver investigação 2D.0).
 
 const TABS = [
   { key: 'due', label: 'Precisa de ação' },
@@ -19,7 +27,23 @@ const TABS = [
 
 const PAGE_SIZE = 20;
 
-function DueCard({ item, onEditLead }) {
+// Fase 2D.1 — picker de resultado pós-"Ligar". Não decide nada sozinho:
+// cada botão só dispara o callback do pai (que chama
+// useCommercialRegistration.register ou só fecha, no caso de Cancelar).
+function CallResultPicker({ registering, error, onResult, onCancel }) {
+  return (
+    <div className="followup-call-picker">
+      <div className="followup-card-actions">
+        <button type="button" className="chip" disabled={registering} onClick={() => onResult('call_connected')}>Atendeu</button>
+        <button type="button" className="chip" disabled={registering} onClick={() => onResult('call_no_answer')}>Não atendeu</button>
+        <button type="button" className="chip" disabled={registering} onClick={onCancel}>Cancelar</button>
+      </div>
+      {error && <div className="followup-warning">{error}</div>}
+    </div>
+  );
+}
+
+function DueCard({ item, onEditLead, assistedCallLeadId, callRegistering, callError, onStartCall, onCallResult, onCancelCall }) {
   const { lead, evaluation } = item;
   const reason = formatFollowUpReason(evaluation);
   const time = formatFollowUpTimeLabel(evaluation, item.now);
@@ -29,19 +53,51 @@ function DueCard({ item, onEditLead }) {
   const timeLine = [time, attempt].filter(Boolean).join(' · ');
   const etapaProduto = [lead.etapa, lead.produto].filter(Boolean).join(' · ');
 
+  // Fase 2D.1 — só "call" ganha CTA executável nesta fase (whatsapp/
+  // meeting/proposal continuam só texto, ver investigação 2D.0). Sem
+  // telefone utilizável -> buildTelHref devolve null -> sem CTA, sem
+  // botão desabilitado (mesma decisão já tomada para o resto do card:
+  // o aviso "Sem telefone cadastrado" abaixo já é suficiente).
+  const isCallSuggested = evaluation.suggestedAction && evaluation.suggestedAction.type === 'call';
+  const telHref = isCallSuggested ? buildTelHref(lead.telefone) : null;
+  const isAssistingThisLead = assistedCallLeadId === lead.id;
+
   return (
-    <button type="button" className="followup-card" onClick={() => onEditLead(lead)}>
-      <div className="followup-card-top">
-        <span className="followup-card-nome">{lead.nome}</span>
-        <span className="badge badge-suggestion">Sugestão</span>
-      </div>
-      {reason && <div className="followup-card-reason">{reason.label}</div>}
-      {reason && <div className="card-meta">{reason.subtitle}</div>}
-      {timeLine && <div className="card-meta">{timeLine}</div>}
-      {etapaProduto && <div className="card-meta">{etapaProduto}</div>}
-      {suggestedAction && <div className="card-meta">Ação sugerida: {suggestedAction}</div>}
-      {missingPhone && <div className="followup-warning">Sem telefone cadastrado</div>}
-    </button>
+    <div className="followup-card">
+      {/* Fase 2D.1 — o card deixou de ser um único <button> porque agora
+          pode conter um botão de ação real ("Ligar") ao lado do corpo
+          clicável — botão dentro de botão é HTML inválido e quebra
+          acessibilidade. A região informativa vira seu próprio <button>
+          (reset visual via .followup-card-open, mesma aparência de
+          antes), e "Ligar"/o picker ficam como irmãos dele, nunca
+          aninhados — então nenhum clique neles propaga para o
+          onEditLead, sem precisar de stopPropagation. */}
+      <button type="button" className="followup-card-open" onClick={() => onEditLead(lead)}>
+        <div className="followup-card-top">
+          <span className="followup-card-nome">{lead.nome}</span>
+          <span className="badge badge-suggestion">Sugestão</span>
+        </div>
+        {reason && <div className="followup-card-reason">{reason.label}</div>}
+        {reason && <div className="card-meta">{reason.subtitle}</div>}
+        {timeLine && <div className="card-meta">{timeLine}</div>}
+        {etapaProduto && <div className="card-meta">{etapaProduto}</div>}
+        {suggestedAction && <div className="card-meta">Ação sugerida: {suggestedAction}</div>}
+        {missingPhone && <div className="followup-warning">Sem telefone cadastrado</div>}
+      </button>
+      {telHref && !isAssistingThisLead && (
+        <div className="followup-card-actions">
+          <a href={telHref} className="icon-btn" onClick={() => onStartCall(lead.id)}>Ligar</a>
+        </div>
+      )}
+      {isAssistingThisLead && (
+        <CallResultPicker
+          registering={callRegistering}
+          error={callError}
+          onResult={(actionKey) => onCallResult(lead.id, actionKey)}
+          onCancel={() => onCancelCall(lead.id)}
+        />
+      )}
+    </div>
   );
 }
 
@@ -88,9 +144,19 @@ const EMPTY_MESSAGES = {
   blocked: 'Nenhum follow-up bloqueado.',
 };
 
-export default function FollowUpQueue({ leads, interactions, tasks, interactionsLoading, interactionsError, now, onEditLead, onRetryInteractions }) {
+export default function FollowUpQueue({
+  leads, interactions, tasks, interactionsLoading, interactionsError, now,
+  onEditLead, onRetryInteractions, onRegisterCommercialInteraction,
+}) {
   const [tab, setTab] = useState('due');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  // Fase 2D.1 — qual lead (no máximo um por vez) está com o picker de
+  // ligação aberto. Vive aqui (no pai), não dentro de DueCard: se a fila
+  // recalcular e esse lead sumir da aba due, o card desmonta mas este
+  // state sobrevive — o efeito abaixo o limpa de forma previsível, sem
+  // crash e sem registrar nada sozinho.
+  const [assistedCallLeadId, setAssistedCallLeadId] = useState(null);
+  const { registering: callRegistering, error: callError, register: registerCall, clearError: clearCallError } = useCommercialRegistration(onRegisterCommercialInteraction);
 
   useEffect(() => { setVisibleCount(PAGE_SIZE); }, [tab]);
 
@@ -113,6 +179,41 @@ export default function FollowUpQueue({ leads, interactions, tasks, interactions
     [queue],
   );
   const errorCount = useMemo(() => queue.filter((item) => item.error).length, [queue]);
+
+  // Fase 2D.1 — se o lead que estava com o picker aberto sumir da fila
+  // due (ex.: a fila recalculou por outro motivo enquanto o picker
+  // estava aberto), limpa o state em vez de deixá-lo "pendurado" sem
+  // card correspondente. Nunca registra nada por conta própria aqui.
+  useEffect(() => {
+    if (assistedCallLeadId && !dueItems.some((item) => item.lead.id === assistedCallLeadId)) {
+      setAssistedCallLeadId(null);
+    }
+  }, [dueItems, assistedCallLeadId]);
+
+  function handleStartCall(leadId) {
+    if (assistedCallLeadId !== leadId) clearCallError();
+    setAssistedCallLeadId(leadId);
+  }
+
+  function handleCancelCall(leadId) {
+    if (assistedCallLeadId !== leadId) return;
+    setAssistedCallLeadId(null);
+    clearCallError();
+  }
+
+  async function handleCallResult(leadId, actionKey) {
+    try {
+      const inserted = await registerCall(leadId, actionKey);
+      if (!inserted) return; // guard de duplo clique (register já em andamento)
+      setAssistedCallLeadId(null);
+      // interactions central já atualiza dentro de registerCommercialInteraction
+      // (useAppState.js) — a fila recalcula sozinha a partir da prop, sem
+      // atualização manual paralela aqui.
+    } catch (e) {
+      // erro já populado em callError pelo hook; picker permanece aberto
+      // (continua montado porque o lead, por enquanto, ainda está em due).
+    }
+  }
 
   const itemsByTab = { due: dueItems, waiting: waitingItems, blocked: blockedItems };
   const activeItems = itemsByTab[tab];
@@ -161,7 +262,17 @@ export default function FollowUpQueue({ leads, interactions, tasks, interactions
           ) : (
             <div className="followup-list">
               {visibleItems.map((item) => (
-                <ActiveCard key={item.lead.id} item={{ ...item, now }} onEditLead={onEditLead} />
+                <ActiveCard
+                  key={item.lead.id}
+                  item={{ ...item, now }}
+                  onEditLead={onEditLead}
+                  assistedCallLeadId={assistedCallLeadId}
+                  callRegistering={callRegistering}
+                  callError={callError}
+                  onStartCall={handleStartCall}
+                  onCallResult={handleCallResult}
+                  onCancelCall={handleCancelCall}
+                />
               ))}
             </div>
           )}

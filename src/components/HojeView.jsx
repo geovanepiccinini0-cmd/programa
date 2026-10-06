@@ -8,6 +8,7 @@ import FollowUpQueue from './FollowUpQueue.jsx';
 export default function HojeView({
   leads, tasks, onAddTask, onToggleTask, onDeleteTask, onCompleteWithResult,
   interactions, interactionsLoading, interactionsError, now, onEditLead, onRetryInteractions,
+  onRegisterCommercialInteraction,
 }) {
   const [title, setTitle] = useState('');
   const [cat, setCat] = useState(CATS_TASK[0]);
@@ -39,6 +40,7 @@ export default function HojeView({
         now={now}
         onEditLead={onEditLead}
         onRetryInteractions={onRetryInteractions}
+        onRegisterCommercialInteraction={onRegisterCommercialInteraction}
       />
 
       <div className="add-task-form">
