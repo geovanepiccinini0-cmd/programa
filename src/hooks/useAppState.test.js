@@ -1,4 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+// Fase 2C.2A — logStageChange chama interactionsApi/auditLogApi de
+// '../lib/db.js' direto (sem injeção de dependência, diferente de
+// runCompleteTaskWithResult). Para testar sem bater no Supabase real,
+// mocka-se só esse módulo; as demais funções testadas neste arquivo são
+// puras e nunca tocam db.js.
+vi.mock('../lib/db.js', () => ({
+  leadsApi: {}, tasksApi: {}, templatesApi: {},
+  interactionsApi: { insert: vi.fn(), fetchAllForUser: vi.fn() },
+  auditLogApi: { insert: vi.fn() },
+}));
+
 import {
   pendingAutoTasksForLeads, autoTaskHorarioUpdates, pendingRotinaTasks,
   computeLeadAgendaTaskData, reconcileLeadAgendaActions,
@@ -7,7 +19,9 @@ import {
   computeLastActivityAt, computeLastContactAttemptAt, computeLastCustomerEngagementAt,
   computeCommercialInteractionData,
   shouldOfferResultCapture, runCompleteTaskWithResult,
+  logStageChange,
 } from './useAppState.js';
+import { interactionsApi, auditLogApi } from '../lib/db.js';
 import { todayStr } from '../utils.js';
 import { DIAS_SEMANA } from '../constants.js';
 
@@ -586,5 +600,64 @@ describe('Fase 2B — matriz completa dos três relógios (trava a decisão sem�
     const interactions = [callNoAnswer, callConnected]; // no_answer em 02/10, connected em 03/10
     expect(computeLastContactAttemptAt(interactions)).toBe(callConnected.occurredAt);
     expect(computeLastCustomerEngagementAt(interactions)).toBe(callConnected.occurredAt);
+  });
+});
+
+describe('Fase 2C.2A — logStageChange (único ponto de escrita de interactions fora de useState que não usa DI)', () => {
+  const prevLead = { id: 'lead-1', etapa: 'Negociação' };
+  const updatedLead = { id: 'lead-1', etapa: 'Ganho' };
+
+  beforeEach(() => {
+    interactionsApi.insert.mockReset();
+    auditLogApi.insert.mockReset();
+  });
+
+  it('1) etapa mudou: insere a interação e aplica a LINHA DEVOLVIDA pelo insert ao estado (nunca um objeto local inventado)', async () => {
+    const insertedRow = { id: 'int-server-1', leadId: 'lead-1', type: 'stage_change', metadata: { from_stage: 'Negociação', to_stage: 'Ganho', activity_class: 'internal', source: 'user' } };
+    interactionsApi.insert.mockResolvedValueOnce(insertedRow);
+    auditLogApi.insert.mockResolvedValueOnce({});
+    const setInteractions = vi.fn();
+
+    await logStageChange(prevLead, updatedLead, 'user-abc', setInteractions);
+
+    expect(interactionsApi.insert).toHaveBeenCalledTimes(1);
+    expect(setInteractions).toHaveBeenCalledTimes(1);
+    const updater = setInteractions.mock.calls[0][0];
+    expect(updater([])).toEqual([insertedRow]); // é a linha do servidor, não um objeto recriado localmente
+  });
+
+  it('2) etapa não mudou: não insere nada e não chama setInteractions (sem duplicidade/ruído no estado)', async () => {
+    const setInteractions = vi.fn();
+    await logStageChange(prevLead, { id: 'lead-1', etapa: 'Negociação' }, 'user-abc', setInteractions);
+    expect(interactionsApi.insert).not.toHaveBeenCalled();
+    expect(setInteractions).not.toHaveBeenCalled();
+  });
+
+  it('3) falha no insert: não chama setInteractions (nenhuma interação fantasma no estado) e não propaga o erro (mudança de etapa já persistida não pode cair)', async () => {
+    interactionsApi.insert.mockRejectedValueOnce(new Error('relation "lead_interactions" does not exist'));
+    const setInteractions = vi.fn();
+
+    await expect(logStageChange(prevLead, updatedLead, 'user-abc', setInteractions)).resolves.toBeUndefined();
+    expect(setInteractions).not.toHaveBeenCalled();
+  });
+
+  it('4) falha no audit_log depois do insert de sucesso: a interação já aplicada ao estado não é desfeita (decisão explícita, sem rollback)', async () => {
+    const insertedRow = { id: 'int-server-2', leadId: 'lead-1' };
+    interactionsApi.insert.mockResolvedValueOnce(insertedRow);
+    auditLogApi.insert.mockRejectedValueOnce(new Error('relation "audit_log" does not exist'));
+    const setInteractions = vi.fn();
+
+    await expect(logStageChange(prevLead, updatedLead, 'user-abc', setInteractions)).resolves.toBeUndefined();
+    expect(setInteractions).toHaveBeenCalledTimes(1);
+  });
+
+  it('5) setInteractions é chamado no máximo uma vez por chamada (sem duplicidade)', async () => {
+    interactionsApi.insert.mockResolvedValueOnce({ id: 'int-server-3', leadId: 'lead-1' });
+    auditLogApi.insert.mockResolvedValueOnce({});
+    const setInteractions = vi.fn();
+
+    await logStageChange(prevLead, updatedLead, 'user-abc', setInteractions);
+
+    expect(setInteractions.mock.calls.length).toBeLessThanOrEqual(1);
   });
 });

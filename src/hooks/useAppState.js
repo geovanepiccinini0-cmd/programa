@@ -248,11 +248,12 @@ export function computeLastCustomerEngagementAt(interactions) {
 // migration ainda não foi rodada no Supabase, o insert falha — isso não
 // pode derrubar a troca de etapa em si (já persistida em leads), então
 // o erro é só avisado no console.
-async function logStageChange(prevLead, updatedLead, userId) {
+export async function logStageChange(prevLead, updatedLead, userId, setInteractions) {
   const interaction = computeStageChangeInteraction(prevLead, updatedLead.etapa, userId);
   if (!interaction) return;
   try {
-    await interactionsApi.insert(interaction);
+    const inserted = await interactionsApi.insert(interaction);
+    setInteractions((prev) => [...prev, inserted]);
     await auditLogApi.insert({
       entityType: 'lead',
       entityId: updatedLead.id,
@@ -317,6 +318,22 @@ export function useAppState(userId) {
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // Fase 2C.2A — estado central de interactions, para a futura fila de
+  // follow-up (Shadow Mode) avaliar todos os leads sem N+1 fetch. Busca
+  // deliberadamente INDEPENDENTE do efeito de leads/tasks/templates
+  // abaixo: se falhar, o CRM continua abrindo normalmente (leads/tasks
+  // são mais importantes que Shadow Mode) — só a fila futura veria
+  // interactionsError. interactionsApi.fetchAllForUser faz uma única
+  // query (sem N+1), mas SEM paginação explícita — o PostgREST/Supabase
+  // tem um limite padrão de 1000 linhas por request; em bases muito
+  // grandes (milhares de interactions) isso poderia truncar
+  // silenciosamente. Limitação arquitetural conhecida, não resolvida
+  // nesta fase (não implementar paginação agora; não inferir
+  // truncamento só por "vieram exatamente 1000 registros" — isso não
+  // prova nada, geraria falso positivo).
+  const [interactions, setInteractions] = useState([]);
+  const [interactionsLoading, setInteractionsLoading] = useState(true);
+  const [interactionsError, setInteractionsError] = useState(null);
   const autoTasksChecked = useRef(false);
 
   useEffect(() => {
@@ -358,6 +375,18 @@ export function useAppState(userId) {
     return () => { cancelled = true; };
   }, [userId]);
 
+  // Fase 2C.2A — fetch independente, nunca mistura com o loading/error
+  // principal (leads/tasks/templates) acima.
+  useEffect(() => {
+    let cancelled = false;
+    setInteractionsLoading(true);
+    setInteractionsError(null);
+    interactionsApi.fetchAllForUser(userId)
+      .then((data) => { if (!cancelled) { setInteractions(data); setInteractionsLoading(false); } })
+      .catch((e) => { if (!cancelled) { setInteractionsError(e); setInteractionsLoading(false); } });
+    return () => { cancelled = true; };
+  }, [userId]);
+
   useEffect(() => {
     const channel = supabase
       .channel('crm-piccinini-sync')
@@ -380,7 +409,7 @@ export function useAppState(userId) {
       ? await leadsApi.update(id, { ...data, ...stageFields, ultimaAtualizacao: todayStr() })
       : await leadsApi.insert({ ...data, criadoEm: todayStr(), ultimaAtualizacao: todayStr() });
     setLeads((prev) => (id ? prev.map((l) => (l.id === id ? saved : l)) : [...prev, saved]));
-    if (etapaChanged) await logStageChange(prevLead, saved, userId);
+    if (etapaChanged) await logStageChange(prevLead, saved, userId, setInteractions);
     // proximoContato é um AGENDAMENTO: gera/reconcilia só a tarefa
     // "Contato" (lead-agenda). NÃO dispara pendingAutoTasksForLeads
     // (Follow-up/origem 'auto') — isso ficou reservado para uma automação
@@ -395,6 +424,10 @@ export function useAppState(userId) {
     await leadsApi.remove(id);
     setLeads((prev) => prev.filter((l) => l.id !== id));
     setTasks((prev) => prev.filter((t) => t.leadId !== id));
+    // lead_interactions tem on delete cascade no banco; aqui só mantemos o
+    // state central (Fase 2C.2A) consistente com isso, mesmo padrão já
+    // aplicado a tasks acima.
+    setInteractions((prev) => prev.filter((i) => i.leadId !== id));
   }, [tasks]);
 
   const moveStage = useCallback(async (id, dir, STAGES) => {
@@ -408,7 +441,7 @@ export function useAppState(userId) {
     const updated = await leadsApi.update(id, { ...lead, etapa: novaEtapa, ...stageFields, ultimaAtualizacao: todayStr() });
     setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
     await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
-    await logStageChange(lead, updated, userId);
+    await logStageChange(lead, updated, userId, setInteractions);
   }, [leads, tasks, userId]);
 
   const setLeadStage = useCallback(async (id, etapa) => {
@@ -418,15 +451,19 @@ export function useAppState(userId) {
     const updated = await leadsApi.update(id, { ...lead, etapa, ...stageFields, ultimaAtualizacao: todayStr() });
     setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
     await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
-    await logStageChange(lead, updated, userId);
+    await logStageChange(lead, updated, userId, setInteractions);
   }, [leads, tasks, userId]);
 
   const addInteractionNote = useCallback(async (leadId, content) => {
-    return interactionsApi.insert(computeNoteInteractionData(leadId, content, userId));
+    const inserted = await interactionsApi.insert(computeNoteInteractionData(leadId, content, userId));
+    setInteractions((prev) => [...prev, inserted]);
+    return inserted;
   }, [userId]);
 
   const registerCommercialInteraction = useCallback(async (leadId, action) => {
-    return interactionsApi.insert(computeCommercialInteractionData(leadId, action, userId));
+    const inserted = await interactionsApi.insert(computeCommercialInteractionData(leadId, action, userId));
+    setInteractions((prev) => [...prev, inserted]);
+    return inserted;
   }, [userId]);
 
   const addTask = useCallback(async (titulo, categoria, data, horario) => {
@@ -457,7 +494,11 @@ export function useAppState(userId) {
   const completeTaskWithResult = useCallback(async (id, actionKey) => {
     const t = tasks.find((x) => x.id === id);
     await runCompleteTaskWithResult(t, actionKey, userId, {
-      insertInteraction: (data) => interactionsApi.insert(data),
+      insertInteraction: async (data) => {
+        const inserted = await interactionsApi.insert(data);
+        setInteractions((prev) => [...prev, inserted]);
+        return inserted;
+      },
       toggleTask,
     });
   }, [tasks, userId, toggleTask]);
@@ -533,18 +574,24 @@ export function useAppState(userId) {
     // normalizeBackup já trata backups v1 (sem essa chave) como [],
     // sem quebrar o restore. Os leads antigos já foram excluídos acima,
     // o que já apaga em cascata (on delete cascade) as interações deles.
+    const newInteractions = [];
     for (const it of backup.interactions) {
       if (!it.leadId || !leadIdMap.has(it.leadId)) continue;
-      await interactionsApi.insert({ ...it, leadId: leadIdMap.get(it.leadId) });
+      const inserted = await interactionsApi.insert({ ...it, leadId: leadIdMap.get(it.leadId) });
+      newInteractions.push(inserted);
     }
 
     setLeads(newLeads);
     setTemplates(newTemplates);
     setTasks(newTasks);
+    // Fase 2C.2A — substitui por completo, mesmo padrão de leads/tasks/
+    // templates acima (importBackup é um replace total, não um merge).
+    setInteractions(newInteractions);
   }, [leads, tasks, templates]);
 
   return {
     leads, tasks, templates, loading, error,
+    interactions, interactionsLoading, interactionsError,
     saveLead, deleteLead, moveStage, setLeadStage,
     addTask, toggleTask, deleteTask, completeTaskWithResult,
     addRotina, toggleRotinaAtiva, deleteRotina,
