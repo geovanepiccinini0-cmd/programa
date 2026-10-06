@@ -60,6 +60,7 @@ export const LOST_REASONS = [
 export const INTERACTION_TYPE_LABEL = {
   note: 'Nota',
   call: 'Ligação',
+  whatsapp: 'WhatsApp',
   follow_up: 'Follow-up',
   meeting: 'Reunião',
   proposal: 'Proposta',
@@ -74,4 +75,23 @@ export const INTERACTION_CHANNEL_LABEL = {
   whatsapp: 'WhatsApp',
   instagram: 'Instagram',
   email: 'E-mail',
+  in_person: 'Presencial',
 };
+
+// Fase 2A.2 — registro rápido de interações comerciais. `value` é a chave
+// usada por computeCommercialInteractionData (useAppState.js); `group`
+// organiza a UX de 2 níveis no LeadTimeline (categoria -> ação final).
+export const COMMERCIAL_INTERACTION_ACTIONS = [
+  { value: 'call_connected', label: 'Atendeu', group: 'call' },
+  { value: 'call_no_answer', label: 'Não atendeu', group: 'call' },
+  { value: 'whatsapp_sent', label: 'Enviado', group: 'whatsapp' },
+  { value: 'whatsapp_received', label: 'Cliente respondeu', group: 'whatsapp' },
+  { value: 'meeting_held', label: 'Reunião realizada', group: 'more' },
+  { value: 'proposal_sent', label: 'Proposta enviada', group: 'more' },
+];
+
+export const COMMERCIAL_INTERACTION_GROUPS = [
+  { value: 'call', label: '📞 Ligação' },
+  { value: 'whatsapp', label: '💬 WhatsApp' },
+  { value: 'more', label: '+ Mais' },
+];

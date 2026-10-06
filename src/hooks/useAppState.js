@@ -148,6 +148,56 @@ export function computeNoteInteractionData(leadId, content, userId) {
   };
 }
 
+// --- Fase 2A.2 — registro rápido de interações comerciais estruturadas ---
+//
+// Fonte única de verdade para a classificação (type/direction/channel/
+// activity_class/outcome). A UI só informa qual ação ocorreu (a chave);
+// nunca monta o objeto de interação diretamente. "Proposta enviada" é
+// 'attempt', não 'engagement': é uma ação do vendedor, não uma resposta
+// confirmada do cliente (ver decisão da Fase 2A.2).
+const COMMERCIAL_INTERACTION_ACTIONS = {
+  call_connected: {
+    type: 'call', direction: 'outbound', channel: 'phone',
+    metadata: { activity_class: 'engagement', outcome: 'connected' },
+  },
+  call_no_answer: {
+    type: 'call', direction: 'outbound', channel: 'phone',
+    metadata: { activity_class: 'attempt', outcome: 'no_answer' },
+  },
+  whatsapp_sent: {
+    type: 'whatsapp', direction: 'outbound', channel: 'whatsapp',
+    metadata: { activity_class: 'attempt' },
+  },
+  whatsapp_received: {
+    type: 'whatsapp', direction: 'inbound', channel: 'whatsapp',
+    metadata: { activity_class: 'engagement' },
+  },
+  meeting_held: {
+    type: 'meeting', direction: 'outbound', channel: 'in_person',
+    metadata: { activity_class: 'engagement', outcome: 'held' },
+  },
+  proposal_sent: {
+    type: 'proposal', direction: 'outbound', channel: 'manual',
+    metadata: { activity_class: 'attempt', outcome: 'sent' },
+  },
+};
+
+export function computeCommercialInteractionData(leadId, action, userId) {
+  const config = COMMERCIAL_INTERACTION_ACTIONS[action];
+  if (!config) {
+    throw new Error(`Ação de interação comercial desconhecida: "${action}"`);
+  }
+  return {
+    leadId,
+    type: config.type,
+    direction: config.direction,
+    channel: config.channel,
+    content: '',
+    metadata: { ...config.metadata, source: 'user' },
+    createdBy: userId || null,
+  };
+}
+
 // --- Fase 2A.1 — três relógios de atividade/contato, a partir de uma
 // coleção de lead_interactions. Usam occurred_at (não a ordem do array
 // nem created_at). Coleção vazia, ou nenhuma interação da classe
@@ -344,6 +394,10 @@ export function useAppState(userId) {
     return interactionsApi.insert(computeNoteInteractionData(leadId, content, userId));
   }, [userId]);
 
+  const registerCommercialInteraction = useCallback(async (leadId, action) => {
+    return interactionsApi.insert(computeCommercialInteractionData(leadId, action, userId));
+  }, [userId]);
+
   const addTask = useCallback(async (titulo, categoria, data, horario) => {
     const inserted = await tasksApi.insert({ titulo, categoria, data, horario, concluida: false, leadId: null, origem: 'manual' });
     setTasks((prev) => [...prev, inserted]);
@@ -454,5 +508,6 @@ export function useAppState(userId) {
     addRotina, toggleRotinaAtiva, deleteRotina,
     importBackup,
     addInteractionNote,
+    registerCommercialInteraction,
   };
 }

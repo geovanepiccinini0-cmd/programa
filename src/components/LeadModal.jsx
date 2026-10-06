@@ -22,7 +22,7 @@ function extraFromLead(lead) {
   };
 }
 
-export default function LeadModal({ lead, tasks, onClose, onSave, onAddInteractionNote }) {
+export default function LeadModal({ lead, tasks, onClose, onSave, onAddInteractionNote, onRegisterCommercialInteraction }) {
   const [nome, setNome] = useState('');
   const [telefone, setTelefone] = useState('');
   const [cidade, setCidade] = useState('');
@@ -286,7 +286,13 @@ export default function LeadModal({ lead, tasks, onClose, onSave, onAddInteracti
             <label htmlFor="f-notas">Notas</label>
             <textarea id="f-notas" rows={3} value={notas} onChange={(e) => setNotas(e.target.value)} />
           </div>
-          {lead && <LeadTimeline leadId={lead.id} onAddNote={onAddInteractionNote} />}
+          {lead && (
+            <LeadTimeline
+              leadId={lead.id}
+              onAddNote={onAddInteractionNote}
+              onRegisterInteraction={onRegisterCommercialInteraction}
+            />
+          )}
           <div className="modal-actions">
             <button type="button" className="btn-ghost" onClick={onClose}>Cancelar</button>
             <button type="button" className="btn-primary" onClick={handleSave}>Salvar lead</button>

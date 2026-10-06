@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { interactionToRow, interactionFromRow } from './db.js';
-import { computeNoteInteractionData, computeStageChangeInteraction } from '../hooks/useAppState.js';
+import { computeNoteInteractionData, computeStageChangeInteraction, computeCommercialInteractionData } from '../hooks/useAppState.js';
 
 // Fase 2A.1.1 — fecha a lacuna identificada na validação de produção da
 // Fase 2A.1: as funções de domínio (computeNoteInteractionData/
@@ -65,6 +65,32 @@ describe('interactionToRow — fronteira de serialização para o Supabase', () 
       outcome: 'no_answer',
       task_id: 'task-123',
       future_field: 'preserve-me',
+    });
+  });
+
+  it('E) Fase 2A.2 — call_no_answer (attempt): computeCommercialInteractionData -> interactionToRow preserva tudo', () => {
+    const data = computeCommercialInteractionData('l1', 'call_no_answer', 'user-abc');
+    const row = interactionToRow(data);
+    expect(row).toMatchObject({
+      lead_id: 'l1',
+      type: 'call',
+      direction: 'outbound',
+      channel: 'phone',
+      metadata: { activity_class: 'attempt', outcome: 'no_answer', source: 'user' },
+      created_by: 'user-abc',
+    });
+  });
+
+  it('F) Fase 2A.2 — whatsapp_received (engagement): computeCommercialInteractionData -> interactionToRow preserva tudo', () => {
+    const data = computeCommercialInteractionData('l1', 'whatsapp_received', 'user-abc');
+    const row = interactionToRow(data);
+    expect(row).toMatchObject({
+      lead_id: 'l1',
+      type: 'whatsapp',
+      direction: 'inbound',
+      channel: 'whatsapp',
+      metadata: { activity_class: 'engagement', source: 'user' },
+      created_by: 'user-abc',
     });
   });
 
