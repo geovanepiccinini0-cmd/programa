@@ -3,6 +3,7 @@ import {
   INTERACTION_TYPE_LABEL, INTERACTION_CHANNEL_LABEL,
   COMMERCIAL_INTERACTION_ACTIONS, COMMERCIAL_INTERACTION_GROUPS,
 } from '../constants.js';
+import { useCommercialRegistration } from '../hooks/useCommercialRegistration.js';
 
 function fmtDateTime(iso) {
   if (!iso) return '';
@@ -45,9 +46,11 @@ export default function LeadTimeline({ leadId, interactions, loading, error, onI
   const [noteText, setNoteText] = useState('');
   const [saving, setSaving] = useState(false);
   const [activeGroup, setActiveGroup] = useState(null);
-  const [registering, setRegistering] = useState(false);
-  const [registerError, setRegisterError] = useState('');
   const [successFlash, setSuccessFlash] = useState('');
+  // Fase 2D.1 — guard de duplo clique + erro inline extraídos para
+  // useCommercialRegistration (compartilhado com o picker de ligação de
+  // FollowUpQueue.jsx). Comportamento visível aqui permanece idêntico.
+  const { registering, error: registerError, register, clearError } = useCommercialRegistration(onRegisterInteraction);
 
   async function handleAddNote() {
     const trimmed = noteText.trim();
@@ -65,21 +68,17 @@ export default function LeadTimeline({ leadId, interactions, loading, error, onI
   }
 
   async function handleRegister(actionValue, actionLabel) {
-    if (registering) return;
-    setRegistering(true);
-    setRegisterError('');
     try {
-      const inserted = await onRegisterInteraction(leadId, actionValue);
+      const inserted = await register(leadId, actionValue);
+      if (!inserted) return; // guard de duplo clique (register já estava em andamento)
       onInteractionAdded(inserted);
       setActiveGroup(null);
       setSuccessFlash(actionLabel);
       setTimeout(() => setSuccessFlash(''), 2500);
     } catch (e) {
       // Fica no mesmo submenu (não fecha, não limpa) para o vendedor poder
-      // tentar de novo — nunca finge sucesso se o insert falhar.
-      setRegisterError('Não foi possível registrar: ' + e.message);
-    } finally {
-      setRegistering(false);
+      // tentar de novo — nunca finge sucesso se o insert falhar. Mensagem
+      // já populada em registerError pelo hook.
     }
   }
 
@@ -102,7 +101,7 @@ export default function LeadTimeline({ leadId, interactions, loading, error, onI
                     {a.label}
                   </button>
                 ))}
-                <button type="button" className="chip" disabled={registering} onClick={() => { setActiveGroup(null); setRegisterError(''); }}>
+                <button type="button" className="chip" disabled={registering} onClick={() => { setActiveGroup(null); clearError(); }}>
                   ← Voltar
                 </button>
               </>

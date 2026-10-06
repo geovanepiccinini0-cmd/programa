@@ -82,6 +82,13 @@ header.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-
 .badge-suggestion{background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border);white-space:nowrap;}
 .followup-warning{font-size:11px;color:var(--orange);font-weight:600;margin-top:4px;}
 
+/* Fase 2D.1 — ação assistida: região clicável "abrir lead" (reset de
+   botão, mesma aparência de antes) + botão/picker de ação como irmãos,
+   nunca aninhados dentro dela. */
+.followup-card-open{display:block;width:100%;text-align:left;font-family:inherit;cursor:pointer;background:none;border:none;padding:0;margin:0;color:inherit;}
+.followup-card-actions{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
+.followup-call-picker{margin-top:8px;}
+
 .add-task-form{display:flex;gap:8px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:22px;}
 .add-task-form input[type=text]{flex:2;min-width:160px;}
 input,select,textarea{background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:8px 10px;font-family:inherit;font-size:13px;}

@@ -173,6 +173,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
           now={now}
           onEditLead={handleEditLead}
           onRetryInteractions={refetchInteractions}
+          onRegisterCommercialInteraction={registerCommercialInteraction}
         />
       )}
 
