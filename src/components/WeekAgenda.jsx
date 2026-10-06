@@ -1,8 +1,9 @@
 import { useMemo } from 'react';
 import { currentWeekDates, fmtDate, isTaskOverdue, todayStr, weekdayLongName } from '../utils.js';
 import TaskLeadBadges from './TaskLeadBadges.jsx';
+import TaskCompletionControl from './TaskCompletionControl.jsx';
 
-export default function WeekAgenda({ tasks, leads, onToggleTask, onDeleteTask }) {
+export default function WeekAgenda({ tasks, leads, onToggleTask, onDeleteTask, onCompleteWithResult }) {
   const weekDates = useMemo(() => currentWeekDates(), []);
   const today = todayStr();
 
@@ -34,7 +35,7 @@ export default function WeekAgenda({ tasks, leads, onToggleTask, onDeleteTask })
                 const lead = t.leadId ? leads.find((l) => l.id === t.leadId) : null;
                 return (
                   <div key={t.id} className={`task-row ${overdue ? 'overdue' : ''} ${t.concluida ? 'done' : ''}`}>
-                    <button className="task-check" onClick={() => onToggleTask(t.id)} />
+                    <TaskCompletionControl task={t} onToggleTask={onToggleTask} onCompleteWithResult={onCompleteWithResult} />
                     <div className="task-body">
                       <div className="task-title">{t.titulo}</div>
                       <div className="task-meta">
