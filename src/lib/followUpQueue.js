@@ -97,6 +97,63 @@ export function sortDueFollowUps(items) {
     });
 }
 
+// Fase 2C.2B.1 — diferente do fallback de sortDueFollowUps (dueAt
+// ausente conta como timestamp 0, "mais vencido" — decisão deliberada e
+// já publicada para o cenário real never_contacted), aqui um dueAt
+// ausente/inválido conta como +Infinity: fica DEPOIS de qualquer item
+// com prazo conhecido, nunca antes. Para 'waiting' (ordenado por "mais
+// próximo de vencer"), tratar "não sei quando vence" como "é o mais
+// urgente" seria o oposto do que a lista comunica. Na prática o motor
+// nunca produz um item waiting sem dueAt válido (status só vira 'waiting'
+// quando dueAt existe e é futuro) — isto é só hardening defensivo, não
+// um caminho real hoje.
+function waitingSortTime(iso) {
+  if (!iso) return Infinity;
+  const t = new Date(iso).getTime();
+  return Number.isNaN(t) ? Infinity : t;
+}
+
+function nomeIdKey(lead) {
+  return `${lead.nome || ''}:${lead.id}`;
+}
+
+// Fase 2C.2B — ranking de 'waiting': só dueAt crescente (mais próximo de
+// vencer primeiro) — sem priority/temperature nesta V1 (reason explícita:
+// é uma aba secundária, não a fila principal; se um dia precisar dos
+// mesmos critérios de due, isso é decisão de produto nova, não um
+// "esquecimento" aqui). Nunca muta o array recebido.
+export function sortWaitingFollowUps(items) {
+  return items
+    .filter((item) => item.evaluation && item.evaluation.status === FOLLOW_UP_STATUS.WAITING)
+    .sort((a, b) => {
+      const dueA = waitingSortTime(a.evaluation.dueAt);
+      const dueB = waitingSortTime(b.evaluation.dueAt);
+      if (dueA !== dueB) return dueA - dueB;
+
+      const keyA = nomeIdKey(a.lead);
+      const keyB = nomeIdKey(b.lead);
+      if (keyA < keyB) return -1;
+      if (keyA > keyB) return 1;
+      return 0;
+    });
+}
+
+// Fase 2C.2B — ranking de 'blocked': alfabético por nome, id como
+// desempate — determinístico, sem depender de dueAt (blocked nunca tem
+// um prazo real, ver evaluateFollowUpEligibility) nem de priority/
+// temperature. Nunca muta o array recebido.
+export function sortBlockedFollowUps(items) {
+  return items
+    .filter((item) => item.evaluation && item.evaluation.status === FOLLOW_UP_STATUS.BLOCKED)
+    .sort((a, b) => {
+      const keyA = nomeIdKey(a.lead);
+      const keyB = nomeIdKey(b.lead);
+      if (keyA < keyB) return -1;
+      if (keyA > keyB) return 1;
+      return 0;
+    });
+}
+
 // Filtros puros simples para a futura UI (2C.2B) — nenhum estado novo,
 // só derivação sobre o resultado de buildFollowUpQueue.
 export function getDueFollowUps(items) {

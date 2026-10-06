@@ -19,7 +19,7 @@ import {
   computeLastActivityAt, computeLastContactAttemptAt, computeLastCustomerEngagementAt,
   computeCommercialInteractionData,
   shouldOfferResultCapture, runCompleteTaskWithResult,
-  logStageChange, insertInteractionAndTrack,
+  logStageChange, insertInteractionAndTrack, fetchInteractionsForUser,
 } from './useAppState.js';
 import { interactionsApi, auditLogApi } from '../lib/db.js';
 import { todayStr } from '../utils.js';
@@ -857,4 +857,33 @@ describe('Fase 2C.2A.1 — completeTaskWithResult, cabo real (runCompleteTaskWit
   // "zero insert + zero state update" é garantido pela própria separação de
   // responsabilidades, não por este teste — documentado aqui em vez de
   // simulado artificialmente.
+});
+
+describe('Fase 2C.2B — fetchInteractionsForUser (única decisão real do efeito de bootstrap/retry de interactions)', () => {
+  beforeEach(() => {
+    interactionsApi.fetchAllForUser.mockReset();
+  });
+
+  it('userId presente: delega 100% para interactionsApi.fetchAllForUser (chamado 1x com o userId), devolve o resultado', async () => {
+    const rows = [{ id: 'int-1', leadId: 'lead-1' }];
+    interactionsApi.fetchAllForUser.mockResolvedValueOnce(rows);
+
+    const result = await fetchInteractionsForUser('user-abc');
+
+    expect(interactionsApi.fetchAllForUser).toHaveBeenCalledTimes(1);
+    expect(interactionsApi.fetchAllForUser).toHaveBeenCalledWith('user-abc');
+    expect(result).toBe(rows);
+  });
+
+  it('userId ausente (null/undefined/vazio): NÃO chama fetchAllForUser, resolve para []', async () => {
+    await expect(fetchInteractionsForUser(null)).resolves.toEqual([]);
+    await expect(fetchInteractionsForUser(undefined)).resolves.toEqual([]);
+    await expect(fetchInteractionsForUser('')).resolves.toEqual([]);
+    expect(interactionsApi.fetchAllForUser).not.toHaveBeenCalled();
+  });
+
+  it('userId presente, fetchAllForUser falha: o erro propaga (quem chama decide loading/error)', async () => {
+    interactionsApi.fetchAllForUser.mockRejectedValueOnce(new Error('Falha de rede simulada'));
+    await expect(fetchInteractionsForUser('user-abc')).rejects.toThrow('Falha de rede simulada');
+  });
 });

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { buildFollowUpQueue, sortDueFollowUps, getDueFollowUps, getWaitingFollowUps, getBlockedFollowUps } from './followUpQueue.js';
+import {
+  buildFollowUpQueue, sortDueFollowUps, sortWaitingFollowUps, sortBlockedFollowUps,
+  getDueFollowUps, getWaitingFollowUps, getBlockedFollowUps,
+} from './followUpQueue.js';
 import { FOLLOW_UP_STATUS, FOLLOW_UP_REASON } from './followUpEngine.js';
 
 // Fase 2C.2A — fila de follow-up (domínio puro). NOW fixo para
@@ -364,5 +367,135 @@ describe('Fase 2C.2A — getDueFollowUps / getWaitingFollowUps / getBlockedFollo
     expect(getDueFollowUps(queue).map((i) => i.lead.id)).toEqual(['due']);
     expect(getWaitingFollowUps(queue).map((i) => i.lead.id)).toEqual(['waiting']);
     expect(getBlockedFollowUps(queue).map((i) => i.lead.id)).toEqual(['blocked']);
+  });
+});
+
+describe('Fase 2C.2B — sortWaitingFollowUps', () => {
+  it('só itens waiting entram no resultado', () => {
+    const due = makeLead({ id: 'due' });
+    const waiting = makeLead({ id: 'waiting' });
+    const blocked = makeLead({ id: 'blocked', proximoContato: '2026-12-25' });
+    const queue = build(
+      [due, waiting, blocked],
+      [
+        makeInteraction({ leadId: 'due', occurredAt: hoursAgo(30) }),
+        makeInteraction({ leadId: 'waiting', occurredAt: hoursAgo(2) }),
+      ],
+    );
+    const sorted = sortWaitingFollowUps(queue);
+    expect(sorted).toHaveLength(1);
+    expect(sorted[0].lead.id).toBe('waiting');
+  });
+
+  it('dueAt mais próximo de vencer primeiro (ordem crescente)', () => {
+    const soon = makeLead({ id: 'soon' });
+    const later = makeLead({ id: 'later' });
+    const attemptSoon = makeInteraction({ leadId: 'soon', occurredAt: hoursAgo(23) }); // dueAt em 1h
+    const attemptLater = makeInteraction({ leadId: 'later', occurredAt: hoursAgo(1) }); // dueAt em 23h
+    const queue = build([later, soon], [attemptLater, attemptSoon]);
+    const sorted = sortWaitingFollowUps(queue);
+    expect(sorted.map((i) => i.lead.id)).toEqual(['soon', 'later']);
+  });
+
+  it('tie-break determinístico por nome+id quando dueAt é idêntico', () => {
+    const sameAttemptTime = hoursAgo(2);
+    const leadB = makeLead({ id: 'lead-b', nome: 'Carlos' });
+    const leadA = makeLead({ id: 'lead-a', nome: 'Carlos' });
+    const attempts = [leadA, leadB].map((l) => makeInteraction({ leadId: l.id, occurredAt: sameAttemptTime }));
+    const queue = build([leadB, leadA], attempts);
+    const sorted = sortWaitingFollowUps(queue);
+    expect(sorted.map((i) => i.lead.id)).toEqual(['lead-a', 'lead-b']);
+  });
+
+  it('Fase 2C.2B.1 — B) dueAt válido antes de dueAt null (null vai para o fim, nunca para o início)', () => {
+    const leadValid = makeLead({ id: 'valid-due' });
+    const leadNull = makeLead({ id: 'null-due' });
+    const itemValid = { lead: leadValid, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: hoursAgo(-5) }, error: null }; // vence em 5h
+    const itemNull = { lead: leadNull, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: null }, error: null };
+    const sorted = sortWaitingFollowUps([itemNull, itemValid]);
+    expect(sorted.map((i) => i.lead.id)).toEqual(['valid-due', 'null-due']);
+  });
+
+  it('Fase 2C.2B.1 — C) dueAt válido antes de dueAt undefined', () => {
+    const leadValid = makeLead({ id: 'valid-due' });
+    const leadUndefined = makeLead({ id: 'undefined-due' });
+    const itemValid = { lead: leadValid, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: hoursAgo(-5) }, error: null };
+    const itemUndefined = { lead: leadUndefined, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: undefined }, error: null };
+    const sorted = sortWaitingFollowUps([itemUndefined, itemValid]);
+    expect(sorted.map((i) => i.lead.id)).toEqual(['valid-due', 'undefined-due']);
+  });
+
+  it('Fase 2C.2B.1 — D) dueAt válido antes de dueAt inválido (string não parseável)', () => {
+    const leadValid = makeLead({ id: 'valid-due' });
+    const leadInvalid = makeLead({ id: 'invalid-due' });
+    const itemValid = { lead: leadValid, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: hoursAgo(-5) }, error: null };
+    const itemInvalid = { lead: leadInvalid, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: 'not-a-date' }, error: null };
+    const sorted = sortWaitingFollowUps([itemInvalid, itemValid]);
+    expect(sorted.map((i) => i.lead.id)).toEqual(['valid-due', 'invalid-due']);
+  });
+
+  it('Fase 2C.2B.1 — E) todos sem dueAt válido: nome/id determina a ordem, nunca lança/gera NaN', () => {
+    const leadNull = makeLead({ id: 'null-due', nome: 'Bruno' });
+    const leadUndefined = makeLead({ id: 'undefined-due', nome: 'Ana' });
+    const leadInvalid = makeLead({ id: 'invalid-due', nome: 'Carlos' });
+    const itemNull = { lead: leadNull, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: null }, error: null };
+    const itemUndefined = { lead: leadUndefined, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: undefined }, error: null };
+    const itemInvalid = { lead: leadInvalid, evaluation: { status: FOLLOW_UP_STATUS.WAITING, dueAt: 'not-a-date' }, error: null };
+    let sorted;
+    expect(() => { sorted = sortWaitingFollowUps([itemNull, itemInvalid, itemUndefined]); }).not.toThrow();
+    expect(sorted.map((i) => i.lead.id)).toEqual(['undefined-due', 'null-due', 'invalid-due']); // Ana, Bruno, Carlos
+  });
+
+  it('não muta o array recebido', () => {
+    const a = makeLead({ id: 'a' });
+    const b = makeLead({ id: 'b' });
+    const attempts = [
+      makeInteraction({ leadId: 'a', occurredAt: hoursAgo(1) }),
+      makeInteraction({ leadId: 'b', occurredAt: hoursAgo(5) }),
+    ];
+    const queue = build([a, b], attempts);
+    const originalOrder = queue.map((i) => i.lead.id);
+    const frozenQueue = Object.freeze(queue);
+    const sorted = sortWaitingFollowUps(frozenQueue);
+    expect(queue.map((i) => i.lead.id)).toEqual(originalOrder);
+    expect(sorted).not.toBe(queue);
+  });
+});
+
+describe('Fase 2C.2B — sortBlockedFollowUps', () => {
+  it('só itens blocked entram no resultado', () => {
+    const due = makeLead({ id: 'due' });
+    const blocked = makeLead({ id: 'blocked', proximoContato: '2026-12-25' });
+    const queue = build([due, blocked], [makeInteraction({ leadId: 'due', occurredAt: hoursAgo(30) })]);
+    const sorted = sortBlockedFollowUps(queue);
+    expect(sorted).toHaveLength(1);
+    expect(sorted[0].lead.id).toBe('blocked');
+  });
+
+  it('ordena por nome alfabético', () => {
+    const zeca = makeLead({ id: 'z', nome: 'Zeca', proximoContato: '2026-12-25' });
+    const ana = makeLead({ id: 'a', nome: 'Ana', proximoContato: '2026-12-25' });
+    const queue = build([zeca, ana]);
+    const sorted = sortBlockedFollowUps(queue);
+    expect(sorted.map((i) => i.lead.id)).toEqual(['a', 'z']);
+  });
+
+  it('id como desempate quando o nome é idêntico', () => {
+    const leadB = makeLead({ id: 'lead-b', nome: 'Rafa', proximoContato: '2026-12-25' });
+    const leadA = makeLead({ id: 'lead-a', nome: 'Rafa', proximoContato: '2026-12-25' });
+    const queue = build([leadB, leadA]);
+    const sorted = sortBlockedFollowUps(queue);
+    expect(sorted.map((i) => i.lead.id)).toEqual(['lead-a', 'lead-b']);
+  });
+
+  it('não muta o array recebido', () => {
+    const a = makeLead({ id: 'a', nome: 'Ana', proximoContato: '2026-12-25' });
+    const b = makeLead({ id: 'b', nome: 'Bia', proximoContato: '2026-12-25' });
+    const queue = build([b, a]);
+    const originalOrder = queue.map((i) => i.lead.id);
+    const frozenQueue = Object.freeze(queue);
+    const sorted = sortBlockedFollowUps(frozenQueue);
+    expect(queue.map((i) => i.lead.id)).toEqual(originalOrder);
+    expect(sorted).not.toBe(queue);
   });
 });
