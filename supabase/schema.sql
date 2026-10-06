@@ -26,7 +26,17 @@ create table if not exists public.leads (
   tags text[] not null default '{}',
   criado_em date not null default current_date,
   ultima_atualizacao date not null default current_date,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- Campos V2 (Fase 1 — fundação técnica, ver docs/ARCHITECTURE_V1.md e docs/CRM_V2_PHASE_01_REPORT.md)
+  next_action_type text,
+  next_action_note text,
+  lead_temperature text,
+  priority text not null default 'normal',
+  lost_reason text,
+  lost_reason_note text,
+  won_at timestamptz,
+  lost_at timestamptz,
+  deleted_at timestamptz
 );
 
 create table if not exists public.templates (
@@ -61,10 +71,37 @@ create table if not exists public.tasks (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.lead_interactions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  lead_id uuid not null references public.leads(id) on delete cascade,
+  type text not null,
+  direction text,
+  channel text,
+  content text,
+  metadata jsonb,
+  occurred_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  created_by uuid references auth.users(id) on delete set null
+);
+
+create table if not exists public.audit_log (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  entity_type text not null,
+  entity_id uuid not null,
+  action text not null,
+  old_data jsonb,
+  new_data jsonb,
+  created_at timestamptz not null default now()
+);
+
 alter table public.leads enable row level security;
 alter table public.templates enable row level security;
 alter table public.tasks enable row level security;
 alter table public.profiles enable row level security;
+alter table public.lead_interactions enable row level security;
+alter table public.audit_log enable row level security;
 
 create policy "leads: dono pode tudo" on public.leads
   for all using (user_id = auth.uid()) with check (user_id = auth.uid());
@@ -122,7 +159,40 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
+-- lead_interactions (timeline do lead — Fase 1 V2): dono lê/cria só as
+-- próprias, admin só lê tudo (mesma regra de leitura de leads).
+create policy "lead_interactions: dono pode ler e criar" on public.lead_interactions
+  for select using (user_id = auth.uid());
+create policy "lead_interactions: dono pode inserir" on public.lead_interactions
+  for insert with check (user_id = auth.uid());
+create policy "lead_interactions: admin pode ler tudo" on public.lead_interactions
+  for select using (public.is_admin());
+
+-- audit_log (Fase 1 V2): mesma regra de lead_interactions.
+create policy "audit_log: dono pode ler e criar" on public.audit_log
+  for select using (user_id = auth.uid());
+create policy "audit_log: dono pode inserir" on public.audit_log
+  for insert with check (user_id = auth.uid());
+create policy "audit_log: admin pode ler tudo" on public.audit_log
+  for select using (public.is_admin());
+
+-- Índices (Fase 1 V2 — suportar o crescimento da base de leads)
+create index if not exists leads_user_id_idx on public.leads (user_id);
+create index if not exists leads_etapa_idx on public.leads (etapa);
+create index if not exists leads_proximo_contato_idx on public.leads (proximo_contato);
+create index if not exists leads_user_id_etapa_idx on public.leads (user_id, etapa);
+create index if not exists tasks_user_id_idx on public.tasks (user_id);
+create index if not exists tasks_lead_id_idx on public.tasks (lead_id);
+create index if not exists tasks_data_idx on public.tasks (data);
+create index if not exists tasks_user_id_data_idx on public.tasks (user_id, data);
+create index if not exists lead_interactions_lead_id_idx on public.lead_interactions (lead_id);
+create index if not exists lead_interactions_user_id_idx on public.lead_interactions (user_id);
+create index if not exists lead_interactions_lead_id_occurred_at_idx on public.lead_interactions (lead_id, occurred_at desc);
+create index if not exists audit_log_entity_idx on public.audit_log (entity_type, entity_id);
+create index if not exists audit_log_user_id_idx on public.audit_log (user_id);
+
 -- Realtime: permite que a UI sincronize entre abas/dispositivos automaticamente
 alter publication supabase_realtime add table public.leads;
 alter publication supabase_realtime add table public.templates;
 alter publication supabase_realtime add table public.tasks;
+alter publication supabase_realtime add table public.lead_interactions;
