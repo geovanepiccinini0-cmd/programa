@@ -258,6 +258,109 @@ describe('Fase 2C.2A — buildFollowUpQueue', () => {
   });
 });
 
+describe('Fase 2E.3 — Next Best Action (shadow/display-only) dentro de buildFollowUpQueue', () => {
+  it('A) Due never_contacted + explicit whatsapp -> nbaPresentation = WhatsApp / Primeiro contato', () => {
+    const lead = makeLead({ nextActionType: 'whatsapp' });
+    const queue = build([lead]);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NEVER_CONTACTED);
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'WhatsApp', reasonLabel: 'Primeiro contato' });
+  });
+
+  it('B) Due no_response_after_attempt (call vencida) -> nbaPresentation = Ligação / Nova tentativa de contato', () => {
+    const lead = makeLead();
+    const attempt = makeInteraction({ type: 'call', channel: 'phone', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: hoursAgo(30) });
+    const queue = build([lead], [attempt]);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_ATTEMPT);
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'Ligação', reasonLabel: 'Nova tentativa de contato' });
+  });
+
+  it('C) Due no_response_after_attempt (whatsapp vencida) -> nbaPresentation = WhatsApp / Nova tentativa de contato', () => {
+    const lead = makeLead();
+    const attempt = makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: hoursAgo(30) });
+    const queue = build([lead], [attempt]);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_ATTEMPT);
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'WhatsApp', reasonLabel: 'Nova tentativa de contato' });
+  });
+
+  it('D) Due reactivation_due -> reasonLabel "Reativação"', () => {
+    const lead = makeLead();
+    const attempts = [
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(20) }),
+      makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: daysAgo(15) }),
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(10) }),
+    ];
+    const queue = build([lead], attempts);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.REACTIVATION_DUE);
+    expect(queue[0].nbaPresentation.reasonLabel).toBe('Reativação');
+    expect(queue[0].nbaPresentation.actionLabel).toBe('Ligação');
+  });
+
+  it('E) Due no_response_after_proposal sem explicit -> nbaPresentation null', () => {
+    const lead = makeLead();
+    const proposal = makeInteraction({ type: 'proposal', channel: 'manual', metadata: { activity_class: 'attempt', outcome: 'sent' }, occurredAt: hoursAgo(60) });
+    const queue = build([lead], [proposal]);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_PROPOSAL);
+    expect(queue[0].nbaPresentation).toBeNull();
+  });
+
+  it('F) Due no_response_after_proposal + explicit whatsapp -> nbaPresentation = WhatsApp / Follow-up da proposta', () => {
+    const lead = makeLead({ nextActionType: 'whatsapp' });
+    const proposal = makeInteraction({ type: 'proposal', channel: 'manual', metadata: { activity_class: 'attempt', outcome: 'sent' }, occurredAt: hoursAgo(60) });
+    const queue = build([lead], [proposal]);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_PROPOSAL);
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'WhatsApp', reasonLabel: 'Follow-up da proposta' });
+  });
+
+  it('G) Waiting carrega nbaPresentation internamente no item, sem mudar status/pertencimento à lista', () => {
+    const lead = makeLead();
+    const attempt = makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: hoursAgo(2) }); // dentro da janela de 24h -> waiting
+    const queue = build([lead], [attempt]);
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING);
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'WhatsApp', reasonLabel: 'Nova tentativa de contato' });
+    // o item carrega o metadado, mas sortWaitingFollowUps/getWaitingFollowUps continuam filtrando só por status.
+    expect(getWaitingFollowUps(queue)).toHaveLength(1);
+    expect(getDueFollowUps(queue)).toHaveLength(0);
+  });
+
+  it('H) Blocked -> nbaPresentation null, mesmo com nextActionType explícito válido', () => {
+    const lead = makeLead({ etapa: 'Ganho', nextActionType: 'whatsapp' });
+    const queue = build([lead]);
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.BLOCKED);
+    expect(queue[0].nbaPresentation).toBeNull();
+  });
+
+  it('I) erro isolado de um lead (malformado) continua isolado -- nbaPresentation null nesse item, os demais corretos', () => {
+    const leadA = makeLead({ id: 'lead-a' });
+    const leadB = makeLead({ id: 'lead-b', nextActionType: 'call' });
+    const queue = build([null, leadA, leadB]);
+    expect(queue[0].evaluation).toBeNull();
+    expect(queue[0].nbaPresentation).toBeNull();
+    expect(typeof queue[0].error).toBe('string');
+    expect(queue[1].nbaPresentation).toBeNull(); // never_contacted sem explicit
+    expect(queue[2].nbaPresentation).toEqual({ actionLabel: 'Ligação', reasonLabel: 'Primeiro contato' });
+  });
+
+  it('J) contagens due/waiting/blocked não mudam com a adição do metadado nbaPresentation', () => {
+    const due = makeLead({ id: 'due', nextActionType: 'whatsapp' });
+    const waiting = makeLead({ id: 'waiting' });
+    const blocked = makeLead({ id: 'blocked', proximoContato: '2026-12-25' });
+    const queue = build(
+      [due, waiting, blocked],
+      [
+        makeInteraction({ leadId: 'due', occurredAt: hoursAgo(30) }),
+        makeInteraction({ leadId: 'waiting', occurredAt: hoursAgo(2) }),
+      ],
+    );
+    // mesmas contagens/pertencimento de sempre (2C.2A/2C.2B), independente de nbaPresentation existir ou não por item.
+    expect(getDueFollowUps(queue).map((i) => i.lead.id)).toEqual(['due']);
+    expect(getWaitingFollowUps(queue).map((i) => i.lead.id)).toEqual(['waiting']);
+    expect(getBlockedFollowUps(queue).map((i) => i.lead.id)).toEqual(['blocked']);
+    expect(sortDueFollowUps(queue)).toHaveLength(1);
+    expect(sortWaitingFollowUps(queue)).toHaveLength(1);
+    expect(sortBlockedFollowUps(queue)).toHaveLength(1);
+  });
+});
+
 describe('Fase 2C.2A — sortDueFollowUps', () => {
   it('15) ranking: urgent > high > normal > low', () => {
     const urgent = makeLead({ id: 'u', priority: 'urgent' });

@@ -80,7 +80,7 @@ function WhatsAppResultPicker({ registering, error, onResult, onCancel }) {
 }
 
 function DueCard({ item, onEditLead, assistedAction, assistedRegistering, assistedError, onStartAssisted, onAssistedResult, onCancelAssisted }) {
-  const { lead, evaluation } = item;
+  const { lead, evaluation, nbaPresentation } = item;
   const reason = formatFollowUpReason(evaluation);
   const time = formatFollowUpTimeLabel(evaluation, item.now);
   const attempt = shouldShowAttemptCount(evaluation) ? formatAttemptCount(evaluation, FOLLOW_UP_POLICY) : null;
@@ -132,7 +132,21 @@ function DueCard({ item, onEditLead, assistedAction, assistedRegistering, assist
         {reason && <div className="card-meta">{reason.subtitle}</div>}
         {timeLine && <div className="card-meta">{timeLine}</div>}
         {etapaProduto && <div className="card-meta">{etapaProduto}</div>}
-        {suggestedAction && <div className="card-meta">Ação sugerida: {suggestedAction}</div>}
+        {/* Fase 2E.3 — Next Best Action em modo shadow/display-only: só
+            enriquece este texto informativo. NUNCA participa da decisão
+            de isCallSuggested/isWhatsappSuggested/telHref/waHref acima
+            (que continuam lendo exclusivamente evaluation.suggestedAction,
+            intocado) — se nbaPresentation vier null por qualquer motivo
+            (ex. reason sem NBA, ver 2E.1), o fallback é byte-a-byte o
+            texto que já existia antes desta fase. */}
+        {nbaPresentation ? (
+          <>
+            <div className="card-meta">Próxima melhor ação: {nbaPresentation.actionLabel}</div>
+            <div className="card-meta">{nbaPresentation.reasonLabel}</div>
+          </>
+        ) : (
+          suggestedAction && <div className="card-meta">Ação sugerida: {suggestedAction}</div>
+        )}
         {missingPhone && <div className="followup-warning">Sem telefone cadastrado</div>}
       </button>
       {telHref && !isAssistingThisLead && (
