@@ -39,16 +39,20 @@ export type CreateSupabaseClientFn<TClient> = (
   options: SupabaseServiceClientOptions,
 ) => TClient;
 
-// Objeto literal único, nunca recriado por chamada — não é cache do
-// client (zero estado sobre o client em si), apenas evita alocar um
-// novo objeto de options idêntico a cada chamada.
-const SERVICE_CLIENT_OPTIONS: SupabaseServiceClientOptions = {
-  auth: {
-    persistSession: false,
-    autoRefreshToken: false,
-    detectSessionInUrl: false,
-  },
-};
+// Construída de novo a cada chamada (ver uso em createSupabaseServiceClient)
+// — nunca um objeto module-level compartilhado. Um objeto único reutilizado
+// entre chamadas seria estado mutável global observável: se createClientFn
+// (ou qualquer código que receba essa referência) mutar o objeto, a mutação
+// vazaria para todas as chamadas seguintes, mesmo as de configs diferentes.
+function buildServiceClientOptions(): SupabaseServiceClientOptions {
+  return {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  };
+}
 
 function isNonBlankString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -88,5 +92,5 @@ export function createSupabaseServiceClient<TClient>(
   // de criação/configuração do client, nunca convertida para
   // REPOSITORY_ERROR (que pertence exclusivamente à camada de query do
   // repository) e nunca logada aqui.
-  return createClientFn(url, serviceRoleKey, SERVICE_CLIENT_OPTIONS);
+  return createClientFn(url, serviceRoleKey, buildServiceClientOptions());
 }

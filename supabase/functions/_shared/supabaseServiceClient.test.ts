@@ -133,6 +133,37 @@ describe('createSupabaseServiceClient', () => {
     expect(createClientFn).not.toHaveBeenCalled();
   });
 
+  // Fase 3.2.3.1B — fecha o gap encontrado na auditoria 3.2.3.1A (MEDIUM):
+  // o objeto options (e o objeto auth interno) devem ter identidade NOVA
+  // em cada chamada, nunca uma referencia compartilhada/module-level.
+  // Mutar o objeto capturado de uma chamada nunca pode vazar para outra.
+  test('options e options.auth tem identidade nova por chamada; mutar uma nao afeta a outra', () => {
+    let optionsA;
+    let optionsB;
+    const createClientFnA = vi.fn((_url, _key, options) => {
+      optionsA = options;
+      return {};
+    });
+    const createClientFnB = vi.fn((_url, _key, options) => {
+      optionsB = options;
+      return {};
+    });
+
+    createSupabaseServiceClient(VALID_CONFIG, createClientFnA);
+    createSupabaseServiceClient(VALID_CONFIG, createClientFnB);
+
+    expect(optionsA).not.toBe(optionsB);
+    expect(optionsA.auth).not.toBe(optionsB.auth);
+
+    // mutar A nao pode afetar B
+    optionsA.auth.persistSession = true;
+    expect(optionsB.auth.persistSession).toBe(false);
+
+    // reverse-order isolation: mutar B (agora) nao pode reverter/afetar o A ja mutado
+    optionsB.auth.persistSession = true;
+    expect(optionsA.auth.persistSession).toBe(true);
+  });
+
   // 17. zero cache/singleton observavel
   test('nao mantem nenhum client em cache/singleton entre chamadas', () => {
     const clientA = { id: 'a' };
