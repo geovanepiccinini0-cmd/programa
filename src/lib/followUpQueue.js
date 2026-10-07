@@ -1,6 +1,9 @@
 import { evaluateFollowUpEligibility, FOLLOW_UP_STATUS, FOLLOW_UP_POLICY } from './followUpEngine.js';
 import { evaluateNextBestAction } from './nextBestAction.js';
 import { presentNextBestAction } from './nextBestActionPresentation.js';
+import { buildCommercialInteractionHistory } from './commercialInteractionHistory.js';
+import { evaluateNextBestActionPolicy } from './nextBestActionPolicy.js';
+import { compareNextBestActions } from './nextBestActionShadow.js';
 
 // Fase 2C.2A — camada de domínio da fila de follow-up ("Shadow Mode").
 // Pura: sem Supabase, sem React, sem useAppState, sem fetch, nunca muta
@@ -27,6 +30,24 @@ import { presentNextBestAction } from './nextBestActionPresentation.js';
 // nunca participa de status/reason/dueAt/attemptCount/sort/filtros, e a
 // CTA assistida (2D.1/2D.2) continua decidida exclusivamente por
 // evaluation.suggestedAction, nunca por este campo.
+//
+// Fase 2E.4.3 — Shadow comparison entre o NBA atual (acima) e o NBA
+// candidato da Commercial Policy V1 (nextBestActionPolicy.js, 2E.4.2).
+// `history` é construído aqui a partir EXATAMENTE do mesmo
+// `leadInteractions` já usado para `evaluation` (mesma variável, mesma
+// referência de array) — garantia estrutural, não só por convenção, de
+// que evaluation/current/history/candidate nascem do mesmo dataset
+// desta mesma execução (guardrail registrado na 2E.4.2 sobre
+// reason/anchor/history inconsistentes). `nbaShadow` é só um campo
+// informativo adicional: `candidate` NUNCA alimenta nbaPresentation,
+// NUNCA alimenta evaluation.suggestedAction, e não tem nenhum
+// consumidor de UI/CTA nesta fase. Calculado dentro do MESMO try/catch
+// já existente (não um segundo sistema de isolamento de erro, mesma
+// decisão já tomada na 2E.3 para nba/nbaPresentation) — se
+// buildCommercialInteractionHistory/evaluateNextBestActionPolicy
+// lançasse (nenhuma das duas o faz, por design e por teste), o item
+// inteiro cairia no mesmo `catch` de sempre, virando `error` como já
+// acontece hoje para qualquer outra falha de avaliação deste lead.
 
 // Agrupa uma lista em um Map<leadId, item[]> numa única passagem —
 // evita O(leads × interactions)/O(leads × tasks): a indexação é
@@ -59,9 +80,14 @@ export function buildFollowUpQueue({ leads, interactions, tasks, now, policy = F
       const evaluation = evaluateFollowUpEligibility({ lead, interactions: leadInteractions, tasks: leadTasks, now, policy });
       const nba = evaluateNextBestAction({ lead, followUpEvaluation: evaluation });
       const nbaPresentation = presentNextBestAction(nba);
-      return { lead, evaluation, error: null, nbaPresentation };
+
+      const history = buildCommercialInteractionHistory(leadInteractions);
+      const candidateNba = evaluateNextBestActionPolicy({ lead, followUpEvaluation: evaluation, history });
+      const nbaShadow = compareNextBestActions(nba, candidateNba);
+
+      return { lead, evaluation, error: null, nbaPresentation, nbaShadow };
     } catch (e) {
-      return { lead, evaluation: null, error: (e && e.message) || 'Falha ao avaliar este lead.', nbaPresentation: null };
+      return { lead, evaluation: null, error: (e && e.message) || 'Falha ao avaliar este lead.', nbaPresentation: null, nbaShadow: null };
     }
   });
 }
