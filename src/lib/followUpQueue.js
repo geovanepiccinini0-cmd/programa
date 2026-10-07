@@ -1,6 +1,9 @@
 import { evaluateFollowUpEligibility, FOLLOW_UP_STATUS, FOLLOW_UP_POLICY } from './followUpEngine.js';
 import { evaluateNextBestAction } from './nextBestAction.js';
 import { presentNextBestAction } from './nextBestActionPresentation.js';
+import { buildCommercialInteractionHistory } from './commercialInteractionHistory.js';
+import { evaluateNextBestActionPolicy } from './nextBestActionPolicy.js';
+import { compareNextBestActions } from './nextBestActionShadow.js';
 
 // Fase 2C.2A — camada de domínio da fila de follow-up ("Shadow Mode").
 // Pura: sem Supabase, sem React, sem useAppState, sem fetch, nunca muta
@@ -27,6 +30,33 @@ import { presentNextBestAction } from './nextBestActionPresentation.js';
 // nunca participa de status/reason/dueAt/attemptCount/sort/filtros, e a
 // CTA assistida (2D.1/2D.2) continua decidida exclusivamente por
 // evaluation.suggestedAction, nunca por este campo.
+//
+// Fase 2E.4.3 — Shadow comparison entre o NBA atual (acima) e o NBA
+// candidato da Commercial Policy V1 (nextBestActionPolicy.js, 2E.4.2).
+// `history` é construído a partir EXATAMENTE do mesmo
+// `leadInteractions` já usado para `evaluation` (mesma variável, mesma
+// referência de array) — garantia estrutural, não só por convenção, de
+// que evaluation/current/history/candidate nascem do mesmo dataset
+// desta mesma execução (guardrail registrado na 2E.4.2 sobre
+// reason/anchor/history inconsistentes). `nbaShadow` é só um campo
+// informativo adicional: `candidate` NUNCA alimenta nbaPresentation,
+// NUNCA alimenta evaluation.suggestedAction, e não tem nenhum
+// consumidor de UI/CTA nesta fase.
+//
+// Fase 2E.4.3.2 — hardening de isolamento de falha (achado HIGH da
+// auditoria 2E.4.3.1, provado empiricamente: um throw exclusivo no
+// shadow caía no catch externo e apagava evaluation/nba/nbaPresentation
+// já calculados com sucesso). Princípio: SHADOW PODE FALHAR, o caminho
+// operacional NÃO PODE FALHAR POR CAUSA DELE. Por isso o cálculo do
+// shadow (abaixo, dentro da função) tem seu PRÓPRIO try/catch interno,
+// estritamente mais estreito que o externo — cobre só
+// buildCommercialInteractionHistory/evaluateNextBestActionPolicy/
+// compareNextBestActions, nunca evaluateFollowUpEligibility/
+// evaluateNextBestAction/presentNextBestAction (que continuam com a
+// semântica de erro pré-existente, sob o catch externo). Fail-open:
+// qualquer exceção aqui dentro vira só `nbaShadow = null` — nunca um
+// `both_null`/`match`/`current_only` fabricado, nunca log/telemetry
+// (observabilidade é decisão de fase futura, fora de escopo aqui).
 
 // Agrupa uma lista em um Map<leadId, item[]> numa única passagem —
 // evita O(leads × interactions)/O(leads × tasks): a indexação é
@@ -59,9 +89,32 @@ export function buildFollowUpQueue({ leads, interactions, tasks, now, policy = F
       const evaluation = evaluateFollowUpEligibility({ lead, interactions: leadInteractions, tasks: leadTasks, now, policy });
       const nba = evaluateNextBestAction({ lead, followUpEvaluation: evaluation });
       const nbaPresentation = presentNextBestAction(nba);
-      return { lead, evaluation, error: null, nbaPresentation };
+
+      // Fase 2E.4.3.2 — hardening: fail-open do shadow. O caminho
+      // operacional acima (evaluation/nba/nbaPresentation) já está
+      // calculado com sucesso neste ponto — o que vier a seguir é
+      // exclusivamente observacional (Commercial Policy V1 em shadow
+      // mode) e NUNCA pode apagar esse resultado. Try/catch interno,
+      // deliberadamente mais estreito que o externo (que continua
+      // cobrindo só o caminho operacional, semântica inalterada):
+      // qualquer exceção aqui dentro (buildCommercialInteractionHistory/
+      // evaluateNextBestActionPolicy/compareNextBestActions — nenhuma
+      // das três lança, por design e por teste, mas essa garantia nunca
+      // deve depender só de "elas nunca lançam hoje") produz só
+      // `nbaShadow = null` — nunca um `both_null`/`match`/`current_only`
+      // fabricado, nunca um erro que suba e contamine o item inteiro.
+      let nbaShadow = null;
+      try {
+        const history = buildCommercialInteractionHistory(leadInteractions);
+        const candidateNba = evaluateNextBestActionPolicy({ lead, followUpEvaluation: evaluation, history });
+        nbaShadow = compareNextBestActions(nba, candidateNba);
+      } catch {
+        nbaShadow = null;
+      }
+
+      return { lead, evaluation, error: null, nbaPresentation, nbaShadow };
     } catch (e) {
-      return { lead, evaluation: null, error: (e && e.message) || 'Falha ao avaliar este lead.', nbaPresentation: null };
+      return { lead, evaluation: null, error: (e && e.message) || 'Falha ao avaliar este lead.', nbaPresentation: null, nbaShadow: null };
     }
   });
 }

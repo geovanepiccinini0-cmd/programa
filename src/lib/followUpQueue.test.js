@@ -1,9 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
   buildFollowUpQueue, sortDueFollowUps, sortWaitingFollowUps, sortBlockedFollowUps,
   getDueFollowUps, getWaitingFollowUps, getBlockedFollowUps,
 } from './followUpQueue.js';
+import * as followUpEngineModule from './followUpEngine.js';
 import { FOLLOW_UP_STATUS, FOLLOW_UP_REASON } from './followUpEngine.js';
+import * as commercialInteractionHistoryModule from './commercialInteractionHistory.js';
+import * as nextBestActionPolicyModule from './nextBestActionPolicy.js';
+import * as nextBestActionShadowModule from './nextBestActionShadow.js';
 
 // Fase 2C.2A — fila de follow-up (domínio puro). NOW fixo para
 // determinismo.
@@ -358,6 +362,331 @@ describe('Fase 2E.3 — Next Best Action (shadow/display-only) dentro de buildFo
     expect(sortDueFollowUps(queue)).toHaveLength(1);
     expect(sortWaitingFollowUps(queue)).toHaveLength(1);
     expect(sortBlockedFollowUps(queue)).toHaveLength(1);
+  });
+});
+
+describe('Fase 2E.4.3 — Shadow comparison (Commercial Policy V1) dentro de buildFollowUpQueue', () => {
+  it('G) never_contacted: current=null (NBA V1 exige explicit), candidate=call/phone/first_contact/rule -> candidate_only', () => {
+    const lead = makeLead();
+    const queue = build([lead]);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NEVER_CONTACTED);
+    expect(queue[0].nbaShadow.current).toBeNull();
+    expect(queue[0].nbaShadow.candidate).toEqual({ type: 'call', channel: 'phone', intent: 'first_contact', reasonCode: 'never_contacted', confidence: 'rule' });
+    expect(queue[0].nbaShadow.status).toBe('candidate_only');
+  });
+
+  it('H) attempt 1 (call vencida, sem explicit): current e candidate coincidem -> match', () => {
+    const lead = makeLead();
+    const attempt = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: hoursAgo(30) });
+    const queue = build([lead], [attempt]);
+    expect(queue[0].evaluation.attemptCount).toBe(1);
+    expect(queue[0].nbaShadow.status).toBe('match');
+    expect(queue[0].nbaShadow.current).toEqual(queue[0].nbaShadow.candidate);
+  });
+
+  it('I) attempt >=2 (duas calls sem resposta): current repete call, candidate alterna para whatsapp -> changed_action', () => {
+    const lead = makeLead();
+    const attempts = [
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(3) }),
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: hoursAgo(30) }),
+    ];
+    const queue = build([lead], attempts);
+    expect(queue[0].evaluation.attemptCount).toBe(2);
+    expect(queue[0].nbaShadow.current.type).toBe('call');
+    expect(queue[0].nbaShadow.candidate).toEqual({ type: 'whatsapp', channel: 'whatsapp', intent: 'switch_channel', reasonCode: 'no_response_after_attempt', confidence: 'rule' });
+    expect(queue[0].nbaShadow.status).toBe('changed_action');
+  });
+
+  it('J) cadence_exhausted: current repete último canal, candidate alterna -> changed_action', () => {
+    const lead = makeLead();
+    const attempts = [
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(10) }),
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(6) }),
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(3) }),
+    ];
+    const queue = build([lead], attempts);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.CADENCE_EXHAUSTED);
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING);
+    expect(queue[0].nbaShadow.current.channel).toBe('phone');
+    expect(queue[0].nbaShadow.candidate).toEqual({ type: 'whatsapp', channel: 'whatsapp', intent: 'switch_channel', reasonCode: 'cadence_exhausted', confidence: 'rule' });
+    expect(queue[0].nbaShadow.status).toBe('changed_action');
+  });
+
+  it('K) reactivation_due: current repete último canal (whatsapp), candidate alterna para call -> changed_action', () => {
+    const lead = makeLead();
+    const attempts = [
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(20) }),
+      makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: daysAgo(15) }),
+      makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: daysAgo(10) }),
+    ];
+    const queue = build([lead], attempts);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.REACTIVATION_DUE);
+    expect(queue[0].nbaShadow.current.channel).toBe('whatsapp');
+    expect(queue[0].nbaShadow.candidate).toEqual({ type: 'call', channel: 'phone', intent: 'reactivate', reasonCode: 'reactivation_due', confidence: 'rule' });
+    expect(queue[0].nbaShadow.status).toBe('changed_action');
+  });
+
+  it('L) engagement (teste central): 10:00 call_no_answer, +24h whatsapp_received, após janela de 96h -> current usa a tentativa anterior (call), candidate usa o canal do engajamento (whatsapp) -> changed_action', () => {
+    const lead = makeLead();
+    const attempt = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(6) });
+    const engagement = makeInteraction({ type: 'whatsapp', direction: 'inbound', channel: 'whatsapp', metadata: { activity_class: 'engagement' }, occurredAt: daysAgo(5) });
+    const queue = build([lead], [attempt, engagement]);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NO_NEW_ATTEMPT_SINCE_ENGAGEMENT);
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE);
+    expect(queue[0].nbaShadow.current).toEqual({ type: 'call', channel: 'phone', intent: 'retry', reasonCode: 'no_new_attempt_since_engagement', confidence: 'rule' });
+    expect(queue[0].nbaShadow.candidate).toEqual({ type: 'whatsapp', channel: 'whatsapp', intent: 'continue_conversation', reasonCode: 'no_new_attempt_since_engagement', confidence: 'rule' });
+    expect(queue[0].nbaShadow.status).toBe('changed_action');
+  });
+
+  it('M/N) proposal sem engagement: current=null (gate anti-leak 2E.1), candidate=null -> both_null; evaluation.suggestedAction continua vazando "call" (nível do engine, isolado do NBA)', () => {
+    const lead = makeLead();
+    const attempt = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: hoursAgo(2) });
+    const proposal = makeInteraction({ type: 'proposal', channel: 'manual', metadata: { activity_class: 'attempt', outcome: 'sent' }, occurredAt: hoursAgo(1) });
+    const queue = build([lead], [attempt, proposal]);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_PROPOSAL);
+    expect(queue[0].evaluation.suggestedAction).toEqual({ type: 'call', channel: 'phone' }); // leak confirmado no engine
+    expect(queue[0].nbaShadow.current).toBeNull();
+    expect(queue[0].nbaShadow.candidate).toBeNull();
+    expect(queue[0].nbaShadow.status).toBe('both_null');
+  });
+
+  it('O) proposal com engagement phone anterior: current=null, candidate=call/phone/proposal_follow_up -> candidate_only', () => {
+    const lead = makeLead();
+    const engagement = makeInteraction({ type: 'call', metadata: { activity_class: 'engagement', outcome: 'connected' }, occurredAt: hoursAgo(2) });
+    const proposal = makeInteraction({ type: 'proposal', channel: 'manual', metadata: { activity_class: 'attempt', outcome: 'sent' }, occurredAt: hoursAgo(1) });
+    const queue = build([lead], [engagement, proposal]);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_PROPOSAL);
+    expect(queue[0].nbaShadow.current).toBeNull();
+    expect(queue[0].nbaShadow.candidate).toEqual({ type: 'call', channel: 'phone', intent: 'proposal_follow_up', reasonCode: 'no_response_after_proposal', confidence: 'rule' });
+    expect(queue[0].nbaShadow.status).toBe('candidate_only');
+  });
+
+  it('P) proposal com engagement whatsapp anterior: candidate=whatsapp/proposal_follow_up -> candidate_only', () => {
+    const lead = makeLead();
+    const engagement = makeInteraction({ type: 'whatsapp', direction: 'inbound', channel: 'whatsapp', metadata: { activity_class: 'engagement' }, occurredAt: hoursAgo(2) });
+    const proposal = makeInteraction({ type: 'proposal', channel: 'manual', metadata: { activity_class: 'attempt', outcome: 'sent' }, occurredAt: hoursAgo(1) });
+    const queue = build([lead], [engagement, proposal]);
+    expect(queue[0].nbaShadow.candidate).toEqual({ type: 'whatsapp', channel: 'whatsapp', intent: 'proposal_follow_up', reasonCode: 'no_response_after_proposal', confidence: 'rule' });
+    expect(queue[0].nbaShadow.status).toBe('candidate_only');
+  });
+
+  it('Q/R/S/T) explicit call/whatsapp/meeting/proposal em never_contacted: current e candidate coincidem -> match', () => {
+    ['call', 'whatsapp', 'meeting', 'proposal'].forEach((nextActionType) => {
+      const lead = makeLead({ nextActionType });
+      const queue = build([lead]);
+      expect(queue[0].nbaShadow.status).toBe('match');
+      expect(queue[0].nbaShadow.current.confidence).toBe('explicit');
+      expect(queue[0].nbaShadow.candidate.confidence).toBe('explicit');
+      expect(queue[0].nbaShadow.current.type).toBe(nextActionType);
+    });
+  });
+
+  it('explicit em no_new_attempt_since_engagement: type/channel/confidence/reasonCode coincidem, mas intent diverge (retry vs continue_conversation) -> changed_action, reportado exatamente (não maquiado)', () => {
+    const lead = makeLead({ nextActionType: 'call' });
+    const attempt = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(6) });
+    const engagement = makeInteraction({ type: 'whatsapp', direction: 'inbound', channel: 'whatsapp', metadata: { activity_class: 'engagement' }, occurredAt: daysAgo(5) });
+    const queue = build([lead], [attempt, engagement]);
+    const { current, candidate, status } = queue[0].nbaShadow;
+    expect(current.type).toBe('call');
+    expect(candidate.type).toBe('call');
+    expect(current.channel).toBe(candidate.channel);
+    expect(current.confidence).toBe(candidate.confidence);
+    expect(current.reasonCode).toBe(candidate.reasonCode);
+    expect(current.intent).toBe('retry'); // NBA V1 (REASON_INTENT antigo)
+    expect(candidate.intent).toBe('continue_conversation'); // Policy V1 (REASON_INTENT novo)
+    expect(status).toBe('changed_action'); // divergência real, não escondida
+  });
+
+  it('U) follow_up: current cai no fallthrough legado do engine (infere pela última tentativa, NÃO null), candidate suprime -> current_only', () => {
+    const lead = makeLead({ nextActionType: 'follow_up' });
+    const attempt = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: hoursAgo(30) });
+    const queue = build([lead], [attempt]);
+    expect(queue[0].nbaShadow.current).not.toBeNull(); // comportamento legado real: NÃO é null
+    expect(queue[0].nbaShadow.current.type).toBe('call');
+    expect(queue[0].nbaShadow.candidate).toBeNull();
+    expect(queue[0].nbaShadow.status).toBe('current_only');
+  });
+
+  it('V) other: mesmo comportamento de U (current_only)', () => {
+    const lead = makeLead({ nextActionType: 'other' });
+    const attempt = makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: hoursAgo(30) });
+    const queue = build([lead], [attempt]);
+    expect(queue[0].nbaShadow.current).not.toBeNull();
+    expect(queue[0].nbaShadow.candidate).toBeNull();
+    expect(queue[0].nbaShadow.status).toBe('current_only');
+  });
+
+  it('W/AF) blocked (Ganho/Perdido/deleted/agenda pendente): current=null, candidate=null -> both_null, mesmo com explicit válido; comportamento terminal do item inalterado', () => {
+    const ganho = makeLead({ id: 'ganho', etapa: 'Ganho', nextActionType: 'whatsapp' });
+    const queue = build([ganho]);
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.BLOCKED);
+    expect(queue[0].nbaShadow).toEqual({ status: 'both_null', current: null, candidate: null });
+  });
+
+  it('X) waiting: shadow é calculado normalmente mesmo fora de due (observação futura, sem nenhuma UI nova)', () => {
+    const lead = makeLead();
+    const attempt = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: hoursAgo(2) }); // dentro de 24h -> waiting
+    const queue = build([lead], [attempt]);
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING);
+    expect(queue[0].nbaShadow).not.toBeNull();
+    expect(queue[0].nbaShadow.status).toBe('match'); // attempt 1, sem divergência aprovada nesta rodada
+  });
+
+  it('Y) mesmo dataset: interactions de um lead nunca contaminam o nbaShadow.candidate de outro lead', () => {
+    const leadA = makeLead({ id: 'lead-a' });
+    const leadB = makeLead({ id: 'lead-b' });
+    const engagementA = makeInteraction({ leadId: 'lead-a', type: 'whatsapp', direction: 'inbound', channel: 'whatsapp', metadata: { activity_class: 'engagement' }, occurredAt: daysAgo(5) });
+    const attemptA = makeInteraction({ leadId: 'lead-a', type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(6) });
+    const queue = build([leadA, leadB], [attemptA, engagementA]);
+    const itemB = queue.find((i) => i.lead.id === 'lead-b');
+    expect(itemB.evaluation.reason).toBe(FOLLOW_UP_REASON.NEVER_CONTACTED);
+    expect(itemB.nbaShadow.candidate).toEqual({ type: 'call', channel: 'phone', intent: 'first_contact', reasonCode: 'never_contacted', confidence: 'rule' });
+    expect(itemB.nbaShadow.status).toBe('candidate_only'); // nunca herda o "whatsapp" de lead-a
+  });
+
+  it('Z) nbaPresentation continua derivado SOMENTE do current, mesmo quando shadow.status=changed_action', () => {
+    const lead = makeLead();
+    const attempt = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(6) });
+    const engagement = makeInteraction({ type: 'whatsapp', direction: 'inbound', channel: 'whatsapp', metadata: { activity_class: 'engagement' }, occurredAt: daysAgo(5) });
+    const queue = build([lead], [attempt, engagement]);
+    expect(queue[0].nbaShadow.status).toBe('changed_action');
+    expect(queue[0].nbaShadow.candidate.channel).toBe('whatsapp');
+    // nbaPresentation reflete o current (call/"Retomar após resposta do cliente"), nunca o candidate (whatsapp):
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'Ligação', reasonLabel: 'Retomar após resposta do cliente' });
+  });
+
+  it('AB) contagens due/waiting/blocked permanecem idênticas com nbaShadow presente no item', () => {
+    const due = makeLead({ id: 'due', nextActionType: 'whatsapp' });
+    const waiting = makeLead({ id: 'waiting' });
+    const blocked = makeLead({ id: 'blocked', proximoContato: '2026-12-25' });
+    const queue = build(
+      [due, waiting, blocked],
+      [
+        makeInteraction({ leadId: 'due', occurredAt: hoursAgo(30) }),
+        makeInteraction({ leadId: 'waiting', occurredAt: hoursAgo(2) }),
+      ],
+    );
+    expect(getDueFollowUps(queue).map((i) => i.lead.id)).toEqual(['due']);
+    expect(getWaitingFollowUps(queue).map((i) => i.lead.id)).toEqual(['waiting']);
+    expect(getBlockedFollowUps(queue).map((i) => i.lead.id)).toEqual(['blocked']);
+    expect(queue.every((i) => 'nbaShadow' in i)).toBe(true);
+  });
+
+  it('AC) inputs congelados (leads/interactions/tasks) continuam não gerando erro com o shadow calculado', () => {
+    const leads = Object.freeze([Object.freeze(makeLead())]);
+    const interactions = Object.freeze([Object.freeze(makeInteraction({ occurredAt: hoursAgo(30) }))]);
+    const tasks = Object.freeze([]);
+    let queue;
+    expect(() => { queue = buildFollowUpQueue({ leads, interactions, tasks, now: NOW }); }).not.toThrow();
+    expect(queue[0].nbaShadow).not.toBeNull();
+  });
+
+  it('AD/AE) interaction malformada/tipo desconhecido misturada ao histórico -> shadow ainda calculado com segurança, sem afetar o item', () => {
+    const lead = makeLead();
+    const good = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: hoursAgo(30) });
+    const unknown = makeInteraction({ type: 'mystery', metadata: { activity_class: 'attempt' }, occurredAt: hoursAgo(10) });
+    const noTimestamp = makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: undefined });
+    const queue = build([lead], [good, unknown, noTimestamp]);
+    expect(queue[0].error).toBeNull();
+    expect(queue[0].nbaShadow).not.toBeNull();
+    expect(queue[0].nbaShadow.status).toBe('match'); // só "good" conta, igual ao teste H
+  });
+
+  it('erro isolado de lead malformado -> nbaShadow null nesse item, demais itens com shadow normal', () => {
+    const leadA = makeLead({ id: 'lead-a' });
+    const leadB = makeLead({ id: 'lead-b' });
+    const queue = build([null, leadA, leadB]);
+    expect(queue[0].nbaShadow).toBeNull();
+    expect(queue[1].nbaShadow).not.toBeNull();
+    expect(queue[2].nbaShadow).not.toBeNull();
+  });
+});
+
+describe('Fase 2E.4.3.2 — isolamento de falha do shadow (fail-open)', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('A-G) Due: throw exclusivo em evaluateNextBestActionPolicy -> item sobrevive intacto, só nbaShadow vira null', () => {
+    vi.spyOn(nextBestActionPolicyModule, 'evaluateNextBestActionPolicy').mockImplementation(() => { throw new Error('bug exclusivo do shadow, simulado'); });
+
+    const lead = makeLead(); // never_contacted -> due
+    const queue = build([lead]);
+
+    expect(queue).toHaveLength(1); // A) item continua existindo
+    expect(queue[0].evaluation).not.toBeNull(); // B)
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE); // C)
+    expect(queue[0].nbaPresentation).toBeNull(); // D) igual ao current (never_contacted sem explicit -> null, inalterado)
+    expect(queue[0].error).toBeNull(); // E)
+    expect(queue[0].nbaShadow).toBeNull(); // F)
+    expect(getDueFollowUps(queue).map((i) => i.lead.id)).toEqual([lead.id]); // G)
+  });
+
+  it('8) Waiting: throw exclusivo no shadow -> lead continua em getWaitingFollowUps, evaluation/nbaPresentation preservados', () => {
+    vi.spyOn(nextBestActionPolicyModule, 'evaluateNextBestActionPolicy').mockImplementation(() => { throw new Error('bug exclusivo do shadow, simulado'); });
+
+    const lead = makeLead();
+    const attempt = makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: hoursAgo(2) }); // dentro de 24h -> waiting
+    const queue = build([lead], [attempt]);
+
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING);
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'WhatsApp', reasonLabel: 'Nova tentativa de contato' }); // comportamento atual preservado
+    expect(queue[0].nbaShadow).toBeNull();
+    expect(queue[0].error).toBeNull();
+    expect(getWaitingFollowUps(queue).map((i) => i.lead.id)).toEqual([lead.id]);
+  });
+
+  it('9) Blocked: throw exclusivo no shadow -> lead continua em getBlockedFollowUps, evaluation preservada', () => {
+    vi.spyOn(nextBestActionPolicyModule, 'evaluateNextBestActionPolicy').mockImplementation(() => { throw new Error('bug exclusivo do shadow, simulado'); });
+
+    const lead = makeLead({ etapa: 'Ganho' });
+    const queue = build([lead]);
+
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.BLOCKED);
+    expect(queue[0].nbaShadow).toBeNull();
+    expect(queue[0].error).toBeNull();
+    expect(getBlockedFollowUps(queue).map((i) => i.lead.id)).toEqual([lead.id]);
+  });
+
+  it('10) caminho operacional REAL continua com a semântica antiga de erro (catch interno não esconde falha de evaluateFollowUpEligibility)', () => {
+    vi.spyOn(followUpEngineModule, 'evaluateFollowUpEligibility').mockImplementation(() => { throw new Error('falha real no motor'); });
+
+    const lead = makeLead();
+    const queue = build([lead]);
+
+    expect(queue[0].evaluation).toBeNull();
+    expect(queue[0].error).toBe('falha real no motor');
+    expect(queue[0].nbaPresentation).toBeNull();
+    expect(queue[0].nbaShadow).toBeNull();
+    expect(getDueFollowUps(queue)).toHaveLength(0);
+  });
+
+  it('11) history throw -> mesma proteção (nbaShadow null, item operacional preservado)', () => {
+    vi.spyOn(commercialInteractionHistoryModule, 'buildCommercialInteractionHistory').mockImplementation(() => { throw new Error('bug exclusivo do history, simulado'); });
+
+    const lead = makeLead();
+    const queue = build([lead]);
+
+    expect(queue[0].evaluation).not.toBeNull();
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE);
+    expect(queue[0].error).toBeNull();
+    expect(queue[0].nbaShadow).toBeNull();
+  });
+
+  it('12) comparator throw -> mesma proteção (nbaShadow null, item operacional preservado)', () => {
+    vi.spyOn(nextBestActionShadowModule, 'compareNextBestActions').mockImplementation(() => { throw new Error('bug exclusivo do comparator, simulado'); });
+
+    const lead = makeLead();
+    const queue = build([lead]);
+
+    expect(queue[0].evaluation).not.toBeNull();
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE);
+    expect(queue[0].error).toBeNull();
+    expect(queue[0].nbaShadow).toBeNull();
+  });
+
+  it('13) sem erro: todos os resultados da 2E.4.3 permanecem exatamente iguais (regressão zero no caminho feliz)', () => {
+    const lead = makeLead();
+    const queue = build([lead]);
+    expect(queue[0].nbaShadow.status).toBe('candidate_only'); // never_contacted, igual à 2E.4.3
   });
 });
 
