@@ -286,7 +286,7 @@ describe('Fase 2E.3 — Next Best Action (shadow/display-only) dentro de buildFo
     expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'WhatsApp', reasonLabel: 'Nova tentativa de contato' });
   });
 
-  it('D) Due reactivation_due -> reasonLabel "Reativação"', () => {
+  it('D) Due reactivation_due -> reasonLabel "Reativação" (Fase 2E.5.1B: actionLabel agora reflete a alternância operacional da Commercial Policy, não mais o último canal repetido)', () => {
     const lead = makeLead();
     const attempts = [
       makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(20) }),
@@ -296,7 +296,8 @@ describe('Fase 2E.3 — Next Best Action (shadow/display-only) dentro de buildFo
     const queue = build([lead], attempts);
     expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.REACTIVATION_DUE);
     expect(queue[0].nbaPresentation.reasonLabel).toBe('Reativação');
-    expect(queue[0].nbaPresentation.actionLabel).toBe('Ligação');
+    // último canal tentado foi 'call' -> Commercial Policy alterna para whatsapp (operacional desde 2E.5.1B).
+    expect(queue[0].nbaPresentation.actionLabel).toBe('WhatsApp');
   });
 
   it('E) Due no_response_after_proposal sem explicit -> nbaPresentation null', () => {
@@ -340,7 +341,10 @@ describe('Fase 2E.3 — Next Best Action (shadow/display-only) dentro de buildFo
     expect(queue[0].evaluation).toBeNull();
     expect(queue[0].nbaPresentation).toBeNull();
     expect(typeof queue[0].error).toBe('string');
-    expect(queue[1].nbaPresentation).toBeNull(); // never_contacted sem explicit
+    // Fase 2E.5.1B: never_contacted sem explicit agora É uma recomendação
+    // operacional válida (Commercial Policy V1 recomenda Ligação) — antes
+    // da ativação (2E.4.3), isso era null (NBA legado exigia explicit).
+    expect(queue[1].nbaPresentation).toEqual({ actionLabel: 'Ligação', reasonLabel: 'Primeiro contato' });
     expect(queue[2].nbaPresentation).toEqual({ actionLabel: 'Ligação', reasonLabel: 'Primeiro contato' });
   });
 
@@ -544,15 +548,24 @@ describe('Fase 2E.4.3 — Shadow comparison (Commercial Policy V1) dentro de bui
     expect(itemB.nbaShadow.status).toBe('candidate_only'); // nunca herda o "whatsapp" de lead-a
   });
 
-  it('Z) nbaPresentation continua derivado SOMENTE do current, mesmo quando shadow.status=changed_action', () => {
+  it('Z) [SUPERADO PELA 2E.5.1B] nbaPresentation agora é derivado do candidate/operational, não mais do current, mesmo quando shadow.status=changed_action', () => {
+    // Até a 2E.4.3 (Shadow Mode), este teste provava o inverso: que
+    // nbaPresentation SÓ refletia o current, nunca o candidate — essa
+    // era exatamente a garantia de "Shadow Mode nunca altera UI". A
+    // Fase 2E.5.1B inverte essa garantia DE PROPÓSITO: agora o
+    // candidate (via operationalRecommendation) é a fonte operacional,
+    // e nbaShadow.current preserva o valor antigo só para auditoria.
     const lead = makeLead();
     const attempt = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(6) });
     const engagement = makeInteraction({ type: 'whatsapp', direction: 'inbound', channel: 'whatsapp', metadata: { activity_class: 'engagement' }, occurredAt: daysAgo(5) });
     const queue = build([lead], [attempt, engagement]);
     expect(queue[0].nbaShadow.status).toBe('changed_action');
+    // nbaShadow.current preserva o valor antigo (auditoria), mas NÃO alimenta mais nbaPresentation:
+    expect(queue[0].nbaShadow.current).toEqual({ type: 'call', channel: 'phone', intent: 'retry', reasonCode: 'no_new_attempt_since_engagement', confidence: 'rule' });
     expect(queue[0].nbaShadow.candidate.channel).toBe('whatsapp');
-    // nbaPresentation reflete o current (call/"Retomar após resposta do cliente"), nunca o candidate (whatsapp):
-    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'Ligação', reasonLabel: 'Retomar após resposta do cliente' });
+    expect(queue[0].operationalRecommendation).toEqual(queue[0].nbaShadow.candidate);
+    // nbaPresentation agora reflete o OPERACIONAL (candidate/whatsapp), nunca mais o current (call):
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'WhatsApp', reasonLabel: 'Retomar após resposta do cliente' });
   });
 
   it('AB) contagens due/waiting/blocked permanecem idênticas com nbaShadow presente no item', () => {
@@ -687,6 +700,236 @@ describe('Fase 2E.4.3.2 — isolamento de falha do shadow (fail-open)', () => {
     const lead = makeLead();
     const queue = build([lead]);
     expect(queue[0].nbaShadow.status).toBe('candidate_only'); // never_contacted, igual à 2E.4.3
+  });
+});
+
+describe('Fase 2E.5.1B — ativação operacional (Commercial Policy V1 controla recommendation/CTA)', () => {
+  it('1) never_contacted sem explicit -> operational call/phone, nbaPresentation Ligação/Primeiro contato', () => {
+    const queue = build([makeLead()]);
+    expect(queue[0].operationalRecommendation).toEqual({ type: 'call', channel: 'phone', intent: 'first_contact', reasonCode: 'never_contacted', confidence: 'rule' });
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'Ligação', reasonLabel: 'Primeiro contato' });
+  });
+
+  it('2) attempt1 call -> operational repete call', () => {
+    const attempt = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: hoursAgo(30) });
+    const queue = build([makeLead()], [attempt]);
+    expect(queue[0].evaluation.attemptCount).toBe(1);
+    expect(queue[0].operationalRecommendation.type).toBe('call');
+    expect(queue[0].operationalRecommendation.intent).toBe('retry');
+  });
+
+  it('3) attempt1 whatsapp -> operational repete whatsapp', () => {
+    const attempt = makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: hoursAgo(30) });
+    const queue = build([makeLead()], [attempt]);
+    expect(queue[0].operationalRecommendation.type).toBe('whatsapp');
+  });
+
+  it('4) attempt>=2 call -> operational alterna para whatsapp', () => {
+    const attempts = [
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(3) }),
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: hoursAgo(30) }),
+    ];
+    const queue = build([makeLead()], attempts);
+    expect(queue[0].evaluation.attemptCount).toBe(2);
+    expect(queue[0].operationalRecommendation).toEqual({ type: 'whatsapp', channel: 'whatsapp', intent: 'switch_channel', reasonCode: 'no_response_after_attempt', confidence: 'rule' });
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'WhatsApp', reasonLabel: 'Nova tentativa de contato' });
+  });
+
+  it('5) attempt>=2 whatsapp -> operational alterna para call', () => {
+    const attempts = [
+      makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: daysAgo(3) }),
+      makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: hoursAgo(30) }),
+    ];
+    const queue = build([makeLead()], attempts);
+    expect(queue[0].operationalRecommendation).toEqual({ type: 'call', channel: 'phone', intent: 'switch_channel', reasonCode: 'no_response_after_attempt', confidence: 'rule' });
+  });
+
+  it('6) cadence_exhausted: operational existe internamente, mas status continua waiting (timing do engine intocado)', () => {
+    const attempts = [
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(10) }),
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(6) }),
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(3) }),
+    ];
+    const queue = build([makeLead()], attempts);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.CADENCE_EXHAUSTED);
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING);
+    expect(queue[0].operationalRecommendation).toEqual({ type: 'whatsapp', channel: 'whatsapp', intent: 'switch_channel', reasonCode: 'cadence_exhausted', confidence: 'rule' });
+  });
+
+  it('7) reactivation call->whatsapp (ver também teste D acima)', () => {
+    const attempts = [
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(20) }),
+      makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: daysAgo(15) }),
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(10) }),
+    ];
+    const queue = build([makeLead()], attempts);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.REACTIVATION_DUE);
+    expect(queue[0].operationalRecommendation.type).toBe('whatsapp');
+  });
+
+  it('8) reactivation whatsapp->call', () => {
+    const attempts = [
+      makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: daysAgo(20) }),
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(15) }),
+      makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: daysAgo(10) }),
+    ];
+    const queue = build([makeLead()], attempts);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.REACTIVATION_DUE);
+    expect(queue[0].operationalRecommendation.type).toBe('call');
+  });
+
+  it('9) engagement phone -> operational call, presentation "Retomar após resposta do cliente"', () => {
+    const attempt = makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: daysAgo(6) });
+    const engagement = makeInteraction({ type: 'call', metadata: { activity_class: 'engagement', outcome: 'connected' }, occurredAt: daysAgo(5) });
+    const queue = build([makeLead()], [attempt, engagement]);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NO_NEW_ATTEMPT_SINCE_ENGAGEMENT);
+    expect(queue[0].operationalRecommendation).toEqual({ type: 'call', channel: 'phone', intent: 'continue_conversation', reasonCode: 'no_new_attempt_since_engagement', confidence: 'rule' });
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'Ligação', reasonLabel: 'Retomar após resposta do cliente' });
+  });
+
+  it('10) engagement whatsapp -> operational whatsapp', () => {
+    const attempt = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(6) });
+    const engagement = makeInteraction({ type: 'whatsapp', direction: 'inbound', channel: 'whatsapp', metadata: { activity_class: 'engagement' }, occurredAt: daysAgo(5) });
+    const queue = build([makeLead()], [attempt, engagement]);
+    expect(queue[0].operationalRecommendation.type).toBe('whatsapp');
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'WhatsApp', reasonLabel: 'Retomar após resposta do cliente' });
+  });
+
+  it('11) engagement in_person (meeting_held) -> operational null, nbaPresentation null', () => {
+    const engagement = makeInteraction({ type: 'meeting', channel: 'in_person', metadata: { activity_class: 'engagement', outcome: 'held' }, occurredAt: daysAgo(5) });
+    const queue = build([makeLead()], [engagement]);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NO_NEW_ATTEMPT_SINCE_ENGAGEMENT);
+    expect(queue[0].operationalRecommendation).toBeNull();
+    expect(queue[0].nbaPresentation).toBeNull();
+  });
+
+  it('12) proposal com engagement phone anterior -> operational call', () => {
+    const engagement = makeInteraction({ type: 'call', metadata: { activity_class: 'engagement', outcome: 'connected' }, occurredAt: hoursAgo(2) });
+    const proposal = makeInteraction({ type: 'proposal', channel: 'manual', metadata: { activity_class: 'attempt', outcome: 'sent' }, occurredAt: hoursAgo(1) });
+    const queue = build([makeLead()], [engagement, proposal]);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_PROPOSAL);
+    expect(queue[0].operationalRecommendation).toEqual({ type: 'call', channel: 'phone', intent: 'proposal_follow_up', reasonCode: 'no_response_after_proposal', confidence: 'rule' });
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'Ligação', reasonLabel: 'Follow-up da proposta' });
+  });
+
+  it('13) proposal com engagement whatsapp anterior -> operational whatsapp', () => {
+    const engagement = makeInteraction({ type: 'whatsapp', direction: 'inbound', channel: 'whatsapp', metadata: { activity_class: 'engagement' }, occurredAt: hoursAgo(2) });
+    const proposal = makeInteraction({ type: 'proposal', channel: 'manual', metadata: { activity_class: 'attempt', outcome: 'sent' }, occurredAt: hoursAgo(1) });
+    const queue = build([makeLead()], [engagement, proposal]);
+    expect(queue[0].operationalRecommendation.type).toBe('whatsapp');
+  });
+
+  it('14) proposal sem engagement confiável -> operational null (gate anti-Proposal-Leak permanece ativo mesmo operacional)', () => {
+    const attempt = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: hoursAgo(2) });
+    const proposal = makeInteraction({ type: 'proposal', channel: 'manual', metadata: { activity_class: 'attempt', outcome: 'sent' }, occurredAt: hoursAgo(1) });
+    const queue = build([makeLead()], [attempt, proposal]);
+    expect(queue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_PROPOSAL);
+    expect(queue[0].evaluation.suggestedAction).toEqual({ type: 'call', channel: 'phone' }); // leak confirmado no engine, isolado
+    expect(queue[0].operationalRecommendation).toBeNull();
+    expect(queue[0].nbaPresentation).toBeNull();
+  });
+
+  ['call', 'whatsapp', 'meeting', 'proposal'].forEach((type) => {
+    it(`15-18) explicit ${type} -> operational reflete o tipo explícito`, () => {
+      const queue = build([makeLead({ nextActionType: type })]);
+      expect(queue[0].operationalRecommendation.type).toBe(type);
+      expect(queue[0].operationalRecommendation.confidence).toBe('explicit');
+    });
+  });
+
+  it('19) explicit follow_up -> operational null (Policy suprime, mesmo com histórico inferível)', () => {
+    const attempt = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: hoursAgo(30) });
+    const queue = build([makeLead({ nextActionType: 'follow_up' })], [attempt]);
+    expect(queue[0].operationalRecommendation).toBeNull();
+    expect(queue[0].nbaPresentation).toBeNull();
+  });
+
+  it('20) explicit other -> operational null', () => {
+    const attempt = makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: hoursAgo(30) });
+    const queue = build([makeLead({ nextActionType: 'other' })], [attempt]);
+    expect(queue[0].operationalRecommendation).toBeNull();
+    expect(queue[0].nbaPresentation).toBeNull();
+  });
+
+  it('21) blocked -> operational null', () => {
+    const queue = build([makeLead({ etapa: 'Ganho' })]);
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.BLOCKED);
+    expect(queue[0].operationalRecommendation).toBeNull();
+    expect(queue[0].nbaPresentation).toBeNull();
+  });
+
+  it('22) candidate null VÁLIDO (proposal sem engagement) != fallback técnico: operational continua null, nunca current', () => {
+    const attempt = makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: hoursAgo(2) });
+    const proposal = makeInteraction({ type: 'proposal', channel: 'manual', metadata: { activity_class: 'attempt', outcome: 'sent' }, occurredAt: hoursAgo(1) });
+    const queue = build([makeLead()], [attempt, proposal]);
+    // current também seria null aqui (gate 2E.1), então este cenário por si
+    // não distingue — o ponto crítico é confirmar que NENHUM dos dois é
+    // usado como fallback do outro: nbaShadow prova ambos null por vias
+    // independentes (both_null), e operational é null por SELEÇÃO, não
+    // por fallback técnico (nenhum throw ocorreu).
+    expect(queue[0].nbaShadow.status).toBe('both_null');
+    expect(queue[0].operationalRecommendation).toBeNull();
+    expect(queue[0].error).toBeNull(); // confirma que não passou pelo catch de erro técnico
+  });
+
+  it('23) evaluateNextBestActionPolicy throws -> fallback TÉCNICO para current (nunca null fabricado)', () => {
+    vi.spyOn(nextBestActionPolicyModule, 'evaluateNextBestActionPolicy').mockImplementation(() => { throw new Error('falha técnica simulada'); });
+    const queue = build([makeLead({ nextActionType: 'call' })]); // explicit -> current != null, prova que o fallback é real
+    expect(queue[0].error).toBeNull();
+    expect(queue[0].nbaShadow).toBeNull(); // boundary 2 nem é tentado quando boundary 1 falha
+    expect(queue[0].operationalRecommendation).toEqual({ type: 'call', channel: 'phone', intent: 'first_contact', reasonCode: 'never_contacted', confidence: 'explicit' });
+    vi.restoreAllMocks();
+  });
+
+  it('24) buildCommercialInteractionHistory throws -> mesmo fallback técnico para current', () => {
+    vi.spyOn(commercialInteractionHistoryModule, 'buildCommercialInteractionHistory').mockImplementation(() => { throw new Error('falha técnica simulada'); });
+    const queue = build([makeLead({ nextActionType: 'whatsapp' })]);
+    expect(queue[0].error).toBeNull();
+    expect(queue[0].nbaShadow).toBeNull();
+    expect(queue[0].operationalRecommendation.type).toBe('whatsapp');
+    expect(queue[0].operationalRecommendation.confidence).toBe('explicit');
+    vi.restoreAllMocks();
+  });
+
+  it('25) comparator throws (candidate calculado com sucesso) -> operational continua = candidate, só nbaShadow vira null', () => {
+    vi.spyOn(nextBestActionShadowModule, 'compareNextBestActions').mockImplementation(() => { throw new Error('falha técnica simulada no comparator'); });
+    const queue = build([makeLead()]); // never_contacted sem explicit -> candidate real = call/phone/rule
+    expect(queue[0].error).toBeNull();
+    expect(queue[0].nbaShadow).toBeNull();
+    expect(queue[0].operationalRecommendation).toEqual({ type: 'call', channel: 'phone', intent: 'first_contact', reasonCode: 'never_contacted', confidence: 'rule' });
+    vi.restoreAllMocks();
+  });
+
+  it('26) current/candidate divergence real: operational segue candidate, nbaShadow preserva os dois para auditoria', () => {
+    const attempts = [
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: daysAgo(3) }),
+      makeInteraction({ type: 'call', metadata: { activity_class: 'attempt', outcome: 'no_answer' }, occurredAt: hoursAgo(30) }),
+    ];
+    const queue = build([makeLead()], attempts);
+    expect(queue[0].nbaShadow.status).toBe('changed_action');
+    expect(queue[0].nbaShadow.current.type).toBe('call');
+    expect(queue[0].nbaShadow.candidate.type).toBe('whatsapp');
+    expect(queue[0].operationalRecommendation).toEqual(queue[0].nbaShadow.candidate);
+  });
+
+  it('27) operational presentation reflete o candidate (coerência type/channel/reasonCode/intent preservada pelo gate de presentation)', () => {
+    const attempts = [
+      makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: daysAgo(3) }),
+      makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: hoursAgo(30) }),
+    ];
+    const queue = build([makeLead()], attempts);
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'Ligação', reasonLabel: 'Nova tentativa de contato' });
+  });
+
+  it('28) source centralizado: ACTIVE_OPERATIONAL_SOURCE é lido de operationalRecommendation.js, nunca uma string solta duplicada', () => {
+    // Prova indireta: o próprio comportamento acima (candidate controlando
+    // operational) só é possível porque a constante está configurada para
+    // COMMERCIAL_POLICY — não há teste direto de uma constante privada do
+    // módulo, mas o grep de produção (auditoria) confirma zero duplicação
+    // da string 'commercial_policy' fora de operationalRecommendation.js
+    // e followUpQueue.js (um único ponto de leitura).
+    const queue = build([makeLead()]);
+    expect(queue[0].operationalRecommendation).not.toBeNull(); // prova que a fonte ativa é commercial_policy, não current (que seria null aqui)
   });
 });
 
