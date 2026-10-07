@@ -58,6 +58,22 @@
 -- comparação parcial/fuzzy/semântica que pudesse aceitar um predicate
 -- realmente diferente. Qualquer divergência real continua abortando.
 --
+-- Fase 3.1.6.7 — fix (primeira tentativa controlada de apply falhou
+-- corretamente antes do COMMIT, zero alteração persistida): o
+-- Postgres de produção renderiza pg_get_expr(indpred, indrelid) com
+-- um par EXTRA de parênteses externos envolvendo o predicado inteiro
+-- — "((deleted_at IS NULL) AND (phone_normalized IS NOT NULL))" em
+-- vez de "(deleted_at IS NULL) AND (phone_normalized IS NOT NULL)".
+-- É só diferença de representação/deparse (mesma árvore interna,
+-- mesmo AND, mesmas duas colunas, mesmos operadores IS NULL/IS NOT
+-- NULL) — nunca uma diferença semântica. A correção NÃO remove
+-- parênteses genericamente (isso poderia mascarar um predicate
+-- realmente diferente) — ela aceita EXATAMENTE as duas formas
+-- literais conhecidas (com e sem o par externo), nada além disso.
+-- Qualquer outro texto — incluindo trocar AND por OR, negar uma
+-- condição, remover uma condição ou adicionar qualquer outra —
+-- continua divergindo de ambas as formas aceitas e abortando.
+--
 -- Rollback: "drop index if exists public.leads_user_id_phone_normalized_active_key;"
 
 begin;
@@ -84,7 +100,8 @@ declare
   v_col_names text[];
   v_predicate_raw text;
   v_predicate_normalized text;
-  v_expected_predicate_normalized text;
+  v_expected_predicate_a text;
+  v_expected_predicate_b text;
 begin
   -------------------------------------------------------------------
   -- DATA ASSERTION 1: zero duplicidade ativa — regra de integridade,
@@ -179,8 +196,16 @@ begin
     end if;
 
     v_predicate_normalized := lower(regexp_replace(coalesce(v_predicate_raw, ''), '\s+', ' ', 'g'));
-    v_expected_predicate_normalized := lower(regexp_replace('(deleted_at IS NULL) AND (phone_normalized IS NOT NULL)', '\s+', ' ', 'g'));
-    if v_predicate_normalized is distinct from v_expected_predicate_normalized then
+    -- Fase 3.1.6.7: aceita EXATAMENTE as duas formas literais
+    -- conhecidas (com e sem o par externo redundante que o
+    -- pg_get_expr de producao adiciona) — nunca remocao generica de
+    -- parenteses, que poderia mascarar um predicate realmente
+    -- diferente (ver header).
+    v_expected_predicate_a := lower(regexp_replace('(deleted_at IS NULL) AND (phone_normalized IS NOT NULL)', '\s+', ' ', 'g'));
+    v_expected_predicate_b := lower(regexp_replace('((deleted_at IS NULL) AND (phone_normalized IS NOT NULL))', '\s+', ' ', 'g'));
+    if v_predicate_normalized is distinct from v_expected_predicate_a
+       and v_predicate_normalized is distinct from v_expected_predicate_b
+    then
       raise exception 'Indice leads_user_id_phone_normalized_active_key existe mas o predicate parcial diverge do esperado (encontrado: %) — intervencao manual necessaria, nada foi alterado', v_predicate_raw;
     end if;
 
@@ -217,7 +242,8 @@ declare
   v_col_names text[];
   v_predicate_raw text;
   v_predicate_normalized text;
-  v_expected_predicate_normalized text;
+  v_expected_predicate_a text;
+  v_expected_predicate_b text;
   v_not_null_count integer;
   v_null_count integer;
 begin
@@ -272,8 +298,14 @@ begin
   end if;
 
   v_predicate_normalized := lower(regexp_replace(coalesce(v_predicate_raw, ''), '\s+', ' ', 'g'));
-  v_expected_predicate_normalized := lower(regexp_replace('(deleted_at IS NULL) AND (phone_normalized IS NOT NULL)', '\s+', ' ', 'g'));
-  if v_predicate_normalized is distinct from v_expected_predicate_normalized then
+  -- Fase 3.1.6.7: mesma estratégia exata do existing-object check
+  -- acima — aceita só as duas formas literais conhecidas, nunca
+  -- remoção genérica de parênteses.
+  v_expected_predicate_a := lower(regexp_replace('(deleted_at IS NULL) AND (phone_normalized IS NOT NULL)', '\s+', ' ', 'g'));
+  v_expected_predicate_b := lower(regexp_replace('((deleted_at IS NULL) AND (phone_normalized IS NOT NULL))', '\s+', ' ', 'g'));
+  if v_predicate_normalized is distinct from v_expected_predicate_a
+     and v_predicate_normalized is distinct from v_expected_predicate_b
+  then
     raise exception 'Postcheck falhou: predicate diverge do esperado (encontrado: %)', v_predicate_raw;
   end if;
 
