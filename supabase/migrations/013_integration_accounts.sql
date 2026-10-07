@@ -28,14 +28,32 @@ create table if not exists public.integration_accounts (
   active boolean not null default true,
   created_at timestamptz not null default now(),
   constraint integration_accounts_provider_external_account_id_key
-    unique (provider, external_account_id)
+    unique (provider, external_account_id),
+
+  -- Fase 3.1.3.2.1 — hardening (achados F-02/F-03 da auditoria
+  -- 3.1.3.2). '^[^[:space:]](.*[^[:space:]])?$' exige um primeiro E um
+  -- último caractere não-whitespace (classe POSIX [:space:], que cobre
+  -- espaço/tab/newline/etc. — nunca só espaço comum, diferente de
+  -- trim()/btrim(), que cobririam só espaço). Rejeita: '', só
+  -- espaço/tab/newline, e qualquer valor com whitespace líder ou
+  -- final (' meta', 'meta '). NUNCA transforma/canonicaliza o valor —
+  -- só rejeita o malformado; whitespace INTERNO continua livre
+  -- (identificadores reais de provider podem legitimamente ter
+  -- espaço no meio). Case sensitivity é deliberadamente preservada
+  -- (seção 7 da especificação 3.1.3.2.1) — canonicalização de
+  -- provider (ex. sempre minúsculo) é responsabilidade do futuro
+  -- writer/RPC, nunca do banco.
+  constraint integration_accounts_provider_shape_check
+    check (provider ~ '^[^[:space:]](.*[^[:space:]])?$'),
+  constraint integration_accounts_external_account_id_shape_check
+    check (external_account_id ~ '^[^[:space:]](.*[^[:space:]])?$')
 );
 
 comment on table public.integration_accounts is
   'Fase 3.1 — mapeia uma conta externa integrada (provider + external_account_id, ex. um número de WhatsApp Business) para o user_id (vendedor) responsável por ela. Resolve o assignment de inbound automático sem hardcode. NÃO armazena credentials/tokens/secrets nesta fase. Zero escrita/leitura pelo frontend — RLS está habilitado sem nenhuma policy para authenticated, de propósito (ver comentário de RLS abaixo). (provider, external_account_id) é globalmente único: uma conta externa não pode apontar para dois vendedores ao mesmo tempo — isso é ownership de conta, DIFERENTE de uma futura estratégia de assignment multi-vendedor/round-robin, que seria uma camada acima desta tabela, nunca uma alteração desta unicidade.';
 
 comment on column public.integration_accounts.provider is
-  'Identificador textual livre do provedor de integração (ex. "whatsapp"). Sem enum/CHECK de propósito — mesma convenção já usada em public.leads.canal/next_action_type.';
+  'Identificador textual livre do provedor de integração (ex. "whatsapp"). Sem enum/CHECK de valor-conhecido de propósito — mesma convenção já usada em public.leads.canal/next_action_type. O CHECK existente (integration_accounts_provider_shape_check) só valida formato estrutural (não-vazio, sem whitespace nas bordas), nunca a lista de providers válidos.';
 
 comment on column public.integration_accounts.external_account_id is
   'Identificador da conta no provedor externo (formato definido pelo provider real, ainda não integrado nesta fase).';

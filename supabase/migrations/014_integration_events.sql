@@ -76,16 +76,26 @@ create table if not exists public.integration_events (
     check (retry_count >= 0),
 
   -- Checks estruturais baratos (nunca regra semântica de provider):
-  -- só impedem string vazia/só-espaço nos campos obrigatórios de
-  -- identificação do evento.
-  constraint integration_events_provider_not_blank_check
-    check (trim(provider) <> ''),
-  constraint integration_events_external_event_id_not_blank_check
-    check (trim(external_event_id) <> ''),
-  constraint integration_events_account_external_id_not_blank_check
-    check (trim(account_external_id) <> ''),
-  constraint integration_events_event_type_not_blank_check
-    check (trim(event_type) <> '')
+  -- só impedem string vazia/só-whitespace/com whitespace nas bordas
+  -- nos campos obrigatórios de identificação do evento.
+  --
+  -- Fase 3.1.3.2.1 — hardening (achado F-04 da auditoria 3.1.3.2):
+  -- a versão anterior usava trim(campo) <> '', que no Postgres só
+  -- remove o caractere espaço comum — um valor só com tab/newline
+  -- ('\t', '\n') passaria o check incorretamente. A expressão abaixo
+  -- usa a classe POSIX [:space:] (cobre espaço/tab/newline/etc.) e
+  -- exige um primeiro E um último caractere não-whitespace — rejeita
+  -- '', qualquer string só-whitespace, e whitespace líder/final,
+  -- sem transformar/canonicalizar o valor e sem restringir whitespace
+  -- interno (ver mesmo raciocínio documentado em 013).
+  constraint integration_events_provider_shape_check
+    check (provider ~ '^[^[:space:]](.*[^[:space:]])?$'),
+  constraint integration_events_external_event_id_shape_check
+    check (external_event_id ~ '^[^[:space:]](.*[^[:space:]])?$'),
+  constraint integration_events_account_external_id_shape_check
+    check (account_external_id ~ '^[^[:space:]](.*[^[:space:]])?$'),
+  constraint integration_events_event_type_shape_check
+    check (event_type ~ '^[^[:space:]](.*[^[:space:]])?$')
 );
 
 comment on table public.integration_events is
