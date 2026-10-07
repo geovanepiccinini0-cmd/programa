@@ -121,11 +121,58 @@ describe('resolveIntegrationAccount — Fase 3.2.1', () => {
     expect(result.status).toBe(STATUS.INVALID_INPUT);
   });
 
-  it.each([undefined, 'yes', 1, 0, null, 'true'])('17) active ausente/não-boolean (%p) -> nunca RESOLVED', (badActive) => {
-    const candidate = makeCandidate({ active: badActive });
+  it('17a) active === false (booleano real) -> INACTIVE, nunca INVALID_INPUT', () => {
+    const candidate = makeCandidate({ active: false, integrationAccountId: 'account-inactive-2' });
     const result = resolveIntegrationAccount('whatsapp', '1234567890', [candidate]);
+    expect(result).toEqual({ status: STATUS.INACTIVE, integrationAccountId: 'account-inactive-2' });
+  });
+
+  it.each([undefined, null, 0, 1, 'false', 'true', {}, []])(
+    '17b) active ausente ou não-booleano (%p) -> INVALID_INPUT (nunca INACTIVE, nunca RESOLVED)',
+    (badActive) => {
+      const candidate = makeCandidate({ active: badActive });
+      const result = resolveIntegrationAccount('whatsapp', '1234567890', [candidate]);
+      expect(result.status).toBe(STATUS.INVALID_INPUT);
+      expect(result.status).not.toBe(STATUS.INACTIVE);
+      expect(result.status).not.toBe(STATUS.RESOLVED);
+    },
+  );
+
+  it('17c) candidate inativo (active === false) SEM integrationAccountId -> INVALID_INPUT, nunca INACTIVE', () => {
+    const candidate = makeCandidate({ active: false, integrationAccountId: undefined });
+    const result = resolveIntegrationAccount('whatsapp', '1234567890', [candidate]);
+    expect(result.status).toBe(STATUS.INVALID_INPUT);
+    expect(result.status).not.toBe(STATUS.INACTIVE);
+  });
+
+  it('17d) candidate inativo (active === false) COM integrationAccountId válido -> INACTIVE', () => {
+    const candidate = makeCandidate({ active: false, integrationAccountId: 'account-xyz' });
+    const result = resolveIntegrationAccount('whatsapp', '1234567890', [candidate]);
+    expect(result).toEqual({ status: STATUS.INACTIVE, integrationAccountId: 'account-xyz' });
+  });
+
+  it('17e) candidate ativo (active === true) SEM userId -> INVALID_INPUT, nunca RESOLVED', () => {
+    const candidate = makeCandidate({ active: true, userId: undefined });
+    const result = resolveIntegrationAccount('whatsapp', '1234567890', [candidate]);
+    expect(result.status).toBe(STATUS.INVALID_INPUT);
     expect(result.status).not.toBe(STATUS.RESOLVED);
-    expect(result.status).toBe(STATUS.INACTIVE);
+  });
+
+  it('17f) candidate ativo (active === true) SEM integrationAccountId -> INVALID_INPUT, nunca RESOLVED', () => {
+    const candidate = makeCandidate({ active: true, integrationAccountId: undefined });
+    const result = resolveIntegrationAccount('whatsapp', '1234567890', [candidate]);
+    expect(result.status).toBe(STATUS.INVALID_INPUT);
+    expect(result.status).not.toBe(STATUS.RESOLVED);
+  });
+
+  it('17g) candidate ativo (active === true) válido -> RESOLVED', () => {
+    const candidate = makeCandidate({ active: true });
+    const result = resolveIntegrationAccount('whatsapp', '1234567890', [candidate]);
+    expect(result).toEqual({
+      status: STATUS.RESOLVED,
+      userId: candidate.userId,
+      integrationAccountId: candidate.integrationAccountId,
+    });
   });
 
   it('18) matching é case-sensitive (documentado) — provider com caixa diferente nunca casa', () => {

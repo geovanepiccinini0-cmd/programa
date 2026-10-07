@@ -70,25 +70,34 @@ export function resolveIntegrationAccount(provider, externalAccountId, candidate
   const match = matches[0];
   const active = readField(match, 'active');
 
-  // "Não confirmadamente ativo" (false, ausente, ou qualquer valor
-  // que não seja estritamente o booleano true) é tratado da mesma
-  // forma: INACTIVE. Nunca RESOLVED sem confirmação explícita de
-  // active === true.
-  if (active !== true) {
-    return {
-      status: INTEGRATION_ACCOUNT_RESOLUTION_STATUS.INACTIVE,
-      integrationAccountId: readField(match, 'integrationAccountId'),
-    };
+  // Fase 3.2.1.1 — distinção deliberada entre desativação
+  // administrativa legítima (active === false, um booleano real) e
+  // um candidate malformado (active ausente ou de outro tipo). Só o
+  // primeiro é INACTIVE — representa um estado de negócio real que
+  // futuramente origina integration_events.status='ignored' com
+  // error_code='account_inactive'. O segundo é INVALID_INPUT: nunca
+  // deve ser confundido com uma decisão de desativação deliberada.
+  if (typeof active !== 'boolean') {
+    return invalidInput('candidate correspondente possui active ausente ou nao-booleano');
+  }
+
+  // integrationAccountId é exigido tanto para RESOLVED quanto para
+  // INACTIVE (ambos os estados precisam identificar de qual conta se
+  // trata) — validado antes de decidir entre os dois ramos, nunca
+  // depois, para que um candidate sem integrationAccountId nunca
+  // "escape" como INACTIVE.
+  const integrationAccountId = readField(match, 'integrationAccountId');
+  if (!isNonBlankString(integrationAccountId)) {
+    return invalidInput('candidate correspondente nao possui integrationAccountId valido');
+  }
+
+  if (active === false) {
+    return { status: INTEGRATION_ACCOUNT_RESOLUTION_STATUS.INACTIVE, integrationAccountId };
   }
 
   const userId = readField(match, 'userId');
-  const integrationAccountId = readField(match, 'integrationAccountId');
-
   if (!isNonBlankString(userId)) {
     return invalidInput('candidate correspondente nao possui userId valido');
-  }
-  if (!isNonBlankString(integrationAccountId)) {
-    return invalidInput('candidate correspondente nao possui integrationAccountId valido');
   }
 
   return {
