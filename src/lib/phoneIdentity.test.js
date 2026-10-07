@@ -90,6 +90,45 @@ describe('Fase 3.1.1 — normalizePhoneIdentity (regra canônica)', () => {
     expect(normalizePhoneIdentity('(51) 3333-4444 ext. 123')).toEqual({ status: PHONE_IDENTITY_STATUS.AMBIGUOUS, number: null });
   });
 
+  // --- Sentinela de regressão do guard de ramal (Fase 3.1.1.2 — achado
+  // MEDIUM da auditoria 3.1.1.1) ---
+  //
+  // Os 4 casos M/N/O/ext. acima SEMPRE davam ambiguous, mesmo numa
+  // versão hipotética sem a guarda de ramal — porque o total de dígitos
+  // resultante da concatenação ingênua (base + ramal) não caía em
+  // nenhum comprimento reconhecido como válido. Isso significa que
+  // nenhum deles de fato comprova que a guarda está funcionando: eles
+  // passariam de qualquer forma, por um motivo diferente (comprimento),
+  // mascarando uma eventual regressão real da guarda.
+  //
+  // Os 4 casos abaixo são desenhados deliberadamente para que a base
+  // (DDD + 7 dígitos = 9 dígitos, estruturalmente invàlida por si só)
+  // somada ao(s) dígito(s) do ramal/extensão (1 dígito) total EXATAMENTE
+  // 10 dígitos — um comprimento reconhecido como BR válido
+  // (BR_LOCAL_LENGTHS). Ou seja: SE a guarda de ramal for removida ou
+  // quebrar, o resultado deixa de ser ambiguous e passa a ser
+  // erroneamente valid, com o dígito do ramal silenciosamente
+  // incorporado ao número (ex.: 555133334449). Confirmado por prova
+  // adversarial antes de escrever este teste (ver relatório 3.1.1.2):
+  // sem a guarda, as 4 entradas abaixo resolveriam para
+  // {status: 'valid', number: '555133334449'} — nunca para isto aqui.
+  describe('sentinela — guard de ramal precisa impedir, não só coincidir em comprimento', () => {
+    const adversarial = [
+      ['ramal', '51 3333444 ramal 9'],
+      ['r.', '51 3333444 r. 9'],
+      ['ext', '51 3333444 ext 9'],
+      ['ext.', '51 3333444 ext. 9'],
+    ];
+
+    it.each(adversarial)('%s) %s -> ambiguous (nunca valid com o dígito do ramal incorporado)', (_label, input) => {
+      const r = normalizePhoneIdentity(input);
+      expect(r).toEqual({ status: PHONE_IDENTITY_STATUS.AMBIGUOUS, number: null });
+      // Reforço explícito do contrato público (seção 6 da especificação
+      // 3.1.1.2): nunca o número com o ramal silenciosamente embutido.
+      expect(r.number).not.toBe('555133334449');
+    });
+  });
+
   // --- Internacional não-BR explícito (P, Q, R) — nunca prefixa 55, nunca vira 55+1 ---
   it('P) +1 415 555 0123 -> ambiguous, nunca prefixa 55', () => {
     const r = normalizePhoneIdentity('+1 415 555 0123');
