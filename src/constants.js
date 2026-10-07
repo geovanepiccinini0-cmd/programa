@@ -1,5 +1,10 @@
 export const STAGES = ['Novo Lead', 'Ligação', 'Qualificação', 'Atendimento', 'Proposta', 'Negociação', 'Follow-up 1', 'Follow-up 2', 'Follow-up 3', 'Ganho', 'Perdido'];
-export const PRODUTOS = ['Consórcio', 'Carta Contemplada', 'Home Equity', 'Financiamento', 'Imóvel'];
+// 'A identificar' (Fase 3.3.1) — estado oficial para leads criados por
+// inbound automático antes de o produto ser conhecido. Adicionado ao
+// FINAL da lista: o default da criação manual (PRODUTOS[0]) permanece
+// 'Consórcio', inalterado. Nunca inferir um produto real (ex.
+// "Consórcio") para um lead cujo produto é desconhecido.
+export const PRODUTOS = ['Consórcio', 'Carta Contemplada', 'Home Equity', 'Financiamento', 'Imóvel', 'A identificar'];
 export const CANAIS = ['Facebook Marketplace', 'Tráfego Pago', 'Indicação', 'Prospecção Ativa', 'Instagram/TikTok', 'Cliente', 'Attemics', 'Insta Felipe'];
 export const CATS_TASK = ['Follow-up', 'Conteúdo', 'Agenda/Ligação', 'Operacional'];
 export const DIAS_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
@@ -9,6 +14,7 @@ export const PROD_COLOR = {
   'Home Equity': 'var(--teal)',
   Financiamento: 'var(--red)',
   Imóvel: 'var(--purple)',
+  'A identificar': 'var(--border)',
 };
 export const STALE_DAYS = 15;
 export const TAGS_LEAD = ['S/ CONDIÇÃO', 'C/ CONDIÇÃO', 'N/ RESPONDE', 'CARRO ENTR.', 'RESTRIÇÃO', 'PRIORIDADE', 'ATENÇÃO'];
