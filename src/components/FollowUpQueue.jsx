@@ -4,7 +4,7 @@ import { FOLLOW_UP_POLICY } from '../lib/followUpEngine.js';
 import { buildTelHref, buildWhatsAppHref } from '../lib/followUpAction.js';
 import { useCommercialRegistration } from '../hooks/useCommercialRegistration.js';
 import {
-  formatFollowUpReason, formatFollowUpTimeLabel, formatSuggestedAction,
+  formatFollowUpReason, formatFollowUpTimeLabel,
   getOperationalBlockers, formatOperationalBlocker, hasMissingPhoneWarning,
   shouldShowAttemptCount, formatAttemptCount, shouldShowBlockedFollowUp,
 } from '../lib/followUpPresentation.js';
@@ -80,36 +80,45 @@ function WhatsAppResultPicker({ registering, error, onResult, onCancel }) {
 }
 
 function DueCard({ item, onEditLead, assistedAction, assistedRegistering, assistedError, onStartAssisted, onAssistedResult, onCancelAssisted }) {
-  const { lead, evaluation, nbaPresentation } = item;
+  const { lead, evaluation, nbaPresentation, operationalRecommendation } = item;
   const reason = formatFollowUpReason(evaluation);
   const time = formatFollowUpTimeLabel(evaluation, item.now);
   const attempt = shouldShowAttemptCount(evaluation) ? formatAttemptCount(evaluation, FOLLOW_UP_POLICY) : null;
-  const suggestedAction = formatSuggestedAction(evaluation);
-  const missingPhone = hasMissingPhoneWarning(evaluation);
   const timeLine = [time, attempt].filter(Boolean).join(' · ');
   const etapaProduto = [lead.etapa, lead.produto].filter(Boolean).join(' · ');
 
-  // Fase 2D.1/2D.2.B — só "call"/"whatsapp" ganham CTA executável nesta
-  // fase (meeting/proposal continuam só texto, ver investigação 2D.0).
-  // O motor nunca sugere os dois tipos ao mesmo tempo para o mesmo lead
-  // (suggestedAction.type é um valor único), então isCallSuggested e
-  // isWhatsappSuggested são sempre mutuamente exclusivos — nunca os dois
-  // CTAs aparecem juntos. Sem telefone utilizável -> builder devolve
-  // null -> sem CTA, sem botão desabilitado (mesma decisão já tomada
-  // para o resto do card: o aviso "Sem telefone cadastrado" abaixo já é
-  // suficiente). buildWhatsAppHref é bem mais rígido que buildTelHref
-  // (ver 2D.2.A) — pode recusar um telefone que buildTelHref aceitaria;
-  // isso nunca é tratado como erro aqui, só como "sem CTA". Isto decide
-  // SÓ se a CTA aparece agora — nunca decide qual picker renderizar
-  // (ver 2D.2.C.1 abaixo, assistedAction.type é quem decide isso).
-  const isCallSuggested = evaluation.suggestedAction && evaluation.suggestedAction.type === 'call';
-  const isWhatsappSuggested = evaluation.suggestedAction && evaluation.suggestedAction.type === 'whatsapp';
+  // Fase 2E.5.1B — ATIVAÇÃO: CTA decidido por `operationalRecommendation`
+  // (vem do queue item — este componente nunca importa a Commercial
+  // Policy/history/selector diretamente, só consome o contrato neutro
+  // que buildFollowUpQueue já expõe). Só "call"/"whatsapp" ganham CTA
+  // executável (meeting/proposal continuam só texto, ver investigação
+  // 2D.0/2E.5.0) — isCallSuggested e isWhatsappSuggested são sempre
+  // mutuamente exclusivos (operationalRecommendation.type é um valor
+  // único). Sem telefone utilizável -> builder devolve null -> sem CTA
+  // (o aviso "Sem telefone cadastrado" abaixo já é suficiente).
+  // buildWhatsAppHref é mais rígido que buildTelHref (2D.2.A) — nunca
+  // tratado como erro aqui, só como "sem CTA". Isto decide SÓ se a CTA
+  // aparece agora — nunca qual picker renderizar (2D.2.C.1 abaixo).
+  const isCallSuggested = operationalRecommendation && operationalRecommendation.type === 'call';
+  const isWhatsappSuggested = operationalRecommendation && operationalRecommendation.type === 'whatsapp';
   const telHref = isCallSuggested ? buildTelHref(lead.telefone) : null;
   const waHref = isWhatsappSuggested ? buildWhatsAppHref(lead.telefone) : null;
+  // Fase 2E.5.1B — achado da validação funcional: `hasMissingPhoneWarning`
+  // (followUpPresentation.js) lê o blocker SEM_TELEFONE do ENGINE LEGADO,
+  // que só é marcado quando o próprio engine chegaria a sugerir call/
+  // whatsapp (via nextActionType explícito ou última tentativa) — ele
+  // nunca sugere nada para never_contacted sem explicit, então nunca
+  // marcava esse blocker nesse caso. Agora que a Commercial Policy
+  // recomenda "Ligação" para never_contacted sem explicit mesmo sem
+  // telefone, o aviso precisa refletir ISSO também — daí o OR com a
+  // checagem derivada da própria recomendação operacional (mesmos dados
+  // já computados acima, nenhum import novo): recomendação pede um canal
+  // executável, mas o builder correspondente rejeitou o telefone.
+  const missingPhone = hasMissingPhoneWarning(evaluation) || ((isCallSuggested || isWhatsappSuggested) && !telHref && !waHref);
   // Fase 2D.2.C.1 — qual picker aparece depende do TIPO CONGELADO no
-  // momento do clique (assistedAction.type), nunca da suggestedAction
-  // atual do motor — ver o efeito de invalidação em FollowUpQueue, que
-  // fecha o picker (nunca troca de tipo) se a sugestão mudar antes da
+  // momento do clique (assistedAction.type), nunca da recomendação
+  // ATUAL — ver o efeito de invalidação em FollowUpQueue, que fecha o
+  // picker (nunca troca de tipo) se a recomendação mudar antes da
   // confirmação.
   const isAssistingThisLead = Boolean(assistedAction) && assistedAction.leadId === lead.id;
 
@@ -132,20 +141,20 @@ function DueCard({ item, onEditLead, assistedAction, assistedRegistering, assist
         {reason && <div className="card-meta">{reason.subtitle}</div>}
         {timeLine && <div className="card-meta">{timeLine}</div>}
         {etapaProduto && <div className="card-meta">{etapaProduto}</div>}
-        {/* Fase 2E.3 — Next Best Action em modo shadow/display-only: só
-            enriquece este texto informativo. NUNCA participa da decisão
-            de isCallSuggested/isWhatsappSuggested/telHref/waHref acima
-            (que continuam lendo exclusivamente evaluation.suggestedAction,
-            intocado) — se nbaPresentation vier null por qualquer motivo
-            (ex. reason sem NBA, ver 2E.1), o fallback é byte-a-byte o
-            texto que já existia antes desta fase. */}
-        {nbaPresentation ? (
+        {/* Fase 2E.5.1B — `nbaPresentation` agora é a apresentação da
+            recomendação OPERACIONAL (Commercial Policy V1), não mais do
+            NBA legado. REGRA CRÍTICA (seção 35 da especificação): quando
+            `nbaPresentation` é null (ex. Proposal Leak fechado,
+            follow_up/other suprimidos, candidate sem engajamento
+            confiável), NÃO existe mais nenhum fallback visual para o
+            texto legado "Ação sugerida: ..." — mostrar isso ressuscitaria
+            exatamente os comportamentos que a Policy corrigiu de
+            propósito. Null aqui significa "sem recomendação", ponto. */}
+        {nbaPresentation && (
           <>
             <div className="card-meta">Próxima melhor ação: {nbaPresentation.actionLabel}</div>
             <div className="card-meta">{nbaPresentation.reasonLabel}</div>
           </>
-        ) : (
-          suggestedAction && <div className="card-meta">Ação sugerida: {suggestedAction}</div>
         )}
         {missingPhone && <div className="followup-warning">Sem telefone cadastrado</div>}
       </button>
@@ -290,12 +299,15 @@ export default function FollowUpQueue({
   // fechar o picker, SEMPRE fechando (nunca trocando de tipo, nunca
   // registrando nada):
   // 1) o lead saiu de due (mesma proteção da 2D.1/2D.2.B);
-  // 2) a suggestedAction do motor para esse lead deixou de ser do
-  //    MESMO tipo que foi congelado no clique (ex.: vendedor trocou a
-  //    "Próxima ação" no LeadModal de whatsapp para call enquanto o
-  //    picker de WhatsApp estava aberto — o motor agora sugere call,
-  //    mas a ação que o vendedor efetivamente iniciou foi whatsapp;
-  //    nunca mostramos o picker de call aqui, só fechamos);
+  // 2) a recomendação OPERACIONAL para esse lead deixou de ser do
+  //    MESMO tipo que foi congelado no clique — Fase 2E.5.1B: antes
+  //    comparava contra `evaluation.suggestedAction.type` (NBA legado);
+  //    agora compara contra `operationalRecommendation.type` (Commercial
+  //    Policy V1), a mesma fonte que decide o CTA em DueCard. Se não
+  //    atualizássemos esta comparação junto com a ativação, a
+  //    recomendação operacional poderia alternar de canal (ex. call ->
+  //    whatsapp) sem o picker perceber, abrindo o resultado errado para
+  //    uma ação que não corresponde mais ao que está na tela;
   // 3) a ação congelada deixou de ser executável (telefone mudou para
   //    algo que buildTelHref/buildWhatsAppHref não aceita mais).
   // Em QUALQUER um dos três casos: fecha, usuário precisa iniciar de
@@ -307,7 +319,7 @@ export default function FollowUpQueue({
       setAssistedAction(null);
       return;
     }
-    if (!current.evaluation.suggestedAction || current.evaluation.suggestedAction.type !== assistedAction.type) {
+    if (!current.operationalRecommendation || current.operationalRecommendation.type !== assistedAction.type) {
       setAssistedAction(null);
       return;
     }

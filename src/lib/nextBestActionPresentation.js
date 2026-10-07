@@ -48,19 +48,41 @@ const REASON_LABEL = {
   no_response_after_proposal: 'Follow-up da proposta',
 };
 
-// Espelho mínimo do mapa reasonCode->intent de nextBestAction.js (não
-// exportado de lá) — usado SÓ para a validação de coerência da seção
-// 17: se intent e reasonCode não baterem com nenhuma das 6 combinações
-// que a NBA V1 realmente pode produzir, o contrato está incoerente e a
-// resposta correta é null, nunca uma tentativa de adivinhar qual dos
-// dois está certo.
-const REASON_INTENT = {
-  never_contacted: 'first_contact',
-  no_response_after_attempt: 'retry',
-  cadence_exhausted: 'retry',
-  reactivation_due: 'reactivate',
-  no_new_attempt_since_engagement: 'retry',
-  no_response_after_proposal: 'proposal_follow_up',
+// Fase 2E.5.1A — espelho do mapa reasonCode->intent, mas agora POR
+// CONJUNTO, não por valor único. Até a 2E.4, só o NBA atual
+// (nextBestAction.js) alimentava esta camada, e ele produz exatamente
+// 1 intent por reason. A partir da preparação para a Commercial Policy
+// V1 (nextBestActionPolicy.js) assumir a recomendação operacional,
+// esta camada precisa aceitar TAMBÉM os intents legítimos que a Policy
+// produz — sem afrouxar o gate para "qualquer intent conhecido",
+// preservando reason<->intent como um par fechado (seção 15/17 da
+// especificação: nunca "aceita qualquer coisa").
+//
+// Conjunto confirmado por leitura direta dos dois módulos reais (nunca
+// assumido de memória/especificação):
+// - nextBestAction.js (NBA atual): never_contacted->first_contact,
+//   no_response_after_attempt->retry, cadence_exhausted->retry,
+//   reactivation_due->reactivate, no_new_attempt_since_engagement->retry,
+//   no_response_after_proposal->proposal_follow_up (1 valor fixo por
+//   reason, independente de confidence).
+// - nextBestActionPolicy.js (Commercial Policy V1): never_contacted->
+//   first_contact; no_response_after_attempt->retry (attemptCount<=1)
+//   OU switch_channel (attemptCount>=2) OU retry (explicit, via seu
+//   próprio REASON_INTENT base); cadence_exhausted->switch_channel
+//   (rule) OU retry (explicit); reactivation_due->reactivate (rule e
+//   explicit); no_new_attempt_since_engagement->continue_conversation
+//   (rule e explicit); no_response_after_proposal->proposal_follow_up
+//   (rule e explicit).
+// União das duas fontes = o conjunto abaixo. `switch_channel` só é
+// legítimo para no_response_after_attempt/cadence_exhausted — nunca
+// para os outros 4 reasons (preserva o gate fechado).
+const REASON_VALID_INTENTS = {
+  never_contacted: new Set(['first_contact']),
+  no_response_after_attempt: new Set(['retry', 'switch_channel']),
+  cadence_exhausted: new Set(['retry', 'switch_channel']),
+  reactivation_due: new Set(['reactivate']),
+  no_new_attempt_since_engagement: new Set(['retry', 'continue_conversation']),
+  no_response_after_proposal: new Set(['proposal_follow_up']),
 };
 
 function isKnownConfidence(confidence) {
@@ -83,7 +105,7 @@ export function presentNextBestAction(nba) {
   if (!Object.prototype.hasOwnProperty.call(ACTION_LABEL, type)) return null;
   if (channel !== TYPE_CHANNEL[type]) return null; // ausente OU incoerente: mesmo null, nunca corrigido
   if (!Object.prototype.hasOwnProperty.call(REASON_LABEL, reasonCode)) return null;
-  if (REASON_INTENT[reasonCode] !== intent) return null; // ausente OU incoerente com reasonCode: mesmo null
+  if (!REASON_VALID_INTENTS[reasonCode].has(intent)) return null; // ausente OU fora do conjunto legítimo deste reason: mesmo null
   if (!isKnownConfidence(confidence)) return null;
 
   return {

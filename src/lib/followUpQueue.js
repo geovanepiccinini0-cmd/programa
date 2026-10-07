@@ -4,6 +4,15 @@ import { presentNextBestAction } from './nextBestActionPresentation.js';
 import { buildCommercialInteractionHistory } from './commercialInteractionHistory.js';
 import { evaluateNextBestActionPolicy } from './nextBestActionPolicy.js';
 import { compareNextBestActions } from './nextBestActionShadow.js';
+import { selectOperationalRecommendation, OPERATIONAL_RECOMMENDATION_SOURCE } from './operationalRecommendation.js';
+
+// Fase 2E.5.1B — fonte operacional centralizada. Único ponto de
+// seleção no código inteiro (seção 4 da especificação: "não espalhar
+// string 'commercial_policy' por vários arquivos") — rollback para o
+// comportamento pré-2E.5.1B é trocar esta única linha para
+// `OPERATIONAL_RECOMMENDATION_SOURCE.CURRENT` e nada mais (nenhuma UI,
+// nenhum outro módulo, precisa saber que essa troca aconteceu).
+const ACTIVE_OPERATIONAL_SOURCE = OPERATIONAL_RECOMMENDATION_SOURCE.COMMERCIAL_POLICY;
 
 // Fase 2C.2A — camada de domínio da fila de follow-up ("Shadow Mode").
 // Pura: sem Supabase, sem React, sem useAppState, sem fetch, nunca muta
@@ -18,30 +27,28 @@ import { compareNextBestActions } from './nextBestActionShadow.js';
 // auditável por completo (inclusive para Shadow Mode conferir blockers
 // de leads terminais, se precisar).
 //
-// Fase 2E.3 — Next Best Action em modo shadow/display-only. Calculado
-// aqui (mesmo lugar que já tem lead+evaluation juntos, sem precisar de
-// uma segunda passagem/indexação) via evaluateNextBestAction (2E.1) +
-// presentNextBestAction (2E.2) — nenhuma das duas reavalia reason/
+// Fase 2E.3 — Next Best Action (evaluateNextBestAction, 2E.1 +
+// presentNextBestAction, 2E.2) — nenhuma das duas reavalia reason/
 // blockers/attemptCount, só leem o que evaluateFollowUpEligibility já
-// decidiu. Só `nbaPresentation` ({actionLabel, reasonLabel} ou null) é
-// exposto no item — o objeto `nba` bruto não tem nenhum consumidor
-// concreto na UI ainda, então não entra no contrato para não aumentá-lo
-// sem necessidade real. `nbaPresentation` é puro metadado informativo:
-// nunca participa de status/reason/dueAt/attemptCount/sort/filtros, e a
-// CTA assistida (2D.1/2D.2) continua decidida exclusivamente por
-// evaluation.suggestedAction, nunca por este campo.
+// decidiu. `nbaPresentation`/`operationalRecommendation` nunca
+// participam de status/reason/dueAt/attemptCount/sort/filtros — isso
+// continua sendo decidido exclusivamente por `evaluation`.
 //
-// Fase 2E.4.3 — Shadow comparison entre o NBA atual (acima) e o NBA
-// candidato da Commercial Policy V1 (nextBestActionPolicy.js, 2E.4.2).
-// `history` é construído a partir EXATAMENTE do mesmo
-// `leadInteractions` já usado para `evaluation` (mesma variável, mesma
-// referência de array) — garantia estrutural, não só por convenção, de
-// que evaluation/current/history/candidate nascem do mesmo dataset
-// desta mesma execução (guardrail registrado na 2E.4.2 sobre
-// reason/anchor/history inconsistentes). `nbaShadow` é só um campo
-// informativo adicional: `candidate` NUNCA alimenta nbaPresentation,
-// NUNCA alimenta evaluation.suggestedAction, e não tem nenhum
-// consumidor de UI/CTA nesta fase.
+// Fase 2E.4.3 — Shadow comparison entre o NBA atual e o candidato da
+// Commercial Policy V1 (nextBestActionPolicy.js, 2E.4.2). `history` é
+// construído a partir EXATAMENTE do mesmo `leadInteractions` já usado
+// para `evaluation` (mesma variável, mesma referência de array) —
+// garantia estrutural, não só por convenção, de que evaluation/
+// currentNba/history/candidateNba nascem do mesmo dataset desta mesma
+// execução (guardrail registrado na 2E.4.2 sobre reason/anchor/history
+// inconsistentes).
+//
+// Fase 2E.5.1B (ver abaixo) — ATENÇÃO: desde esta fase, `candidate`
+// (via `operationalRecommendation`) PASSA a alimentar `nbaPresentation`
+// e a decidir o CTA em FollowUpQueue.jsx — o parágrafo acima descreve
+// 2E.4.3, não o estado atual. `evaluation.suggestedAction` nunca é
+// escrito por nada aqui (seção inalterada), mas deixou de ser a fonte
+// do CTA — ver comentário da ativação abaixo.
 //
 // Fase 2E.4.3.2 — hardening de isolamento de falha (achado HIGH da
 // auditoria 2E.4.3.1, provado empiricamente: um throw exclusivo no
@@ -53,10 +60,48 @@ import { compareNextBestActions } from './nextBestActionShadow.js';
 // buildCommercialInteractionHistory/evaluateNextBestActionPolicy/
 // compareNextBestActions, nunca evaluateFollowUpEligibility/
 // evaluateNextBestAction/presentNextBestAction (que continuam com a
-// semântica de erro pré-existente, sob o catch externo). Fail-open:
-// qualquer exceção aqui dentro vira só `nbaShadow = null` — nunca um
-// `both_null`/`match`/`current_only` fabricado, nunca log/telemetry
-// (observabilidade é decisão de fase futura, fora de escopo aqui).
+// semântica de erro pré-existente, sob o catch externo).
+//
+// Fase 2E.5.1B — ATIVAÇÃO: a Commercial Policy V1 (`candidateNba`)
+// passa a ser a fonte de `operationalRecommendation`/`nbaPresentation`
+// (o que a UI exibe e o que decide o CTA — ver FollowUpQueue.jsx) via
+// `ACTIVE_OPERATIONAL_SOURCE` acima. `currentNba` continua calculado
+// (nunca removido — necessário para `nbaShadow`, para o fallback
+// técnico abaixo, e para rollback) mas deixa de alimentar a UI
+// diretamente.
+//
+// Três semânticas de falha DISTINTAS, deliberadamente não unificadas
+// num só catch (achado da especificação: "NULL VÁLIDO vs. ERRO
+// TÉCNICO" precisam ser diferenciáveis):
+//
+// 1) `buildCommercialInteractionHistory`/`evaluateNextBestActionPolicy`
+//    lançam (erro técnico, não "sem recomendação"): `candidateNba`
+//    nunca chega a existir de verdade -> fallback técnico explícito
+//    para `currentNba` (nunca para `null`) e `nbaShadow` fica `null`
+//    (não há candidate válido para comparar). Isso é estrutural e
+//    diferente de "candidate decidiu null": aqui a Policy nem chegou a
+//    decidir nada.
+// 2) `candidateNba === null` (resultado VÁLIDO e deliberado da Policy —
+//    ex. Proposal Leak fechado, follow_up/other suprimidos, blocked):
+//    `selectOperationalRecommendation` com source=COMMERCIAL_POLICY
+//    devolve exatamente esse `null` — nunca um fallback para
+//    `currentNba` (regra crítica da especificação: candidate null NUNCA
+//    cai para current; só erro técnico cai).
+// 3) só `compareNextBestActions` lança (candidate já foi calculado com
+//    sucesso): `nbaShadow` fica `null`, mas `operationalRecommendation`
+//    continua sendo `candidateNba` normalmente — o comparator é
+//    observabilidade pura, nunca participa da operação.
+// 4) `selectOperationalRecommendation` lança (2E.5.1B.2 — hardening,
+//    hoje inalcançável): mesmo fallback técnico de (1), `currentNba`.
+//    Nunca confundido com (2) — (2) nunca lança, só retorna `null`.
+// 5) `presentNextBestAction` lança (2E.5.1B.2 — hardening, hoje
+//    inalcançável): só `nbaPresentation` vira `null`;
+//    `operationalRecommendation` (já decidida por 1-4 acima) nunca é
+//    afetada — CTA continua coerente, pois deriva dela, não da
+//    apresentação textual.
+//
+// Nenhuma das cinco exceções (ou ausência delas) gera console/telemetry/
+// write — permanecem silenciosas, como já era o padrão da 2E.4.3.2.
 
 // Agrupa uma lista em um Map<leadId, item[]> numa única passagem —
 // evita O(leads × interactions)/O(leads × tasks): a indexação é
@@ -87,34 +132,78 @@ export function buildFollowUpQueue({ leads, interactions, tasks, now, policy = F
       const leadInteractions = interactionsByLead.get(lead && lead.id) || [];
       const leadTasks = tasksByLead.get(lead && lead.id) || [];
       const evaluation = evaluateFollowUpEligibility({ lead, interactions: leadInteractions, tasks: leadTasks, now, policy });
-      const nba = evaluateNextBestAction({ lead, followUpEvaluation: evaluation });
-      const nbaPresentation = presentNextBestAction(nba);
+      const currentNba = evaluateNextBestAction({ lead, followUpEvaluation: evaluation });
 
-      // Fase 2E.4.3.2 — hardening: fail-open do shadow. O caminho
-      // operacional acima (evaluation/nba/nbaPresentation) já está
-      // calculado com sucesso neste ponto — o que vier a seguir é
-      // exclusivamente observacional (Commercial Policy V1 em shadow
-      // mode) e NUNCA pode apagar esse resultado. Try/catch interno,
-      // deliberadamente mais estreito que o externo (que continua
-      // cobrindo só o caminho operacional, semântica inalterada):
-      // qualquer exceção aqui dentro (buildCommercialInteractionHistory/
-      // evaluateNextBestActionPolicy/compareNextBestActions — nenhuma
-      // das três lança, por design e por teste, mas essa garantia nunca
-      // deve depender só de "elas nunca lançam hoje") produz só
-      // `nbaShadow = null` — nunca um `both_null`/`match`/`current_only`
-      // fabricado, nunca um erro que suba e contamine o item inteiro.
-      let nbaShadow = null;
+      // Boundary 1 (seção 28-D do plano de ativação): história + policy
+      // juntas, como já era. Falha aqui é ERRO TÉCNICO, nunca "candidate
+      // decidiu null" — por isso rastreada separadamente
+      // (`candidateComputationFailed`), nunca confundida com
+      // `candidateNba = null`.
+      let candidateNba = null;
+      let candidateComputationFailed = false;
       try {
         const history = buildCommercialInteractionHistory(leadInteractions);
-        const candidateNba = evaluateNextBestActionPolicy({ lead, followUpEvaluation: evaluation, history });
-        nbaShadow = compareNextBestActions(nba, candidateNba);
+        candidateNba = evaluateNextBestActionPolicy({ lead, followUpEvaluation: evaluation, history });
       } catch {
-        nbaShadow = null;
+        candidateComputationFailed = true;
       }
 
-      return { lead, evaluation, error: null, nbaPresentation, nbaShadow };
+      // Boundary 2 (seção 28-E): comparator, só tentado se o candidate
+      // em si foi calculado com sucesso — comparar contra um candidate
+      // que nunca existiu de verdade não produz uma comparação válida.
+      // Falha aqui nunca afeta `operationalRecommendation` (o candidate
+      // já estava calculado antes desta linha).
+      let nbaShadow = null;
+      if (!candidateComputationFailed) {
+        try {
+          nbaShadow = compareNextBestActions(currentNba, candidateNba);
+        } catch {
+          nbaShadow = null;
+        }
+      }
+
+      // Seleção operacional: erro técnico no boundary 1 -> fallback
+      // explícito para `currentNba` (nunca `null` fabricado); sucesso ->
+      // seletor puro (operationalRecommendation.js), que já garante
+      // estruturalmente que candidate===null nunca cai para current.
+      //
+      // Boundary 3 (2E.5.1B.2 — hardening, achado MEDIUM da auditoria
+      // 2E.5.1B.1): o próprio seletor ganha boundary próprio. Um throw
+      // inesperado aqui (hoje inalcançável — o único call site passa um
+      // objeto-literal bem formado, que não pode lançar na
+      // desestruturação) é ERRO TÉCNICO da camada de seleção, nunca uma
+      // decisão semântica — por isso cai no MESMO fallback técnico
+      // (`currentNba`) de `candidateComputationFailed`, nunca confundido
+      // com "candidate decidiu null" (que não lança, só retorna `null`
+      // normalmente e não passa por este catch).
+      let operationalRecommendation;
+      if (candidateComputationFailed) {
+        operationalRecommendation = currentNba;
+      } else {
+        try {
+          operationalRecommendation = selectOperationalRecommendation({ source: ACTIVE_OPERATIONAL_SOURCE, current: currentNba, candidate: candidateNba });
+        } catch {
+          operationalRecommendation = currentNba;
+        }
+      }
+
+      // Boundary 4 (2E.5.1B.2 — hardening) — presentation ganha boundary
+      // próprio: um throw inesperado aqui (hoje inalcançável —
+      // `presentNextBestAction` é defensivo por design, só faz leituras
+      // seguras) nunca pode degradar `operationalRecommendation` (já
+      // decidida acima) nem o item inteiro — só a apresentação textual
+      // falha, isolada. CTA em FollowUpQueue.jsx continua derivando de
+      // `operationalRecommendation`, nunca de `nbaPresentation`.
+      let operationalPresentation;
+      try {
+        operationalPresentation = presentNextBestAction(operationalRecommendation);
+      } catch {
+        operationalPresentation = null;
+      }
+
+      return { lead, evaluation, error: null, nbaPresentation: operationalPresentation, nbaShadow, operationalRecommendation };
     } catch (e) {
-      return { lead, evaluation: null, error: (e && e.message) || 'Falha ao avaliar este lead.', nbaPresentation: null, nbaShadow: null };
+      return { lead, evaluation: null, error: (e && e.message) || 'Falha ao avaliar este lead.', nbaPresentation: null, nbaShadow: null, operationalRecommendation: null };
     }
   });
 }

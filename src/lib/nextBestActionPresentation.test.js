@@ -65,6 +65,85 @@ describe('Fase 2E.2 — presentNextBestAction — happy path', () => {
   });
 });
 
+describe('Fase 2E.5.1A — presentNextBestAction — outputs legítimos da Commercial Policy V1', () => {
+  it('W) call/phone/switch_channel/no_response_after_attempt/rule -> Ligação / Nova tentativa de contato', () => {
+    expect(presentNextBestAction(nba({ intent: 'switch_channel', reasonCode: 'no_response_after_attempt', confidence: 'rule' })))
+      .toEqual({ actionLabel: 'Ligação', reasonLabel: 'Nova tentativa de contato' });
+  });
+
+  it('X) whatsapp/whatsapp/switch_channel/no_response_after_attempt/rule -> WhatsApp / Nova tentativa de contato', () => {
+    expect(presentNextBestAction(nba({ type: 'whatsapp', channel: 'whatsapp', intent: 'switch_channel', reasonCode: 'no_response_after_attempt', confidence: 'rule' })))
+      .toEqual({ actionLabel: 'WhatsApp', reasonLabel: 'Nova tentativa de contato' });
+  });
+
+  it('Y) call/phone/switch_channel/cadence_exhausted/rule -> Ligação / Cadência de contato esgotada', () => {
+    expect(presentNextBestAction(nba({ intent: 'switch_channel', reasonCode: 'cadence_exhausted', confidence: 'rule' })))
+      .toEqual({ actionLabel: 'Ligação', reasonLabel: 'Cadência de contato esgotada' });
+  });
+
+  it('Z) whatsapp/whatsapp/continue_conversation/no_new_attempt_since_engagement/rule -> WhatsApp / Retomar após resposta do cliente (label inalterado)', () => {
+    expect(presentNextBestAction(nba({ type: 'whatsapp', channel: 'whatsapp', intent: 'continue_conversation', reasonCode: 'no_new_attempt_since_engagement', confidence: 'rule' })))
+      .toEqual({ actionLabel: 'WhatsApp', reasonLabel: 'Retomar após resposta do cliente' });
+  });
+
+  it('AA) call/phone/continue_conversation/no_new_attempt_since_engagement/explicit -> Ligação / Retomar após resposta do cliente', () => {
+    expect(presentNextBestAction(nba({ intent: 'continue_conversation', reasonCode: 'no_new_attempt_since_engagement', confidence: 'explicit' })))
+      .toEqual({ actionLabel: 'Ligação', reasonLabel: 'Retomar após resposta do cliente' });
+  });
+
+  it('AB) retry continua válido para no_new_attempt_since_engagement (NBA atual, regressão zero)', () => {
+    expect(presentNextBestAction(nba({ intent: 'retry', reasonCode: 'no_new_attempt_since_engagement', confidence: 'rule' })))
+      .toEqual({ actionLabel: 'Ligação', reasonLabel: 'Retomar após resposta do cliente' });
+  });
+
+  it('AC) retry continua válido para cadence_exhausted (NBA atual E Policy explicit, regressão zero)', () => {
+    expect(presentNextBestAction(nba({ intent: 'retry', reasonCode: 'cadence_exhausted', confidence: 'explicit' })))
+      .toEqual({ actionLabel: 'Ligação', reasonLabel: 'Cadência de contato esgotada' });
+  });
+});
+
+describe('Fase 2E.5.1A — presentNextBestAction — strictness preservada (gate fechado, não "qualquer intent conhecido")', () => {
+  it('AD) switch_channel rejeitado para never_contacted -> null', () => {
+    expect(presentNextBestAction(nba({ intent: 'switch_channel', reasonCode: 'never_contacted' }))).toBeNull();
+  });
+
+  it('AE) switch_channel rejeitado para reactivation_due -> null', () => {
+    expect(presentNextBestAction(nba({ intent: 'switch_channel', reasonCode: 'reactivation_due', confidence: 'rule' }))).toBeNull();
+  });
+
+  it('AF) switch_channel rejeitado para no_new_attempt_since_engagement -> null', () => {
+    expect(presentNextBestAction(nba({ intent: 'switch_channel', reasonCode: 'no_new_attempt_since_engagement', confidence: 'rule' }))).toBeNull();
+  });
+
+  it('AG) switch_channel rejeitado para no_response_after_proposal -> null', () => {
+    expect(presentNextBestAction(nba({ intent: 'switch_channel', reasonCode: 'no_response_after_proposal', confidence: 'rule' }))).toBeNull();
+  });
+
+  it('AH) continue_conversation rejeitado para todos os outros 5 reasons', () => {
+    ['never_contacted', 'no_response_after_attempt', 'cadence_exhausted', 'reactivation_due', 'no_response_after_proposal'].forEach((reasonCode) => {
+      expect(presentNextBestAction(nba({ intent: 'continue_conversation', reasonCode, confidence: 'rule' }))).toBeNull();
+    });
+  });
+
+  it('AI) first_contact rejeitado para todos os outros 5 reasons', () => {
+    ['no_response_after_attempt', 'cadence_exhausted', 'reactivation_due', 'no_new_attempt_since_engagement', 'no_response_after_proposal'].forEach((reasonCode) => {
+      expect(presentNextBestAction(nba({ intent: 'first_contact', reasonCode, confidence: 'rule' }))).toBeNull();
+    });
+  });
+
+  it('AJ) proposal_follow_up rejeitado para todos os outros 5 reasons', () => {
+    ['never_contacted', 'no_response_after_attempt', 'cadence_exhausted', 'reactivation_due', 'no_new_attempt_since_engagement'].forEach((reasonCode) => {
+      expect(presentNextBestAction(nba({ intent: 'proposal_follow_up', reasonCode, confidence: 'rule' }))).toBeNull();
+    });
+  });
+
+  it('AK) intent totalmente desconhecido (inventado) -> null para qualquer reason', () => {
+    ['never_contacted', 'no_response_after_attempt', 'cadence_exhausted', 'reactivation_due', 'no_new_attempt_since_engagement', 'no_response_after_proposal'].forEach((reasonCode) => {
+      expect(presentNextBestAction(nba({ intent: 'ia_generativa_decidiu', reasonCode, confidence: 'rule' }))).toBeNull();
+    });
+  });
+});
+
 describe('Fase 2E.2 — presentNextBestAction — segurança / contrato inválido', () => {
   it('K) null -> null', () => {
     expect(presentNextBestAction(null)).toBeNull();
