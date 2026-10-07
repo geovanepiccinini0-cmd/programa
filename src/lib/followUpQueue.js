@@ -91,8 +91,16 @@ const ACTIVE_OPERATIONAL_SOURCE = OPERATIONAL_RECOMMENDATION_SOURCE.COMMERCIAL_P
 //    sucesso): `nbaShadow` fica `null`, mas `operationalRecommendation`
 //    continua sendo `candidateNba` normalmente — o comparator é
 //    observabilidade pura, nunca participa da operação.
+// 4) `selectOperationalRecommendation` lança (2E.5.1B.2 — hardening,
+//    hoje inalcançável): mesmo fallback técnico de (1), `currentNba`.
+//    Nunca confundido com (2) — (2) nunca lança, só retorna `null`.
+// 5) `presentNextBestAction` lança (2E.5.1B.2 — hardening, hoje
+//    inalcançável): só `nbaPresentation` vira `null`;
+//    `operationalRecommendation` (já decidida por 1-4 acima) nunca é
+//    afetada — CTA continua coerente, pois deriva dela, não da
+//    apresentação textual.
 //
-// Nenhuma das três exceções (ou ausência delas) gera console/telemetry/
+// Nenhuma das cinco exceções (ou ausência delas) gera console/telemetry/
 // write — permanecem silenciosas, como já era o padrão da 2E.4.3.2.
 
 // Agrupa uma lista em um Map<leadId, item[]> numa única passagem —
@@ -158,11 +166,40 @@ export function buildFollowUpQueue({ leads, interactions, tasks, now, policy = F
       // explícito para `currentNba` (nunca `null` fabricado); sucesso ->
       // seletor puro (operationalRecommendation.js), que já garante
       // estruturalmente que candidate===null nunca cai para current.
-      const operationalRecommendation = candidateComputationFailed
-        ? currentNba
-        : selectOperationalRecommendation({ source: ACTIVE_OPERATIONAL_SOURCE, current: currentNba, candidate: candidateNba });
+      //
+      // Boundary 3 (2E.5.1B.2 — hardening, achado MEDIUM da auditoria
+      // 2E.5.1B.1): o próprio seletor ganha boundary próprio. Um throw
+      // inesperado aqui (hoje inalcançável — o único call site passa um
+      // objeto-literal bem formado, que não pode lançar na
+      // desestruturação) é ERRO TÉCNICO da camada de seleção, nunca uma
+      // decisão semântica — por isso cai no MESMO fallback técnico
+      // (`currentNba`) de `candidateComputationFailed`, nunca confundido
+      // com "candidate decidiu null" (que não lança, só retorna `null`
+      // normalmente e não passa por este catch).
+      let operationalRecommendation;
+      if (candidateComputationFailed) {
+        operationalRecommendation = currentNba;
+      } else {
+        try {
+          operationalRecommendation = selectOperationalRecommendation({ source: ACTIVE_OPERATIONAL_SOURCE, current: currentNba, candidate: candidateNba });
+        } catch {
+          operationalRecommendation = currentNba;
+        }
+      }
 
-      const operationalPresentation = presentNextBestAction(operationalRecommendation);
+      // Boundary 4 (2E.5.1B.2 — hardening) — presentation ganha boundary
+      // próprio: um throw inesperado aqui (hoje inalcançável —
+      // `presentNextBestAction` é defensivo por design, só faz leituras
+      // seguras) nunca pode degradar `operationalRecommendation` (já
+      // decidida acima) nem o item inteiro — só a apresentação textual
+      // falha, isolada. CTA em FollowUpQueue.jsx continua derivando de
+      // `operationalRecommendation`, nunca de `nbaPresentation`.
+      let operationalPresentation;
+      try {
+        operationalPresentation = presentNextBestAction(operationalRecommendation);
+      } catch {
+        operationalPresentation = null;
+      }
 
       return { lead, evaluation, error: null, nbaPresentation: operationalPresentation, nbaShadow, operationalRecommendation };
     } catch (e) {

@@ -8,6 +8,8 @@ import { FOLLOW_UP_STATUS, FOLLOW_UP_REASON } from './followUpEngine.js';
 import * as commercialInteractionHistoryModule from './commercialInteractionHistory.js';
 import * as nextBestActionPolicyModule from './nextBestActionPolicy.js';
 import * as nextBestActionShadowModule from './nextBestActionShadow.js';
+import * as operationalRecommendationModule from './operationalRecommendation.js';
+import * as nextBestActionPresentationModule from './nextBestActionPresentation.js';
 
 // Fase 2C.2A — fila de follow-up (domínio puro). NOW fixo para
 // determinismo.
@@ -704,6 +706,17 @@ describe('Fase 2E.4.3.2 — isolamento de falha do shadow (fail-open)', () => {
 });
 
 describe('Fase 2E.5.1B — ativação operacional (Commercial Policy V1 controla recommendation/CTA)', () => {
+  // Fase 2E.5.1B.2 — hardening de higiene de mock (achado da auditoria
+  // 2E.5.1B.1, item 28): sem este afterEach, um `vi.spyOn(...)` cujo
+  // `vi.restoreAllMocks()` manual está posicionado DEPOIS das
+  // assertions nunca executa se a própria assertion lançar — o mock
+  // vaza para os testes seguintes e causa falhas em cascata não
+  // relacionadas, mascarando a causa real. Mesmo padrão já usado no
+  // describe 'Fase 2E.4.3.2' (linha 619) — rede de segurança
+  // independente de qualquer `vi.restoreAllMocks()` manual dentro de um
+  // teste específico (que continuam, redundantes mas inofensivos).
+  afterEach(() => { vi.restoreAllMocks(); });
+
   it('1) never_contacted sem explicit -> operational call/phone, nbaPresentation Ligação/Primeiro contato', () => {
     const queue = build([makeLead()]);
     expect(queue[0].operationalRecommendation).toEqual({ type: 'call', channel: 'phone', intent: 'first_contact', reasonCode: 'never_contacted', confidence: 'rule' });
@@ -930,6 +943,36 @@ describe('Fase 2E.5.1B — ativação operacional (Commercial Policy V1 controla
     // e followUpQueue.js (um único ponto de leitura).
     const queue = build([makeLead()]);
     expect(queue[0].operationalRecommendation).not.toBeNull(); // prova que a fonte ativa é commercial_policy, não current (que seria null aqui)
+  });
+
+  // Fase 2E.5.1B.2 — hardening (Boundary 3/4). Testes 29-31: selector e
+  // presentation ganham o mesmo tratamento de erro técnico que history/
+  // policy/comparator já tinham — nunca degradam o item inteiro, nunca
+  // confundem erro técnico com decisão semântica.
+
+  it('29) selectOperationalRecommendation throws -> fallback TÉCNICO para current (não vira error do item, lead não desaparece da fila)', () => {
+    vi.spyOn(operationalRecommendationModule, 'selectOperationalRecommendation').mockImplementation(() => { throw new Error('bug inesperado no seletor, simulado'); });
+    const queue = build([makeLead({ nextActionType: 'call' })]); // explicit -> current != null, prova que o fallback é real
+    expect(queue[0].evaluation).not.toBeNull();
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE);
+    expect(queue[0].error).toBeNull();
+    expect(queue[0].operationalRecommendation).toEqual({ type: 'call', channel: 'phone', intent: 'first_contact', reasonCode: 'never_contacted', confidence: 'explicit' });
+  });
+
+  it('30) selectOperationalRecommendation throws com current=null e candidate!=null -> operational null É o fallback técnico (current), nunca o candidate — não pode se confundir com "candidate decidiu null"', () => {
+    vi.spyOn(operationalRecommendationModule, 'selectOperationalRecommendation').mockImplementation(() => { throw new Error('bug inesperado no seletor, simulado'); });
+    const queue = build([makeLead()]); // never_contacted sem explicit: current (legado) = null, candidate (Policy) = call/phone/first_contact
+    expect(queue[0].error).toBeNull();
+    expect(queue[0].operationalRecommendation).toBeNull(); // = current (null), não = candidate (que seria call/phone)
+  });
+
+  it('31) presentNextBestAction throws -> nbaPresentation vira null, operationalRecommendation PRESERVADA intacta, item não degrada', () => {
+    vi.spyOn(nextBestActionPresentationModule, 'presentNextBestAction').mockImplementation(() => { throw new Error('bug inesperado na apresentação, simulado'); });
+    const queue = build([makeLead()]); // never_contacted sem explicit -> candidate real = call/phone/rule
+    expect(queue[0].evaluation).not.toBeNull();
+    expect(queue[0].error).toBeNull();
+    expect(queue[0].nbaPresentation).toBeNull();
+    expect(queue[0].operationalRecommendation).toEqual({ type: 'call', channel: 'phone', intent: 'first_contact', reasonCode: 'never_contacted', confidence: 'rule' });
   });
 });
 
