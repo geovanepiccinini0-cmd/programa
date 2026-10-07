@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient.js';
+import { normalizePhoneIdentity } from './phoneIdentity.js';
 
 function leadFromRow(r) {
   return {
@@ -36,10 +37,36 @@ function leadFromRow(r) {
   };
 }
 
-function leadToRow(data) {
+// Fase 3.1.4.1 — phone_normalized (identidade telefônica, src/lib/
+// phoneIdentity.js) é SEMPRE derivado de telefone aqui, nunca aceito
+// como campo de entrada — mesmo que `data` contenha phone_normalized/
+// phoneNormalized (ex. backup antigo, payload externo malformado),
+// esses nomes nunca são lidos: a allowlist abaixo não os menciona, e a
+// única origem permitida é normalizePhoneIdentity(data.telefone).
+//
+// Guard de presença de propriedade (não `!== undefined`): precisamos
+// distinguir "telefone ausente do payload" (update parcial que não
+// pretende tocar o telefone — phone_normalized deve ficar FORA do row
+// retornado, para o Postgres não tocar a coluna) de "telefone presente
+// e vazio/null/undefined explícito" (o caller está de fato dizendo que
+// não há telefone — phone_normalized deve ir como null). Isso cobre
+// null/''/qualquer INVALID/AMBIGUOUS, sempre com o mesmo contrato.
+//
+// Fail-closed deliberado: nenhum try/catch aqui. Se
+// normalizePhoneIdentity lançar de forma inesperada, leadToRow lança
+// também, e insertRow/updateRow nunca chegam a chamar o Supabase —
+// nunca um telefone novo é persistido junto de uma identidade
+// stale/incorreta.
+// Exportada (Fase 3.1.4.1), mesmo padrão já usado para interactionToRow
+// (Fase 2A.1.1) — só para cobertura de teste da fronteira de
+// serialização, implementação inalterada.
+export function leadToRow(data) {
   return {
     nome: data.nome,
     telefone: data.telefone,
+    ...(Object.prototype.hasOwnProperty.call(data, 'telefone')
+      ? { phone_normalized: normalizePhoneIdentity(data.telefone).number }
+      : {}),
     cidade: data.cidade,
     canal: data.canal,
     produto: data.produto,
