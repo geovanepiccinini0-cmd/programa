@@ -1,9 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
   buildFollowUpQueue, sortDueFollowUps, sortWaitingFollowUps, sortBlockedFollowUps,
   getDueFollowUps, getWaitingFollowUps, getBlockedFollowUps,
 } from './followUpQueue.js';
+import * as followUpEngineModule from './followUpEngine.js';
 import { FOLLOW_UP_STATUS, FOLLOW_UP_REASON } from './followUpEngine.js';
+import * as commercialInteractionHistoryModule from './commercialInteractionHistory.js';
+import * as nextBestActionPolicyModule from './nextBestActionPolicy.js';
+import * as nextBestActionShadowModule from './nextBestActionShadow.js';
 
 // Fase 2C.2A — fila de follow-up (domínio puro). NOW fixo para
 // determinismo.
@@ -595,6 +599,94 @@ describe('Fase 2E.4.3 — Shadow comparison (Commercial Policy V1) dentro de bui
     expect(queue[0].nbaShadow).toBeNull();
     expect(queue[1].nbaShadow).not.toBeNull();
     expect(queue[2].nbaShadow).not.toBeNull();
+  });
+});
+
+describe('Fase 2E.4.3.2 — isolamento de falha do shadow (fail-open)', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('A-G) Due: throw exclusivo em evaluateNextBestActionPolicy -> item sobrevive intacto, só nbaShadow vira null', () => {
+    vi.spyOn(nextBestActionPolicyModule, 'evaluateNextBestActionPolicy').mockImplementation(() => { throw new Error('bug exclusivo do shadow, simulado'); });
+
+    const lead = makeLead(); // never_contacted -> due
+    const queue = build([lead]);
+
+    expect(queue).toHaveLength(1); // A) item continua existindo
+    expect(queue[0].evaluation).not.toBeNull(); // B)
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE); // C)
+    expect(queue[0].nbaPresentation).toBeNull(); // D) igual ao current (never_contacted sem explicit -> null, inalterado)
+    expect(queue[0].error).toBeNull(); // E)
+    expect(queue[0].nbaShadow).toBeNull(); // F)
+    expect(getDueFollowUps(queue).map((i) => i.lead.id)).toEqual([lead.id]); // G)
+  });
+
+  it('8) Waiting: throw exclusivo no shadow -> lead continua em getWaitingFollowUps, evaluation/nbaPresentation preservados', () => {
+    vi.spyOn(nextBestActionPolicyModule, 'evaluateNextBestActionPolicy').mockImplementation(() => { throw new Error('bug exclusivo do shadow, simulado'); });
+
+    const lead = makeLead();
+    const attempt = makeInteraction({ type: 'whatsapp', channel: 'whatsapp', occurredAt: hoursAgo(2) }); // dentro de 24h -> waiting
+    const queue = build([lead], [attempt]);
+
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING);
+    expect(queue[0].nbaPresentation).toEqual({ actionLabel: 'WhatsApp', reasonLabel: 'Nova tentativa de contato' }); // comportamento atual preservado
+    expect(queue[0].nbaShadow).toBeNull();
+    expect(queue[0].error).toBeNull();
+    expect(getWaitingFollowUps(queue).map((i) => i.lead.id)).toEqual([lead.id]);
+  });
+
+  it('9) Blocked: throw exclusivo no shadow -> lead continua em getBlockedFollowUps, evaluation preservada', () => {
+    vi.spyOn(nextBestActionPolicyModule, 'evaluateNextBestActionPolicy').mockImplementation(() => { throw new Error('bug exclusivo do shadow, simulado'); });
+
+    const lead = makeLead({ etapa: 'Ganho' });
+    const queue = build([lead]);
+
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.BLOCKED);
+    expect(queue[0].nbaShadow).toBeNull();
+    expect(queue[0].error).toBeNull();
+    expect(getBlockedFollowUps(queue).map((i) => i.lead.id)).toEqual([lead.id]);
+  });
+
+  it('10) caminho operacional REAL continua com a semântica antiga de erro (catch interno não esconde falha de evaluateFollowUpEligibility)', () => {
+    vi.spyOn(followUpEngineModule, 'evaluateFollowUpEligibility').mockImplementation(() => { throw new Error('falha real no motor'); });
+
+    const lead = makeLead();
+    const queue = build([lead]);
+
+    expect(queue[0].evaluation).toBeNull();
+    expect(queue[0].error).toBe('falha real no motor');
+    expect(queue[0].nbaPresentation).toBeNull();
+    expect(queue[0].nbaShadow).toBeNull();
+    expect(getDueFollowUps(queue)).toHaveLength(0);
+  });
+
+  it('11) history throw -> mesma proteção (nbaShadow null, item operacional preservado)', () => {
+    vi.spyOn(commercialInteractionHistoryModule, 'buildCommercialInteractionHistory').mockImplementation(() => { throw new Error('bug exclusivo do history, simulado'); });
+
+    const lead = makeLead();
+    const queue = build([lead]);
+
+    expect(queue[0].evaluation).not.toBeNull();
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE);
+    expect(queue[0].error).toBeNull();
+    expect(queue[0].nbaShadow).toBeNull();
+  });
+
+  it('12) comparator throw -> mesma proteção (nbaShadow null, item operacional preservado)', () => {
+    vi.spyOn(nextBestActionShadowModule, 'compareNextBestActions').mockImplementation(() => { throw new Error('bug exclusivo do comparator, simulado'); });
+
+    const lead = makeLead();
+    const queue = build([lead]);
+
+    expect(queue[0].evaluation).not.toBeNull();
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE);
+    expect(queue[0].error).toBeNull();
+    expect(queue[0].nbaShadow).toBeNull();
+  });
+
+  it('13) sem erro: todos os resultados da 2E.4.3 permanecem exatamente iguais (regressão zero no caminho feliz)', () => {
+    const lead = makeLead();
+    const queue = build([lead]);
+    expect(queue[0].nbaShadow.status).toBe('candidate_only'); // never_contacted, igual à 2E.4.3
   });
 });
 
