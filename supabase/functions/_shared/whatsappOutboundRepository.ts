@@ -1,5 +1,6 @@
 // Fase 3.5.2.1 — Contratos TypeScript para as RPCs transacionais de
-// envio outbound WhatsApp (migration 020). Mesmo padrão já estabelecido
+// envio outbound WhatsApp (migrations 020 + 021 — máquina de estados
+// corrigida após a auditoria adversarial). Mesmo padrão já estabelecido
 // em integrationAccountRepository.ts/integrationEventIngressRepository.ts:
 // client sempre injetado, nunca criado aqui; nunca lê Deno.env; 100%
 // testável em Vitest/Node, zero Deno/Supabase/Meta reais necessários.
@@ -7,8 +8,17 @@
 // Este módulo NUNCA chama a Graph API (zero fetch, zero
 // access_token, zero rede) — só compõe o caminho de dados entre uma
 // futura Edge Function (Fase 3.5.2.2, fora desta fase) e as RPCs já
-// criadas na migration 020. ZERO mensagem real é enviada por este
-// arquivo.
+// criadas nas migrations 020/021. ZERO mensagem real é enviada por
+// este arquivo.
+//
+// CONTRATO OBRIGATÓRIO para quem consumir este módulo (Edge Function
+// futura): reserveWhatsappOutboundAttempt (CLAIMED) ->
+// startWhatsappOutboundAttemptCall (deve retornar STARTED) -> SÓ ENTÃO
+// a chamada HTTP à Meta pode ser feita -> confirmWhatsappOutboundSent
+// (sucesso) OU markWhatsappOutboundAttemptResult (uncertain |
+// rejected_by_provider | failed_before_call). Pular
+// startWhatsappOutboundAttemptCall e chamar confirm/mark diretamente é
+// uma violação de contrato que a RPC rejeita (falha fechada).
 //
 // Vive em supabase/functions/_shared/ — fora de src/, nunca alcançado
 // pelo build do Vite/bundle do browser.
@@ -23,9 +33,21 @@ export interface ReserveOutboundAttemptInput {
 
 export type ReserveOutboundAttemptResult =
   | { outcome: 'CLAIMED'; messageId: string; attemptNumber: number }
+  | { outcome: 'CLAIMED_WITH_PRIOR_UNCERTAIN'; messageId: string; attemptNumber: number }
   | { outcome: 'ALREADY_IN_FLIGHT'; messageId: string; currentStatus: string }
+  | { outcome: 'ALREADY_CALLING'; messageId: string; currentStatus: string }
+  | { outcome: 'UNCERTAIN_BLOCKED'; messageId: string; currentStatus: string }
   | { outcome: 'ALREADY_RESOLVED'; messageId: string; currentStatus: string }
   | { outcome: 'IDENTITY_CONFLICT'; messageId: string; currentStatus: string }
+  | { outcome: 'REPOSITORY_ERROR'; error: unknown };
+
+export interface StartOutboundAttemptCallInput {
+  messageId: string;
+}
+
+export type StartOutboundAttemptCallResult =
+  | { outcome: 'STARTED'; currentStatus: 'sending' }
+  | { outcome: 'ALREADY_STARTED_OR_RESOLVED'; currentStatus: string }
   | { outcome: 'REPOSITORY_ERROR'; error: unknown };
 
 export interface ConfirmOutboundSentInput {
@@ -36,9 +58,11 @@ export interface ConfirmOutboundSentInput {
 export type ConfirmOutboundSentResult =
   | { outcome: 'CONFIRMED'; leadInteractionId: string }
   | { outcome: 'ALREADY_CONFIRMED'; leadInteractionId: string | null }
+  | { outcome: 'CONFLICT_DIFFERENT_WAMID'; leadInteractionId: string | null }
+  | { outcome: 'CONFLICT_UNEXPECTED_STATE'; leadInteractionId: null }
   | { outcome: 'REPOSITORY_ERROR'; error: unknown };
 
-export type OutboundAttemptFailureOutcome = 'failed_transient' | 'failed_terminal';
+export type OutboundAttemptFailureOutcome = 'failed_before_call' | 'uncertain' | 'rejected_by_provider';
 
 export interface MarkOutboundAttemptResultInput {
   messageId: string;
@@ -50,6 +74,7 @@ export interface MarkOutboundAttemptResultInput {
 export type MarkOutboundAttemptResultResult =
   | { outcome: OutboundAttemptFailureOutcome; currentStatus: string }
   | { outcome: 'IGNORED_ALREADY_RESOLVED'; currentStatus: string }
+  | { outcome: 'IGNORED_INVALID_TRANSITION'; currentStatus: string }
   | { outcome: 'REPOSITORY_ERROR'; error: unknown };
 
 export type OutboundStatusEventStatus = 'delivered' | 'read' | 'failed';
@@ -125,13 +150,54 @@ export async function reserveWhatsappOutboundAttempt(
     const outcome = row.outcome;
     const messageId = row.message_id as string;
 
-    if (outcome === 'CLAIMED') {
-      return { outcome: 'CLAIMED', messageId, attemptNumber: row.attempt_number as number };
+    if (outcome === 'CLAIMED' || outcome === 'CLAIMED_WITH_PRIOR_UNCERTAIN') {
+      return { outcome, messageId, attemptNumber: row.attempt_number as number };
     }
-    if (outcome === 'ALREADY_IN_FLIGHT' || outcome === 'ALREADY_RESOLVED' || outcome === 'IDENTITY_CONFLICT') {
+    if (
+      outcome === 'ALREADY_IN_FLIGHT'
+      || outcome === 'ALREADY_CALLING'
+      || outcome === 'UNCERTAIN_BLOCKED'
+      || outcome === 'ALREADY_RESOLVED'
+      || outcome === 'IDENTITY_CONFLICT'
+    ) {
       return { outcome, messageId, currentStatus: row.current_status as string };
     }
     return { outcome: 'REPOSITORY_ERROR', error: new Error(`reserve_whatsapp_outbound_attempt: outcome desconhecido (${String(outcome)})`) };
+  } catch (thrown) {
+    return { outcome: 'REPOSITORY_ERROR', error: thrown };
+  }
+}
+
+export async function startWhatsappOutboundAttemptCall(
+  input: StartOutboundAttemptCallInput,
+  supabaseServiceClient: unknown,
+): Promise<StartOutboundAttemptCallResult> {
+  const client = assertValidClient(supabaseServiceClient);
+
+  if (!isNonBlankString(input?.messageId)) {
+    throw new TypeError('startWhatsappOutboundAttemptCall: messageId deve ser uma string nao vazia');
+  }
+
+  try {
+    const { data, error } = await client.rpc('start_whatsapp_outbound_attempt_call', {
+      p_message_id: input.messageId,
+    });
+
+    if (error) return { outcome: 'REPOSITORY_ERROR', error };
+
+    const row = firstRow(data);
+    if (!row) {
+      return { outcome: 'REPOSITORY_ERROR', error: new Error('start_whatsapp_outbound_attempt_call: resposta inesperada (esperada exatamente 1 linha)') };
+    }
+
+    const outcome = row.outcome;
+    if (outcome === 'STARTED') {
+      return { outcome: 'STARTED', currentStatus: 'sending' };
+    }
+    if (outcome === 'ALREADY_STARTED_OR_RESOLVED') {
+      return { outcome: 'ALREADY_STARTED_OR_RESOLVED', currentStatus: row.current_status as string };
+    }
+    return { outcome: 'REPOSITORY_ERROR', error: new Error(`start_whatsapp_outbound_attempt_call: outcome desconhecido (${String(outcome)})`) };
   } catch (thrown) {
     return { outcome: 'REPOSITORY_ERROR', error: thrown };
   }
@@ -164,8 +230,11 @@ export async function confirmWhatsappOutboundSent(
     if (outcome === 'CONFIRMED') {
       return { outcome: 'CONFIRMED', leadInteractionId: row.lead_interaction_id as string };
     }
-    if (outcome === 'ALREADY_CONFIRMED') {
-      return { outcome: 'ALREADY_CONFIRMED', leadInteractionId: (row.lead_interaction_id as string | null) ?? null };
+    if (outcome === 'ALREADY_CONFIRMED' || outcome === 'CONFLICT_DIFFERENT_WAMID') {
+      return { outcome, leadInteractionId: (row.lead_interaction_id as string | null) ?? null };
+    }
+    if (outcome === 'CONFLICT_UNEXPECTED_STATE') {
+      return { outcome: 'CONFLICT_UNEXPECTED_STATE', leadInteractionId: null };
     }
     return { outcome: 'REPOSITORY_ERROR', error: new Error(`confirm_whatsapp_outbound_sent: outcome desconhecido (${String(outcome)})`) };
   } catch (thrown) {
@@ -179,8 +248,12 @@ export async function markWhatsappOutboundAttemptResult(
 ): Promise<MarkOutboundAttemptResultResult> {
   const client = assertValidClient(supabaseServiceClient);
 
-  if (input?.outcome !== 'failed_transient' && input?.outcome !== 'failed_terminal') {
-    throw new TypeError('markWhatsappOutboundAttemptResult: outcome deve ser failed_transient ou failed_terminal');
+  if (
+    input?.outcome !== 'failed_before_call'
+    && input?.outcome !== 'uncertain'
+    && input?.outcome !== 'rejected_by_provider'
+  ) {
+    throw new TypeError('markWhatsappOutboundAttemptResult: outcome deve ser failed_before_call, uncertain ou rejected_by_provider');
   }
   if (!isNonBlankString(input?.errorCode)) {
     throw new TypeError('markWhatsappOutboundAttemptResult: errorCode deve ser uma string nao vazia');
@@ -202,7 +275,13 @@ export async function markWhatsappOutboundAttemptResult(
     }
 
     const outcome = row.outcome;
-    if (outcome === 'failed_transient' || outcome === 'failed_terminal' || outcome === 'IGNORED_ALREADY_RESOLVED') {
+    if (
+      outcome === 'failed_before_call'
+      || outcome === 'uncertain'
+      || outcome === 'rejected_by_provider'
+      || outcome === 'IGNORED_ALREADY_RESOLVED'
+      || outcome === 'IGNORED_INVALID_TRANSITION'
+    ) {
       return { outcome, currentStatus: row.current_status as string };
     }
     return { outcome: 'REPOSITORY_ERROR', error: new Error(`mark_whatsapp_outbound_attempt_result: outcome desconhecido (${String(outcome)})`) };
