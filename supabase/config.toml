@@ -1,0 +1,31 @@
+# Fase 3.3.3.5 — Configuração versionada de verify_jwt para a Edge
+# Function whatsapp-webhook.
+#
+# Meta (WhatsApp Cloud API) nunca envia um JWT Supabase em suas
+# requisições de webhook — nem no handshake GET de verificação, nem
+# nas entregas POST. Por padrão, o Supabase exige um JWT válido em
+# toda invocação de Edge Function; sem este override, o próprio
+# gateway do Supabase rejeitaria (401) toda requisição da Meta antes
+# mesmo de alcançar o código já publicado e auditado em
+# supabase/functions/whatsapp-webhook/.
+#
+# IMPORTANTE — desabilitar verify_jwt NÃO remove autenticação: o
+# código da função já implementa sua própria autenticação em nível de
+# aplicação, independente deste gate da plataforma:
+#   GET  -> hub.verify_token comparado a WHATSAPP_VERIFY_TOKEN
+#           (verifyWhatsAppWebhookChallenge, supabase/functions/_shared/whatsappWebhook.ts)
+#   POST -> X-Hub-Signature-256 validado via HMAC-SHA256 com
+#           META_APP_SECRET, SEMPRE antes de qualquer client
+#           service-role/DB ser criado (verifyWhatsAppWebhookSignature,
+#           mesmo arquivo; composição em
+#           supabase/functions/whatsapp-webhook/handler.ts).
+#
+# Este bloco é escopado EXCLUSIVAMENTE a whatsapp-webhook. Nenhuma
+# outra função (ex. health) é afetada — cada função sem bloco próprio
+# continua no comportamento default do Supabase (verify_jwt=true).
+#
+# Zero secret real, zero project ref, zero valor sensível neste
+# arquivo — nada aqui precisa ser diferente entre ambientes.
+
+[functions.whatsapp-webhook]
+verify_jwt = false
