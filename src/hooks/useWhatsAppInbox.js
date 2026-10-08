@@ -9,6 +9,7 @@ import {
   mergeOlderPage,
   mergeFetchedSnapshot,
   mergeRealtimeMessage,
+  shouldApplyLeadRealtimeChange,
   subscribeToWhatsAppInboxRealtime,
   PAGE_SIZE,
   RECENT_WINDOW_SIZE,
@@ -234,7 +235,18 @@ export function useWhatsAppInbox(userId) {
           setThreadMessages((prev) => sortMessagesChronologically(mergeRealtimeMessage(prev, payload)));
         }
       },
-      onLeadChange: (payload) => applyRealtimeChange(setLeads, leadsApi.fromRow, payload),
+      // Correção do finding MEDIUM da auditoria final: ignora
+      // eventos cujo row.user_id não corresponda ao usuário logado —
+      // mesmo guard de useAppState.js:446, reproduzido via
+      // shouldApplyLeadRealtimeChange (src/lib/whatsappMessages.js).
+      // Sem isso, um admin (cuja RLS de leads permite "ler tudo")
+      // acumularia no estado local leads de OUTROS vendedores, mesmo
+      // esta tela sendo deliberadamente restrita a "só minhas
+      // conversas".
+      onLeadChange: (payload) => {
+        if (!shouldApplyLeadRealtimeChange(payload, userId)) return;
+        applyRealtimeChange(setLeads, leadsApi.fromRow, payload);
+      },
     });
     return unsubscribe;
   }, [userId, selectedLeadId]);

@@ -9,6 +9,7 @@ import {
   mergeOlderPage,
   mergeFetchedSnapshot,
   mergeRealtimeMessage,
+  shouldApplyLeadRealtimeChange,
   subscribeToWhatsAppInboxRealtime,
 } from './whatsappMessages.js';
 
@@ -248,6 +249,65 @@ describe('mergeOlderPage', () => {
     const olderPageDesc = [whatsappMessageFromRow(row({ id: 'm1' }))];
     const merged = mergeOlderPage(existingAscending, olderPageDesc);
     expect(merged).toHaveLength(1);
+  });
+});
+
+describe('shouldApplyLeadRealtimeChange — correção do finding MEDIUM (auditoria final, isolamento por usuário)', () => {
+  test('INSERT de lead PROPRIO -> true', () => {
+    const payload = { eventType: 'INSERT', new: { id: 'lead-1', user_id: 'user-A' } };
+    expect(shouldApplyLeadRealtimeChange(payload, 'user-A')).toBe(true);
+  });
+
+  // Cenário de administrador (RLS "leads: admin pode ler tudo" entrega
+  // este evento ao admin mesmo sendo de outro vendedor) — o guard deve
+  // recusar, mesmo para quem tecnicamente RECEBEU o payload.
+  test('INSERT de lead de OUTRO usuario (cenario de admin recebendo via RLS "ler tudo") -> false', () => {
+    const payload = { eventType: 'INSERT', new: { id: 'lead-999', user_id: 'user-OUTRO-VENDEDOR' } };
+    expect(shouldApplyLeadRealtimeChange(payload, 'user-ADMIN')).toBe(false);
+  });
+
+  test('UPDATE de lead PROPRIO -> true', () => {
+    const payload = { eventType: 'UPDATE', new: { id: 'lead-1', user_id: 'user-A', nome: 'Novo Nome' } };
+    expect(shouldApplyLeadRealtimeChange(payload, 'user-A')).toBe(true);
+  });
+
+  test('UPDATE de lead de OUTRO usuario -> false (nunca incorpora lead de outro vendedor)', () => {
+    const payload = { eventType: 'UPDATE', new: { id: 'lead-999', user_id: 'user-OUTRO-VENDEDOR' } };
+    expect(shouldApplyLeadRealtimeChange(payload, 'user-ADMIN')).toBe(false);
+  });
+
+  test('DELETE com payload.old contendo user_id PROPRIO -> true (REPLICA IDENTITY FULL hipotetica)', () => {
+    const payload = { eventType: 'DELETE', old: { id: 'lead-1', user_id: 'user-A' } };
+    expect(shouldApplyLeadRealtimeChange(payload, 'user-A')).toBe(true);
+  });
+
+  test('DELETE com payload.old contendo user_id de OUTRO usuario -> false', () => {
+    const payload = { eventType: 'DELETE', old: { id: 'lead-999', user_id: 'user-OUTRO-VENDEDOR' } };
+    expect(shouldApplyLeadRealtimeChange(payload, 'user-ADMIN')).toBe(false);
+  });
+
+  // leads usa REPLICA IDENTITY padrão (so chave primaria) — payload.old
+  // de um DELETE real normalmente NAO contem user_id. O guard bloqueia
+  // nesse caso (mesmo comportamento pre-existente de useAppState.js
+  // para esta mesma tabela — nunca uma regressao nova, nunca um
+  // comportamento diferente introduzido aqui). applyRealtimeChange
+  // filtra DELETE por id, nao por user_id — um DELETE nunca aplicado
+  // aqui simplesmente deixa a remocao local pendente de um refetch,
+  // nunca remove ou incorpora o lead errado.
+  test('DELETE com payload.old SEM user_id (replica identity padrao) -> false, nunca lanca', () => {
+    const payload = { eventType: 'DELETE', old: { id: 'lead-1' } };
+    expect(shouldApplyLeadRealtimeChange(payload, 'user-A')).toBe(false);
+  });
+
+  test('payload nulo/sem new nem old -> false, nunca lanca', () => {
+    expect(shouldApplyLeadRealtimeChange(null, 'user-A')).toBe(false);
+    expect(shouldApplyLeadRealtimeChange({ eventType: 'INSERT' }, 'user-A')).toBe(false);
+  });
+
+  test('userId nulo/undefined (sessao ainda nao resolvida) -> nunca combina com nenhuma linha, mesmo a propria', () => {
+    const payload = { eventType: 'INSERT', new: { id: 'lead-1', user_id: 'user-A' } };
+    expect(shouldApplyLeadRealtimeChange(payload, null)).toBe(false);
+    expect(shouldApplyLeadRealtimeChange(payload, undefined)).toBe(false);
   });
 });
 

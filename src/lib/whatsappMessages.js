@@ -159,6 +159,39 @@ export function mergeFetchedSnapshot(current, fetched) {
   return Array.from(byId.values());
 }
 
+// Fase 3.5.1 — correção do finding MEDIUM (auditoria final):
+// isolamento por usuário no evento Realtime de `leads` — MESMO guard
+// já existente em useAppState.js ("ignora leads de outros usuários na
+// visão pessoal"), reproduzido aqui literalmente (nunca uma variante
+// mais permissiva). Extraído como função pura (testável sem React) em
+// vez de inline no hook, para poder ser verificado diretamente,
+// inclusive o cenário de administrador (cuja RLS de `leads` permite
+// "admin pode ler tudo", fazendo o Realtime entregar linhas de OUTROS
+// usuários na entrega do evento — a filtragem aqui é o que impede essa
+// entrega de ser incorporada ao estado local desta tela, que é
+// deliberadamente restrita a "só minhas conversas").
+//
+// INSERT/UPDATE: `payload.new` sempre traz a linha completa (inclui
+// user_id) — comparação direta e confiável.
+// DELETE: `payload.old` só traz user_id se a tabela tiver
+// REPLICA IDENTITY FULL (não é o caso de `leads` — replica identity
+// padrão só inclui a chave primária). Quando user_id está ausente do
+// payload, o guard bloqueia a aplicação do evento — EXATAMENTE o
+// mesmo comportamento que useAppState.js já tem para esta mesma tabela
+// (nunca um comportamento pior ou melhor introduzido aqui; mesma
+// limitação pré-existente e aceita, reproduzida por igual). Como
+// applyRealtimeChange filtra DELETE por `id` (nunca por user_id), um
+// DELETE de um lead que nunca esteve no estado local (ex. de outro
+// usuário) já seria um no-op de qualquer forma — este guard é
+// relevante sobretudo para INSERT/UPDATE, que de fato adicionam/
+// sobrescrevem dados.
+export function shouldApplyLeadRealtimeChange(payload, userId) {
+  if (!payload) return false;
+  const row = payload.new || payload.old;
+  if (!row) return false;
+  return row.user_id === userId;
+}
+
 // Fio fino de inscrição no canal Realtime — extraído para ser
 // testável sem React (mesmo princípio de runCommercialRegistration em
 // useCommercialRegistration.js): recebe o client já injetado, nunca
