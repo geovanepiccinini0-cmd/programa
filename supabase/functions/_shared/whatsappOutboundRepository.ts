@@ -86,18 +86,31 @@ export type MarkOutboundAttemptResultResult =
   | { outcome: 'IGNORED_INVALID_TRANSITION'; currentStatus: string }
   | { outcome: 'REPOSITORY_ERROR'; error: unknown };
 
-export type OutboundStatusEventStatus = 'delivered' | 'read' | 'failed';
+// Fase 3.5.2.3 — 'sent' incluído (evento Meta real, sempre um
+// duplicado/fora de ordem quando a linha já existe — ver migration
+// 023).
+export type OutboundStatusEventStatus = 'sent' | 'delivered' | 'read' | 'failed';
 
 export interface ApplyOutboundStatusEventInput {
   externalMessageId: string;
   newStatus: OutboundStatusEventStatus;
   eventTimestamp: string;
+  // Fase 3.5.2.3 — conta WhatsApp que reportou o evento, resolvida
+  // pelo webhook a partir do phone_number_id do payload (NUNCA
+  // informada pelo cliente do CRM). A RPC valida de forma
+  // independente que a mensagem (quando já existe) pertence a esta
+  // MESMA conta — ver ACCOUNT_MISMATCH.
+  integrationAccountId: string;
+  // Só relevante para newStatus='failed' — código de erro da Meta,
+  // nunca conteúdo de mensagem nem token.
+  errorCode?: string | null;
 }
 
 export type ApplyOutboundStatusEventResult =
   | { outcome: 'APPLIED'; messageId: string }
   | { outcome: 'IGNORED_OUT_OF_ORDER_OR_DUPLICATE'; messageId: string }
   | { outcome: 'PENDING_WAMID'; messageId: null }
+  | { outcome: 'ACCOUNT_MISMATCH'; messageId: null }
   | { outcome: 'REPOSITORY_ERROR'; error: unknown };
 
 // Contrato estrutural mínimo do client injetado — só `.rpc(fn, params)`,
@@ -317,12 +330,17 @@ export async function applyWhatsappOutboundStatusEvent(
   if (!isNonBlankString(input?.externalMessageId)) {
     throw new TypeError('applyWhatsappOutboundStatusEvent: externalMessageId deve ser uma string nao vazia');
   }
+  if (!isNonBlankString(input?.integrationAccountId)) {
+    throw new TypeError('applyWhatsappOutboundStatusEvent: integrationAccountId deve ser uma string nao vazia');
+  }
 
   try {
     const { data, error } = await client.rpc('apply_whatsapp_outbound_status_event', {
       p_external_message_id: input.externalMessageId,
       p_new_status: input.newStatus,
       p_event_timestamp: input.eventTimestamp,
+      p_integration_account_id: input.integrationAccountId,
+      p_error_code: input.errorCode ?? null,
     });
 
     if (error) return { outcome: 'REPOSITORY_ERROR', error };
@@ -336,8 +354,8 @@ export async function applyWhatsappOutboundStatusEvent(
     if (outcome === 'APPLIED' || outcome === 'IGNORED_OUT_OF_ORDER_OR_DUPLICATE') {
       return { outcome, messageId: row.message_id as string };
     }
-    if (outcome === 'PENDING_WAMID') {
-      return { outcome: 'PENDING_WAMID', messageId: null };
+    if (outcome === 'PENDING_WAMID' || outcome === 'ACCOUNT_MISMATCH') {
+      return { outcome, messageId: null };
     }
     return { outcome: 'REPOSITORY_ERROR', error: new Error(`apply_whatsapp_outbound_status_event: outcome desconhecido (${String(outcome)})`) };
   } catch (thrown) {

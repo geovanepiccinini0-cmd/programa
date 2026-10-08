@@ -154,16 +154,38 @@ export interface ParseIssue {
     | 'missing_message_id'
     | 'missing_sender_phone'
     | 'missing_message_type'
-    | 'missing_or_invalid_timestamp';
+    | 'missing_or_invalid_timestamp'
+    // Fase 3.5.2.3 — eventos de status outbound (statuses[]).
+    | 'invalid_status_entry'
+    | 'missing_status_message_id'
+    | 'missing_status_value'
+    | 'unsupported_status_value'
+    | 'missing_or_invalid_status_timestamp';
   entryIndex: number;
   changeIndex?: number;
   messageIndex?: number;
+}
+
+// Fase 3.5.2.3 — evento de status outbound (sent/delivered/read/failed)
+// de uma mensagem que NÓS enviamos. Canônico e mínimo, mesmo princípio
+// de CanonicalInboundEvent — nunca carrega payload bruto, nunca texto
+// de mensagem (não existe nesses eventos).
+export interface CanonicalOutboundStatusEvent {
+  provider: unknown;
+  externalAccountId: unknown; // phone_number_id — NUNCA confiado sem resolução de conta.
+  externalMessageId: unknown; // wamid da mensagem outbound.
+  status: unknown; // 'sent' | 'delivered' | 'read' | 'failed'.
+  occurredAt: unknown;
+  // Só presente para status='failed' — código de erro da Meta, nunca
+  // mensagem de erro livre (pode conter dados do destinatário).
+  errorCode?: unknown;
 }
 
 export type ParseWhatsAppWebhookPayloadResult =
   | {
       outcome: 'OK';
       messages: CanonicalInboundEvent[];
+      statusEvents: CanonicalOutboundStatusEvent[];
       issues: ParseIssue[];
       statusOnly: boolean;
     }
@@ -218,8 +240,10 @@ export function parseWhatsAppWebhookPayload(
 
   const entries = Array.isArray(payload.entry) ? payload.entry : [];
   const messages: CanonicalInboundEvent[] = [];
+  const statusEvents: CanonicalOutboundStatusEvent[] = [];
   const issues: ParseIssue[] = [];
   let sawStatuses = false;
+  const SUPPORTED_STATUS_VALUES = new Set(['sent', 'delivered', 'read', 'failed']);
 
   entries.forEach((entry: unknown, entryIndex: number) => {
     if (!isPlainObject(entry)) {
@@ -247,14 +271,68 @@ export function parseWhatsAppWebhookPayload(
       }
       const value = change.value;
 
-      if (Array.isArray(value.statuses) && value.statuses.length > 0) {
-        sawStatuses = true;
-      }
-
       const metadata = isPlainObject(value.metadata) ? value.metadata : {};
       const phoneNumberId = metadata.phone_number_id;
       const contacts = Array.isArray(value.contacts) ? value.contacts : [];
       const rawMessages = Array.isArray(value.messages) ? value.messages : [];
+      const rawStatuses = Array.isArray(value.statuses) ? value.statuses : [];
+
+      if (rawStatuses.length > 0) {
+        sawStatuses = true;
+      }
+
+      // Fase 3.5.2.3 — eventos de status outbound (statuses[]), MESMO
+      // "field: messages" da Meta (nunca um field separado) — nunca
+      // confiados sem resolução de conta, feita depois, pela
+      // composição (nunca aqui). phoneNumberId é o MESMO já extraído
+      // acima para mensagens inbound — a Meta sempre o repete em
+      // value.metadata, inbound ou outbound.
+      rawStatuses.forEach((rawStatus: unknown, statusIndex: number) => {
+        if (!isPlainObject(rawStatus)) {
+          issues.push({ code: 'invalid_status_entry', entryIndex, changeIndex, messageIndex: statusIndex });
+          return;
+        }
+        if (!isNonBlankString(phoneNumberId)) {
+          issues.push({ code: 'missing_phone_number_id', entryIndex, changeIndex, messageIndex: statusIndex });
+          return;
+        }
+        if (!isNonBlankString(rawStatus.id)) {
+          issues.push({ code: 'missing_status_message_id', entryIndex, changeIndex, messageIndex: statusIndex });
+          return;
+        }
+        if (!isNonBlankString(rawStatus.status)) {
+          issues.push({ code: 'missing_status_value', entryIndex, changeIndex, messageIndex: statusIndex });
+          return;
+        }
+        if (!SUPPORTED_STATUS_VALUES.has(rawStatus.status)) {
+          // Meta pode enviar outros valores (ex. 'deleted') — nunca
+          // suportados nesta fase, ignorados deterministicamente
+          // (issue registrada, nunca propagada como mensagem/erro).
+          issues.push({ code: 'unsupported_status_value', entryIndex, changeIndex, messageIndex: statusIndex });
+          return;
+        }
+
+        const occurredAt = resolveOccurredAt(rawStatus.timestamp, receivedAt);
+        if (!occurredAt) {
+          issues.push({ code: 'missing_or_invalid_status_timestamp', entryIndex, changeIndex, messageIndex: statusIndex });
+          return;
+        }
+
+        const errors = Array.isArray(rawStatus.errors) ? rawStatus.errors : [];
+        const firstError = errors.find((e: unknown) => isPlainObject(e));
+        const errorCode = firstError && isPlainObject(firstError) && (typeof firstError.code === 'number' || typeof firstError.code === 'string')
+          ? String(firstError.code)
+          : undefined;
+
+        statusEvents.push({
+          provider: 'whatsapp',
+          externalAccountId: phoneNumberId,
+          externalMessageId: rawStatus.id,
+          status: rawStatus.status,
+          occurredAt,
+          errorCode,
+        });
+      });
 
       rawMessages.forEach((rawMessage: unknown, messageIndex: number) => {
         if (!isPlainObject(rawMessage)) {
@@ -314,6 +392,7 @@ export function parseWhatsAppWebhookPayload(
   return {
     outcome: 'OK',
     messages,
+    statusEvents,
     issues,
     statusOnly: messages.length === 0 && sawStatuses,
   };

@@ -21,15 +21,17 @@
 // client service-role só é criado (via `deps.getServiceClient()`, uma
 // factory lazy, nunca chamada antecipadamente) depois que a assinatura
 // HMAC do POST já foi validada E já se sabe que existe ao menos um
-// evento canônico para persistir. GET nunca cria client. Payload
-// status-only/unsupported/zero-mensagens nunca cria client. JSON
-// inválido nunca cria client.
+// evento canônico para processar (mensagem inbound OU, desde a Fase
+// 3.5.2.3, evento de status outbound). GET nunca cria client. Payload
+// unsupported/sem nenhuma mensagem OU status válido nunca cria
+// client. JSON inválido nunca cria client.
 
 import {
   verifyWhatsAppWebhookChallenge,
   verifyWhatsAppWebhookSignature,
   parseWhatsAppWebhookPayload,
   type CanonicalInboundEvent,
+  type CanonicalOutboundStatusEvent,
 } from '../_shared/whatsappWebhook.ts';
 import {
   createOrGetIntegrationEvent,
@@ -47,6 +49,11 @@ import {
   type ProcessInboundWhatsAppEventInput,
   type EngineResult,
 } from '../_shared/inboundEngine.ts';
+import { resolveIntegrationAccount, INTEGRATION_ACCOUNT_RESOLUTION_STATUS } from '../../../src/lib/integrationAccount.js';
+import {
+  applyWhatsappOutboundStatusEvent,
+  type OutboundStatusEventStatus,
+} from '../_shared/whatsappOutboundRepository.ts';
 
 // ===========================================================================
 // CONTRATO HTTP MÍNIMO — nunca o Request/Response real do Deno. index.ts
@@ -306,6 +313,117 @@ async function processSingleCanonicalEvent(
   return classifyEngineResult(engineResult);
 }
 
+// ===========================================================================
+// POST — PROCESSAMENTO DE STATUS OUTBOUND (Fase 3.5.2.3)
+//
+// Reutiliza o MESMO webhook, a MESMA validação de assinatura e o
+// MESMO mecanismo de resolução de conta (findIntegrationAccountCandidates
+// + resolveIntegrationAccount, já aprovado para inbound) — nunca um
+// segundo endpoint público. integration_account_id NUNCA vem do
+// payload diretamente (metadata.phone_number_id é só um identificador
+// a RESOLVER, nunca confiado como chave primária) — exatamente o
+// mesmo princípio já aplicado ao caminho inbound.
+// ===========================================================================
+
+const SUPPORTED_OUTBOUND_STATUS_VALUES = new Set(['sent', 'delivered', 'read', 'failed']);
+
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+async function processSingleStatusEvent(
+  event: CanonicalOutboundStatusEvent,
+  client: WhatsappWebhookServiceClient,
+): Promise<EventOutcomeCategory> {
+  // Precondições de contrato (o parser já deveria garantir isto — uma
+  // violação aqui é um bug de composição, nunca um estado de negócio).
+  if (
+    !isNonBlankString(event.provider)
+    || !isNonBlankString(event.externalAccountId)
+    || !isNonBlankString(event.externalMessageId)
+    || !isNonBlankString(event.occurredAt)
+    || typeof event.status !== 'string'
+    || !SUPPORTED_OUTBOUND_STATUS_VALUES.has(event.status)
+  ) {
+    return 'non_retryable_failure';
+  }
+
+  // 1) IDENTIFICAÇÃO DA CONTA pelo identificador CONFIÁVEL da Meta
+  // (phone_number_id) — NUNCA um identificador fornecido pelo cliente
+  // do CRM (item obrigatório do pedido). Mesmo resolver puro já usado
+  // pelo caminho inbound (inboundEngine.ts) — nunca duplicado.
+  let candidatesResult;
+  try {
+    candidatesResult = await findIntegrationAccountCandidates(
+      { provider: event.provider, externalAccountId: event.externalAccountId },
+      client as never,
+    );
+  } catch {
+    return 'retryable_failure';
+  }
+  if (candidatesResult.status === 'REPOSITORY_ERROR') {
+    return 'retryable_failure';
+  }
+
+  const resolution = resolveIntegrationAccount(event.provider, event.externalAccountId, candidatesResult.candidates);
+
+  if (
+    resolution.status === INTEGRATION_ACCOUNT_RESOLUTION_STATUS.NOT_FOUND
+    || resolution.status === INTEGRATION_ACCOUNT_RESOLUTION_STATUS.INACTIVE
+  ) {
+    // Nenhuma conta nossa corresponde (ou está inativa) — nada a
+    // aplicar, zero retry útil. Mesmo tratamento já dado pelo
+    // caminho inbound para estes dois status de resolução.
+    return 'handled';
+  }
+  if (
+    resolution.status === INTEGRATION_ACCOUNT_RESOLUTION_STATUS.AMBIGUOUS
+    || resolution.status === INTEGRATION_ACCOUNT_RESOLUTION_STATUS.INVALID_INPUT
+  ) {
+    // Anomalia estrutural — uma redelivery não resolveria por si só.
+    return 'non_retryable_failure';
+  }
+
+  const { integrationAccountId } = resolution;
+
+  // 2) APLICAÇÃO — a RPC (migration 023) revalida de forma
+  // independente que a mensagem (quando já existe) pertence a esta
+  // MESMA conta (ACCOUNT_MISMATCH caso contrário — nunca uma segunda
+  // conta altera uma mensagem que não é dela), suporta reentregas e
+  // eventos fora de ordem (idempotência própria), e faz staging
+  // quando o wamid ainda é desconhecido (evento antecipado).
+  let result;
+  try {
+    result = await applyWhatsappOutboundStatusEvent(
+      {
+        externalMessageId: event.externalMessageId,
+        newStatus: event.status as OutboundStatusEventStatus,
+        eventTimestamp: event.occurredAt,
+        integrationAccountId,
+        errorCode: isNonBlankString(event.errorCode) ? event.errorCode : null,
+      },
+      client,
+    );
+  } catch {
+    return 'retryable_failure';
+  }
+
+  if (result.outcome === 'REPOSITORY_ERROR') {
+    return 'retryable_failure';
+  }
+  if (result.outcome === 'ACCOUNT_MISMATCH') {
+    // Anomalia (wamid pertence a outra conta) — nunca aplicado, nunca
+    // retentável de forma útil (o payload não vai mudar numa
+    // redelivery). ACK, não 500 — evita retry storm por um evento que
+    // nunca vai se resolver sozinho.
+    return 'non_retryable_failure';
+  }
+  // APPLIED / IGNORED_OUT_OF_ORDER_OR_DUPLICATE / PENDING_WAMID — os
+  // três são sucesso do PONTO DE VISTA DO WEBHOOK (o evento foi
+  // corretamente processado ou corretamente estagiado, nunca perdido).
+  return 'handled';
+}
+
 async function handlePost(request: WebhookHttpRequest, deps: WhatsappWebhookHandlerDeps): Promise<WebhookHttpResponse> {
   const rawBody = request.rawBody;
   const bodyForSignature = typeof rawBody === 'string' ? rawBody : '';
@@ -340,14 +458,15 @@ async function handlePost(request: WebhookHttpRequest, deps: WhatsappWebhookHand
   if (parseResult.outcome === 'UNSUPPORTED_PAYLOAD') {
     return ACK_OK;
   }
-  if (parseResult.messages.length === 0) {
-    // Status-only (delivery/read receipts) ou payload sem nenhuma
-    // mensagem válida — ACK, zero persistência, zero client.
+  if (parseResult.messages.length === 0 && parseResult.statusEvents.length === 0) {
+    // Nenhuma mensagem inbound válida E nenhum evento de status
+    // outbound válido — ACK, zero persistência, zero client.
     return ACK_OK;
   }
 
-  // A partir daqui existe ao menos 1 evento canônico a persistir —
-  // client criado agora, exatamente 1 vez para toda a requisição.
+  // A partir daqui existe ao menos 1 evento canônico (mensagem ou
+  // status) a processar — client criado agora, exatamente 1 vez para
+  // toda a requisição.
   let client: WhatsappWebhookServiceClient;
   try {
     client = deps.getServiceClient();
@@ -355,15 +474,28 @@ async function handlePost(request: WebhookHttpRequest, deps: WhatsappWebhookHand
     return RESPONSE_INTERNAL_ERROR;
   }
 
-  // Per-event isolation (seção 13/39): cada mensagem é sua própria
-  // unidade de idempotência via integration_event — zero transação
-  // HTTP global, uma falha numa mensagem nunca desfaz outra. Ordem
-  // sequencial determinística (seção 40) — V1 não paraleliza.
+  // Per-event isolation (seção 13/39): cada mensagem/status é sua
+  // própria unidade — zero transação HTTP global, uma falha num
+  // evento nunca desfaz outro. Ordem sequencial determinística (seção
+  // 40) — V1 não paraleliza. Mensagens inbound processadas antes dos
+  // status outbound (ordem arbitrária entre os dois tipos, mas
+  // determinística) — nenhuma dependência real entre eles nesta fase.
   let anyRetryableFailure = false;
   for (const event of parseResult.messages) {
     let outcome: EventOutcomeCategory;
     try {
       outcome = await processSingleCanonicalEvent(event, client, deps.now);
+    } catch {
+      outcome = 'retryable_failure';
+    }
+    if (outcome === 'retryable_failure') {
+      anyRetryableFailure = true;
+    }
+  }
+  for (const statusEvent of parseResult.statusEvents) {
+    let outcome: EventOutcomeCategory;
+    try {
+      outcome = await processSingleStatusEvent(statusEvent, client);
     } catch {
       outcome = 'retryable_failure';
     }

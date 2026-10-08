@@ -223,35 +223,59 @@ describe('markWhatsappOutboundAttemptResult', () => {
   });
 });
 
+const VALID_STATUS_EVENT_INPUT = { externalMessageId: 'wamid.X', newStatus: 'delivered' as const, eventTimestamp: '2026-01-01T00:00:00.000Z', integrationAccountId: 'acc-1' };
+
 describe('applyWhatsappOutboundStatusEvent', () => {
-  test('APPLIED -> mapeia messageId', async () => {
+  test('APPLIED -> mapeia messageId, nomes de parametro p_* corretos (incluindo p_integration_account_id/p_error_code)', async () => {
     const client = makeFakeClient(async () => ({ data: [{ outcome: 'APPLIED', message_id: 'msg-1' }], error: null }));
-    const result = await applyWhatsappOutboundStatusEvent(
-      { externalMessageId: 'wamid.X', newStatus: 'delivered', eventTimestamp: '2026-01-01T00:00:00.000Z' },
-      client,
-    );
+    const result = await applyWhatsappOutboundStatusEvent(VALID_STATUS_EVENT_INPUT, client);
     expect(result).toEqual({ outcome: 'APPLIED', messageId: 'msg-1' });
     expect(client._calls[0]).toEqual({
       fn: 'apply_whatsapp_outbound_status_event',
-      params: { p_external_message_id: 'wamid.X', p_new_status: 'delivered', p_event_timestamp: '2026-01-01T00:00:00.000Z' },
+      params: {
+        p_external_message_id: 'wamid.X',
+        p_new_status: 'delivered',
+        p_event_timestamp: '2026-01-01T00:00:00.000Z',
+        p_integration_account_id: 'acc-1',
+        p_error_code: null,
+      },
     });
+  });
+
+  test('newStatus=sent -> aceito e repassado corretamente', async () => {
+    const client = makeFakeClient(async () => ({ data: [{ outcome: 'IGNORED_OUT_OF_ORDER_OR_DUPLICATE', message_id: 'msg-1' }], error: null }));
+    const result = await applyWhatsappOutboundStatusEvent({ ...VALID_STATUS_EVENT_INPUT, newStatus: 'sent' }, client);
+    expect(result).toEqual({ outcome: 'IGNORED_OUT_OF_ORDER_OR_DUPLICATE', messageId: 'msg-1' });
+    expect(client._calls[0].params.p_new_status).toBe('sent');
+  });
+
+  test('errorCode informado (newStatus=failed) -> repassado como p_error_code', async () => {
+    const client = makeFakeClient(async () => ({ data: [{ outcome: 'APPLIED', message_id: 'msg-1' }], error: null }));
+    await applyWhatsappOutboundStatusEvent({ ...VALID_STATUS_EVENT_INPUT, newStatus: 'failed', errorCode: '131026' }, client);
+    expect(client._calls[0].params.p_error_code).toBe('131026');
   });
 
   test('PENDING_WAMID -> messageId null', async () => {
     const client = makeFakeClient(async () => ({ data: [{ outcome: 'PENDING_WAMID', message_id: null }], error: null }));
-    const result = await applyWhatsappOutboundStatusEvent(
-      { externalMessageId: 'wamid.X', newStatus: 'delivered', eventTimestamp: '2026-01-01T00:00:00.000Z' },
-      client,
-    );
+    const result = await applyWhatsappOutboundStatusEvent(VALID_STATUS_EVENT_INPUT, client);
     expect(result).toEqual({ outcome: 'PENDING_WAMID', messageId: null });
+  });
+
+  test('ACCOUNT_MISMATCH -> messageId null, nunca aplicado a mensagem de outra conta', async () => {
+    const client = makeFakeClient(async () => ({ data: [{ outcome: 'ACCOUNT_MISMATCH', message_id: null }], error: null }));
+    const result = await applyWhatsappOutboundStatusEvent(VALID_STATUS_EVENT_INPUT, client);
+    expect(result).toEqual({ outcome: 'ACCOUNT_MISMATCH', messageId: null });
   });
 
   test('IGNORED_OUT_OF_ORDER_OR_DUPLICATE -> mapeia messageId', async () => {
     const client = makeFakeClient(async () => ({ data: [{ outcome: 'IGNORED_OUT_OF_ORDER_OR_DUPLICATE', message_id: 'msg-1' }], error: null }));
-    const result = await applyWhatsappOutboundStatusEvent(
-      { externalMessageId: 'wamid.X', newStatus: 'read', eventTimestamp: '2026-01-01T00:00:00.000Z' },
-      client,
-    );
+    const result = await applyWhatsappOutboundStatusEvent({ ...VALID_STATUS_EVENT_INPUT, newStatus: 'read' }, client);
     expect(result).toEqual({ outcome: 'IGNORED_OUT_OF_ORDER_OR_DUPLICATE', messageId: 'msg-1' });
+  });
+
+  test('integrationAccountId vazio -> lanca antes de chamar o client', async () => {
+    const client = makeFakeClient(async () => ({ data: [], error: null }));
+    await expect(applyWhatsappOutboundStatusEvent({ ...VALID_STATUS_EVENT_INPUT, integrationAccountId: '' }, client)).rejects.toThrow(TypeError);
+    expect(client._calls).toHaveLength(0);
   });
 });
