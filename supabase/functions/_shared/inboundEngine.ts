@@ -1,4 +1,5 @@
 // Fase 3.3.2 — Automatic Inbound Engine V1.
+// Fase 3.3.3.3.1 — Hardening: reconciliação pós-exceção ambígua da RPC.
 //
 // Responsabilidade ÚNICA: orquestrar, de forma determinística e
 // testável, a decisão PROCESS/IGNORE/FAIL para um evento inbound já
@@ -8,7 +9,7 @@
 //   - resolução de conta: resolveIntegrationAccount (src/lib/integrationAccount.js);
 //   - identidade de telefone: normalizePhoneIdentity (src/lib/phoneIdentity.js);
 //   - criação atômica de lead+interaction: a RPC process_inbound_whatsapp_event
-//     (migration 016), chamada aqui via dependência injetada, nunca
+//     (migration 016/017), chamada aqui via dependência injetada, nunca
 //     importada/criada diretamente.
 // Nunca reimplementa nenhuma dessas regras.
 //
@@ -17,9 +18,10 @@
 // testável em Vitest/Node. O binding real (findAccountCandidates →
 // integrationAccountService.ts + supabaseServiceRuntime.ts;
 // processInboundWhatsAppEvent → chamada real da RPC via supabase-js;
-// markIntegrationEvent{Ignored,Failed} → integrationEventRepository.ts
-// + client real) fica para quem efetivamente consumir este Engine
-// (futuro Edge Function endpoint, fora desta fase).
+// getIntegrationEventById/markIntegrationEvent{Ignored,Failed} →
+// integrationEventRepository.ts + client real) fica para quem
+// efetivamente consumir este Engine (futuro Edge Function endpoint,
+// fora desta fase).
 //
 // user_id NUNCA é passado para a RPC — somente integrationAccountId.
 // A RPC deriva user_id por conta própria a partir de
@@ -31,13 +33,34 @@
 // contrato de quem chama esta função (ex. integrationEventId ausente,
 // deps malformadas), nunca uma decisão de domínio.
 //
+// AMBIGUOUS COMMIT (Fase 3.3.3.3.0, achados F2/F3/F23/F25 — HIGH):
+// antes desta fase, uma exceção/timeout na chamada da RPC levava
+// CEGAMENTE a markFailed, mesmo quando a RPC já tinha comitado
+// 'processed' no servidor (o cliente só não recebeu a resposta). Como
+// os finalizers agora usam UPDATE condicional (ver
+// integrationEventRepository.ts), essa escrita cega seria apenas
+// recusada (zero linhas afetadas) — mas sem reconciliação o Engine
+// ainda devolveria FAILED para um evento que na verdade já está
+// PROCESSED. O algoritmo abaixo relê o evento fresco ANTES de desistir:
+// se já processado/ignorado, reconcilia para esse resultado real (nunca
+// chama a RPC de novo, nunca cria interaction, nunca finaliza);
+// só tenta markFailed condicional quando o estado fresco ainda é
+// genuinamente não-terminal. Qualquer leitura/estado que não possa ser
+// interpretado com segurança falha fechado como
+// EVENT_RECONCILIATION_FAILED — nunca finaliza um estado que não
+// entende.
+//
 // Vive em supabase/functions/_shared/ — fora de src/, nunca alcançado
 // pelo build do Vite/bundle do browser.
 
 import { resolveIntegrationAccount, INTEGRATION_ACCOUNT_RESOLUTION_STATUS } from '../../../src/lib/integrationAccount.js';
 import { normalizePhoneIdentity, PHONE_IDENTITY_STATUS } from '../../../src/lib/phoneIdentity.js';
 import type { RepositoryResult } from './integrationAccountRepository.ts';
-import type { EventFinalizationResult } from './integrationEventRepository.ts';
+import type {
+  EventFinalizationResult,
+  GetIntegrationEventByIdResult,
+  IntegrationEventTerminalSnapshot,
+} from './integrationEventRepository.ts';
 
 export interface CanonicalInboundEvent {
   provider: unknown;
@@ -64,6 +87,18 @@ export type EngineFailedReason =
   | 'account_repository_error'
   | 'processing_error';
 
+// Falha técnica de RECONCILIAÇÃO — nunca uma decisão de domínio. Emitido
+// somente quando o Engine não consegue provar com segurança qual é o
+// estado real do evento após uma exceção/resultado ambíguo da RPC.
+// Nunca finaliza o evento neste caminho (poderia mascarar um
+// 'processed'/'ignored' real) — a camada HTTP futura decide retry.
+export type EngineReconciliationFailedReason =
+  | 'read_failed'
+  | 'event_not_found'
+  | 'processed_invariants_missing'
+  | 'ignored_reason_unknown'
+  | 'unexpected_terminal_state';
+
 export type EngineResult =
   | { status: 'PROCESSED'; leadId: string; interactionId: string; wasNewLead: boolean }
   | { status: 'IGNORED'; reason: EngineIgnoredReason }
@@ -73,7 +108,8 @@ export type EngineResult =
       attemptedStatus: 'ignored' | 'failed';
       reason: EngineIgnoredReason | EngineFailedReason;
       finalizationError: unknown;
-    };
+    }
+  | { status: 'EVENT_RECONCILIATION_FAILED'; reason: EngineReconciliationFailedReason };
 
 export interface ProcessInboundWhatsAppEventInput {
   integrationEventId: string;
@@ -89,6 +125,7 @@ export interface ProcessInboundWhatsAppEventInput {
 export interface InboundEngineDeps {
   findAccountCandidates: (provider: string, externalAccountId: string) => Promise<RepositoryResult>;
   processInboundWhatsAppEvent: (input: ProcessInboundWhatsAppEventInput) => Promise<unknown>;
+  getIntegrationEventById: (eventId: string) => Promise<GetIntegrationEventByIdResult>;
   markIntegrationEventIgnored: (input: {
     eventId: string;
     errorCode: string;
@@ -110,7 +147,13 @@ function assertValidDeps(deps: unknown): InboundEngineDeps {
     throw new TypeError('processInboundEvent: deps deve ser um objeto');
   }
   const d = deps as Record<string, unknown>;
-  for (const key of ['findAccountCandidates', 'processInboundWhatsAppEvent', 'markIntegrationEventIgnored', 'markIntegrationEventFailed']) {
+  for (const key of [
+    'findAccountCandidates',
+    'processInboundWhatsAppEvent',
+    'getIntegrationEventById',
+    'markIntegrationEventIgnored',
+    'markIntegrationEventFailed',
+  ]) {
     if (!isFunction(d[key])) {
       throw new TypeError(`processInboundEvent: deps.${key} deve ser uma function`);
     }
@@ -206,6 +249,66 @@ function mapRpcResult(raw: unknown): MappedRpcResult | null {
   return { leadId: r.lead_id, interactionId: r.interaction_id, wasNewLead: r.was_new_lead };
 }
 
+const KNOWN_IGNORED_REASONS: readonly EngineIgnoredReason[] = [
+  'account_not_found',
+  'account_inactive',
+  'invalid_sender_phone',
+  'ambiguous_sender_phone',
+];
+
+// Reconcilia um snapshot TERMINAL (processed/ignored) observado durante
+// a recuperação de ambiguous-commit ou via resultado rico do finalizer
+// (ALREADY_PROCESSED/ALREADY_IGNORED) para o EngineResult real
+// correspondente. Nunca chama a RPC de novo, nunca cria interaction,
+// nunca finaliza nada — só traduz um fato já comitado. Falha fechado
+// (EVENT_RECONCILIATION_FAILED) se as invariantes esperadas não se
+// sustentarem, em vez de fingir sucesso.
+function reconcileTerminalSnapshot(event: IntegrationEventTerminalSnapshot): EngineResult {
+  if (event.status === 'processed') {
+    if (isNonBlankString(event.resolvedLeadId) && isNonBlankString(event.resolvedInteractionId)) {
+      // wasNewLead=false: esta invocação não criou nada agora — está
+      // apenas observando um fato já comitado anteriormente.
+      return { status: 'PROCESSED', leadId: event.resolvedLeadId, interactionId: event.resolvedInteractionId, wasNewLead: false };
+    }
+    return { status: 'EVENT_RECONCILIATION_FAILED', reason: 'processed_invariants_missing' };
+  }
+
+  if (event.status === 'ignored') {
+    if (typeof event.errorCode === 'string' && (KNOWN_IGNORED_REASONS as readonly string[]).includes(event.errorCode)) {
+      return { status: 'IGNORED', reason: event.errorCode as EngineIgnoredReason };
+    }
+    return { status: 'EVENT_RECONCILIATION_FAILED', reason: 'ignored_reason_unknown' };
+  }
+
+  return { status: 'EVENT_RECONCILIATION_FAILED', reason: 'unexpected_terminal_state' };
+}
+
+// Interpreta qualquer resultado NÃO-OK de um finalizer (ver
+// integrationEventRepository.ts) — chamado a partir dos três pontos
+// que finalizam um evento (finalizeIgnored, finalizeFailed,
+// finalizeFailedAfterReconciliation). 'processed'/'ignored' observados
+// aqui SEMPRE vencem sobre a finalização que esta chamada tentava
+// fazer (nunca sobrescritos) — é exatamente a garantia de que um
+// finalizer concorrente nunca regride um estado terminal (Fase
+// 3.3.3.3.1, seções 9/15).
+function interpretNonOkFinalization(
+  result: Exclude<EventFinalizationResult, { status: 'OK' }>,
+  attemptedStatus: 'ignored' | 'failed',
+  reason: EngineIgnoredReason | EngineFailedReason,
+): EngineResult {
+  if (result.status === 'ALREADY_PROCESSED' || result.status === 'ALREADY_IGNORED') {
+    return reconcileTerminalSnapshot(result.event);
+  }
+  if (result.status === 'EVENT_NOT_FOUND') {
+    return { status: 'EVENT_RECONCILIATION_FAILED', reason: 'event_not_found' };
+  }
+  if (result.status === 'STATE_CONFLICT') {
+    return { status: 'EVENT_RECONCILIATION_FAILED', reason: 'unexpected_terminal_state' };
+  }
+  // REPOSITORY_ERROR
+  return { status: 'EVENT_FINALIZATION_FAILED', attemptedStatus, reason, finalizationError: result.error };
+}
+
 async function finalizeIgnored(
   eventId: string,
   reason: EngineIgnoredReason,
@@ -222,10 +325,10 @@ async function finalizeIgnored(
   } catch (thrown) {
     return { status: 'EVENT_FINALIZATION_FAILED', attemptedStatus: 'ignored', reason, finalizationError: thrown };
   }
-  if (result.status !== 'OK') {
-    return { status: 'EVENT_FINALIZATION_FAILED', attemptedStatus: 'ignored', reason, finalizationError: result.error };
+  if (result.status === 'OK') {
+    return { status: 'IGNORED', reason };
   }
-  return { status: 'IGNORED', reason };
+  return interpretNonOkFinalization(result, 'ignored', reason);
 }
 
 async function finalizeFailed(
@@ -240,10 +343,80 @@ async function finalizeFailed(
   } catch (thrown) {
     return { status: 'EVENT_FINALIZATION_FAILED', attemptedStatus: 'failed', reason, finalizationError: thrown };
   }
-  if (result.status !== 'OK') {
-    return { status: 'EVENT_FINALIZATION_FAILED', attemptedStatus: 'failed', reason, finalizationError: result.error };
+  if (result.status === 'OK') {
+    return { status: 'FAILED', reason, retryable };
   }
-  return { status: 'FAILED', reason, retryable };
+  return interpretNonOkFinalization(result, 'failed', reason);
+}
+
+// Indica se um snapshot 'failed' já carrega resíduo de um possível
+// commit anterior (ambiguous commit pré-hardening, ou linha legada) —
+// usado SOMENTE para calcular `retryable` com honestidade: nunca
+// afirma que um retry é seguro quando há evidência de processamento
+// já comitado (Fase 3.3.3.3.0, achado F3/F23).
+function hasResolvedResidue(event: IntegrationEventTerminalSnapshot): boolean {
+  return isNonBlankString(event.resolvedInteractionId) || isNonBlankString(event.resolvedLeadId) || event.processedAt !== null;
+}
+
+// Chamado SOMENTE a partir da reconciliação pós-exceção/resultado
+// ambíguo da RPC (ver reconcileAmbiguousRpcOutcome), quando a leitura
+// fresca já provou que o evento ainda está num estado não-terminal
+// (received/processing/failed). Mesmo assim, o UPDATE condicional pode
+// descobrir uma transição concorrente ENTRE essa leitura e agora
+// (TOCTOU) — por isso o resultado rico do finalizer é sempre
+// reinterpretado aqui, nunca assumido como um simples OK.
+async function finalizeFailedAfterReconciliation(
+  eventId: string,
+  freshEvent: IntegrationEventTerminalSnapshot,
+  deps: InboundEngineDeps,
+): Promise<EngineResult> {
+  let result: EventFinalizationResult;
+  try {
+    result = await deps.markIntegrationEventFailed({ eventId, errorCode: 'processing_error' });
+  } catch (thrown) {
+    return { status: 'EVENT_FINALIZATION_FAILED', attemptedStatus: 'failed', reason: 'processing_error', finalizationError: thrown };
+  }
+  if (result.status === 'OK') {
+    const retryable = freshEvent.status === 'failed' ? !hasResolvedResidue(freshEvent) : true;
+    return { status: 'FAILED', reason: 'processing_error', retryable };
+  }
+  return interpretNonOkFinalization(result, 'failed', 'processing_error');
+}
+
+// Ponto central de recuperação de ambiguous-commit (Fase 3.3.3.3.0,
+// achados F2/F3/F23/F25). Chamado quando a chamada à RPC lançou OU
+// retornou um resultado que não corresponde ao contrato esperado —
+// NUNCA finaliza cegamente: primeiro relê o evento fresco para provar
+// o que de fato já aconteceu no servidor.
+async function reconcileAmbiguousRpcOutcome(
+  integrationEventId: string,
+  deps: InboundEngineDeps,
+): Promise<EngineResult> {
+  let fresh: GetIntegrationEventByIdResult;
+  try {
+    fresh = await deps.getIntegrationEventById(integrationEventId);
+  } catch {
+    return { status: 'EVENT_RECONCILIATION_FAILED', reason: 'read_failed' };
+  }
+
+  if (fresh.status === 'REPOSITORY_ERROR') {
+    return { status: 'EVENT_RECONCILIATION_FAILED', reason: 'read_failed' };
+  }
+  if (fresh.status === 'NOT_FOUND') {
+    return { status: 'EVENT_RECONCILIATION_FAILED', reason: 'event_not_found' };
+  }
+
+  const { event } = fresh;
+
+  if (event.status === 'processed' || event.status === 'ignored') {
+    return reconcileTerminalSnapshot(event);
+  }
+
+  if (event.status === 'received' || event.status === 'processing' || event.status === 'failed') {
+    return finalizeFailedAfterReconciliation(integrationEventId, event, deps);
+  }
+
+  return { status: 'EVENT_RECONCILIATION_FAILED', reason: 'unexpected_terminal_state' };
 }
 
 export async function processInboundEvent(
@@ -302,12 +475,15 @@ export async function processInboundEvent(
   const metadata = buildInboundMetadata(validated.messageType);
 
   // 3) PROCESS — chamada da RPC via dependencia injetada. Zero retry
-  // automatico: se a chamada lancar OU o resultado vier malformado,
-  // a unica acao e marcar failed (secao 23) — nunca chamar a RPC de
-  // novo nesta mesma invocacao.
-  let rawResult: unknown;
+  // automatico dentro desta invocacao: se a chamada lancar OU o
+  // resultado vier malformado, NUNCA finaliza cegamente — primeiro
+  // reconcilia via leitura fresca do evento (ambiguous commit, ver
+  // reconcileAmbiguousRpcOutcome). A RPC em si nunca e chamada de novo
+  // aqui.
+  let mapped: MappedRpcResult | null = null;
+  let rpcOutcomeIsAmbiguous = false;
   try {
-    rawResult = await validDeps.processInboundWhatsAppEvent({
+    const rawResult = await validDeps.processInboundWhatsAppEvent({
       integrationEventId,
       integrationAccountId,
       phoneNormalized,
@@ -317,14 +493,15 @@ export async function processInboundEvent(
       content: validated.text,
       metadata,
     });
+    mapped = mapRpcResult(rawResult);
+    rpcOutcomeIsAmbiguous = !mapped;
   } catch {
-    return finalizeFailed(integrationEventId, 'processing_error', true, validDeps);
+    rpcOutcomeIsAmbiguous = true;
   }
 
-  const mapped = mapRpcResult(rawResult);
-  if (!mapped) {
-    return finalizeFailed(integrationEventId, 'processing_error', true, validDeps);
+  if (!rpcOutcomeIsAmbiguous && mapped) {
+    return { status: 'PROCESSED', leadId: mapped.leadId, interactionId: mapped.interactionId, wasNewLead: mapped.wasNewLead };
   }
 
-  return { status: 'PROCESSED', leadId: mapped.leadId, interactionId: mapped.interactionId, wasNewLead: mapped.wasNewLead };
+  return reconcileAmbiguousRpcOutcome(integrationEventId, validDeps);
 }
