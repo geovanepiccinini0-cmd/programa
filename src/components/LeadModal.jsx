@@ -5,6 +5,7 @@ import {
 } from '../constants.js';
 import { availableTimeSlots, formatPhoneBR, formatRelativeTime, moneyFormat, parseMoneyValue } from '../utils.js';
 import { interactionsApi } from '../lib/db.js';
+import { getCanalOptions } from '../lib/canalDisplay.js';
 import { computeLastActivityAt, computeLastContactAttemptAt, computeLastCustomerEngagementAt } from '../hooks/useAppState.js';
 import ProdutoFields from './ProdutoFields.jsx';
 import LeadTimeline from './LeadTimeline.jsx';
@@ -69,6 +70,13 @@ export default function LeadModal({ lead, tasks, onClose, onSave, onAddInteracti
   function handleInteractionAdded(inserted) {
     setInteractions((prev) => [inserted, ...prev]);
   }
+
+  // Fase 3.5.1 — correção do achado "canal=whatsapp aparecia como
+  // Facebook Marketplace": options memoizadas a partir do lead ORIGINAL
+  // (nunca do state `canal` em edição), garantindo que o valor
+  // persistido sempre tenha uma <option> correspondente, mesmo quando
+  // não está na lista curada CANAIS (ver src/lib/canalDisplay.js).
+  const canalOptions = useMemo(() => getCanalOptions(CANAIS, lead ? lead.canal : null), [lead]);
 
   const lastActivityAt = useMemo(() => computeLastActivityAt(interactions), [interactions]);
   const lastContactAttemptAt = useMemo(() => computeLastContactAttemptAt(interactions), [interactions]);
@@ -184,7 +192,7 @@ export default function LeadModal({ lead, tasks, onClose, onSave, onAddInteracti
             <div className="field">
               <label htmlFor="f-canal">Canal</label>
               <select id="f-canal" value={canal} onChange={(e) => setCanal(e.target.value)}>
-                {CANAIS.map((c) => <option key={c} value={c}>{c}</option>)}
+                {canalOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
           </div>

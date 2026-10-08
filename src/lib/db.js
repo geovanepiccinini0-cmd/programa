@@ -1,5 +1,6 @@
 import { supabase } from './supabaseClient.js';
 import { normalizePhoneIdentity } from './phoneIdentity.js';
+import { whatsappMessageFromRow } from './whatsappMessages.js';
 
 function leadFromRow(r) {
   return {
@@ -252,6 +253,55 @@ export const auditLogApi = {
   insert: async (data) => {
     const { error } = await supabase.from('audit_log').insert(auditLogToRow(data));
     if (error) throw error;
+  },
+};
+
+// Fase 3.5.1 — Caixa de entrada WhatsApp, SOMENTE LEITURA.
+//
+// Zero INSERT/UPDATE/DELETE aqui de propósito: esta fase não implementa
+// envio nem qualquer escrita em public.whatsapp_messages pelo
+// navegador — toda escrita continua exclusiva da RPC
+// process_inbound_whatsapp_event (migrations 018/019, service_role),
+// nunca alcançável pela sessão autenticada do usuário (RLS só tem
+// policies de SELECT para dono/admin — ver migration 018). As queries
+// abaixo usam a sessão autenticada normal (o mesmo `supabase` client
+// de src/lib/supabaseClient.js, anon key); a segurança real vem da RLS
+// no banco, nunca do filtro `.eq('user_id', userId)` adicionado aqui
+// (esse filtro é só otimização de índice — removê-lo não abriria
+// nenhum acesso extra, porque a RLS já restringe as linhas visíveis).
+export const whatsappMessagesApi = {
+  fromRow: whatsappMessageFromRow,
+
+  // Janela recente de mensagens do usuário autenticado, para montar a
+  // lista de conversas por agrupamento client-side (buildConversationSummaries,
+  // src/lib/whatsappMessages.js) — nunca o histórico inteiro de uma vez.
+  fetchRecentForUser: async (userId, limit) => {
+    let query = supabase
+      .from('whatsapp_messages')
+      .select('*')
+      .order('occurred_at', { ascending: false })
+      .limit(limit);
+    if (userId) query = query.eq('user_id', userId);
+    const { data, error } = await query;
+    if (error) throw error;
+    return data.map(whatsappMessageFromRow);
+  },
+
+  // Uma página do histórico de UM lead, mais recentes primeiro
+  // (invertida para ordem cronológica pelo chamador/mergeOlderPage).
+  // beforeOccurredAt permite paginação incremental ("carregar mais
+  // antigas") sem refetch do que já foi carregado.
+  fetchPageForLead: async (leadId, { beforeOccurredAt, limit } = {}) => {
+    let query = supabase
+      .from('whatsapp_messages')
+      .select('*')
+      .eq('lead_id', leadId)
+      .order('occurred_at', { ascending: false })
+      .limit(limit);
+    if (beforeOccurredAt) query = query.lt('occurred_at', beforeOccurredAt);
+    const { data, error } = await query;
+    if (error) throw error;
+    return data.map(whatsappMessageFromRow);
   },
 };
 
