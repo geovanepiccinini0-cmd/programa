@@ -4,18 +4,28 @@
 // Responsabilidade ÚNICA: orquestrar os módulos já aprovados
 // (whatsappSendAuth.ts, whatsappSendContextRepository.ts,
 // whatsappOutboundRateLimiter.ts, whatsappOutboundRepository.ts —
-// RPCs 020/021 — e whatsappGraphSendAdapter.ts) numa única requisição
-// HTTP de envio — NENHUMA regra de negócio nova nasce aqui. Este
-// arquivo nunca importa Deno.serve/Deno.env/npm: specifiers — só os
-// módulos puros/testáveis já existentes mais um contrato estrutural
-// mínimo do client Supabase (mesmo padrão de whatsapp-webhook/handler.ts).
+// RPCs 020/021/022 — e whatsappGraphSendAdapter.ts) numa única
+// requisição HTTP de envio — NENHUMA regra de negócio nova nasce
+// aqui. Este arquivo nunca importa Deno.serve/Deno.env/npm:
+// specifiers — só os módulos puros/testáveis já existentes mais um
+// contrato estrutural mínimo do client Supabase (mesmo padrão de
+// whatsapp-webhook/handler.ts).
 //
 // CONTRATO DE SEGURANÇA (nunca relaxado por este arquivo):
 //   - user_id SEMPRE vem de verifyAuthenticatedIdentity (auth.getUser,
 //     verificação real no servidor) — NUNCA do body.
 //   - integration_account_id / phone_number_id / destinatário NUNCA
 //     vêm do body — sempre derivados por resolveOutboundSendContext a
-//     partir da conversa inbound já existente.
+//     partir da conversa inbound já existente (whatsapp_messages.
+//     contact_phone_normalized, migration 022 — NUNCA
+//     leads.phone_normalized, que é editável pelo dono do lead).
+//   - Fase 3.5.2.2 (separação de privilégios, item 3 do pedido): a
+//     verificação de identidade usa um client PRÓPRIO, construído com
+//     a ANON key e o Authorization do chamador (deps.getAuthClient) —
+//     NUNCA o client service-role. service_role é usado
+//     EXCLUSIVAMENTE para as operações privilegiadas (resolução de
+//     contexto, rate limit, RPCs de outbound), via deps.getServiceClient,
+//     chamado só DEPOIS da identidade já estar verificada.
 //   - access token NUNCA é lido por este arquivo — chega já resolvido
 //     via deps.getMetaCredentials() (lido de secrets pelo adapter
 //     runtime, nunca por aqui) e nunca é incluído em nenhuma resposta
@@ -24,6 +34,12 @@
 //     startWhatsappOutboundAttemptCall retornar outcome='STARTED' —
 //     essa é a ÚNICA autorização real para chamar a Meta (ver
 //     migration 021, seção F).
+//   - A identidade do destinatário resolvida aqui é só a PRIMEIRA
+//     camada (resposta HTTP rápida) — reserve_whatsapp_outbound_attempt
+//     (migration 022) a REVALIDA de forma independente e transacional,
+//     dentro da própria reserva, fechando qualquer corrida entre esta
+//     resolução e o claim (IDENTITY_MISMATCH/IDENTITY_AMBIGUOUS/
+//     IDENTITY_UNAVAILABLE).
 //   - ZERO log de token/telefone/conteúdo em qualquer lugar deste
 //     arquivo (não há nenhuma chamada a console.* aqui).
 //
@@ -64,11 +80,10 @@ export interface SendHttpResponse {
   contentType: 'application/json';
 }
 
-// Contrato estrutural mínimo do client injetado — usado por TODOS os
-// módulos desta composição (auth, resolução de contexto, rate limit,
-// RPCs de outbound). Um único client, uma única conexão por
-// requisição — nunca um client por módulo.
-export type WhatsappSendServiceClient = AuthClientLike & SendContextServiceClient & RateLimitServiceClient & WhatsappOutboundServiceClient;
+// Contrato estrutural mínimo do client PRIVILEGIADO — usado pela
+// resolução de contexto, rate limit e RPCs de outbound. NUNCA usado
+// para auth.getUser (ver AuthClientLike, client separado).
+export type WhatsappSendServiceClient = SendContextServiceClient & RateLimitServiceClient & WhatsappOutboundServiceClient;
 
 export interface MetaCredentials {
   accessToken: string;
@@ -76,8 +91,14 @@ export interface MetaCredentials {
 }
 
 export interface WhatsappSendHandlerDeps {
+  // Fase 3.5.2.2 (item 3) — client de BAIXO privilégio (ANON key +
+  // Authorization do chamador), usado EXCLUSIVAMENTE para
+  // verifyAuthenticatedIdentity. Nunca reaproveitado para nenhuma
+  // outra chamada.
+  getAuthClient: () => AuthClientLike;
   // Factory lazy do client service-role — chamada no máximo 1 vez por
-  // requisição, nunca memorizada fora do escopo de uma chamada.
+  // requisição, SEMPRE depois da identidade já verificada, nunca
+  // memorizada fora do escopo de uma chamada.
   getServiceClient: () => WhatsappSendServiceClient;
   // Lê o access token a partir de secrets (nunca por este arquivo) —
   // `null` significa "ausente ou configuração inválida" (item de
@@ -106,6 +127,8 @@ const RESPONSE_LEAD_NOT_FOUND = respond(404, 'LEAD_NOT_FOUND');
 const RESPONSE_LEAD_DELETED = respond(410, 'LEAD_DELETED');
 const RESPONSE_NO_INBOUND_CONVERSATION = respond(422, 'NO_INBOUND_CONVERSATION');
 const RESPONSE_ACCOUNT_INACTIVE = respond(422, 'ACCOUNT_INACTIVE');
+const RESPONSE_IDENTITY_UNAVAILABLE = respond(422, 'IDENTITY_UNAVAILABLE');
+const RESPONSE_IDENTITY_AMBIGUOUS = respond(422, 'IDENTITY_AMBIGUOUS');
 
 const MAX_CONTENT_LENGTH = 4096;
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -152,7 +175,24 @@ function parseRequestBody(rawBody: unknown): ParsedSendRequestBody | null {
 // mensagens de ACCEPTED dizem explicitamente "aceito pela Meta").
 // ===========================================================================
 
-function respondForBlockedReserveStatus(outcome: string, messageId: string, currentStatus: string): SendHttpResponse {
+function respondForBlockedReserveStatus(outcome: string, messageId: string | undefined, currentStatus: string | undefined): SendHttpResponse {
+  // Fase 3.5.2.2 — a identidade foi revalidada de forma independente
+  // DENTRO da transação de reserva e divergiu (ou nunca existiu, ou é
+  // ambígua) — nenhuma linha foi criada/tocada, por isso nunca há
+  // messageId aqui. Mapeado para o MESMO status HTTP 422 usado pela
+  // resolução de contexto (consistência do contrato, mesma classe de
+  // "não é possível enviar agora").
+  if (outcome === 'IDENTITY_UNAVAILABLE') {
+    return RESPONSE_IDENTITY_UNAVAILABLE;
+  }
+  if (outcome === 'IDENTITY_AMBIGUOUS') {
+    return RESPONSE_IDENTITY_AMBIGUOUS;
+  }
+  if (outcome === 'IDENTITY_MISMATCH') {
+    return respond(409, 'IDENTITY_MISMATCH', {
+      note: 'A identidade do destinatario mudou entre a validacao e a reserva (ex. nova mensagem inbound de outro numero chegou nesse intervalo). Nenhuma mensagem foi enviada — refaça a solicitacao.',
+    });
+  }
   if (outcome === 'IDENTITY_CONFLICT') {
     return respond(409, 'IDENTITY_CONFLICT', { messageId });
   }
@@ -222,7 +262,9 @@ async function sendAndReconcile(
   const graphResult = await deps.sendGraphMessage({
     accessToken: credentials.accessToken,
     phoneNumberId: context.phoneNumberId,
-    toE164: context.recipientPhoneNormalized,
+    // Fase 3.5.2.2 — identidade imutável (whatsapp_messages.
+    // contact_phone_normalized), NUNCA leads.phone_normalized.
+    toE164: context.contactPhoneNormalized,
     body: content,
   });
 
@@ -299,15 +341,17 @@ async function sendAndReconcile(
 
 async function handlePost(request: SendHttpRequest, deps: WhatsappSendHandlerDeps): Promise<SendHttpResponse> {
   // 1) Identidade — SEMPRE antes de qualquer outra coisa, SEMPRE via
-  // auth.getUser (verificacao real), NUNCA decodificacao local.
-  let client: WhatsappSendServiceClient;
+  // auth.getUser (verificacao real), NUNCA decodificacao local. Fase
+  // 3.5.2.2 (item 3): client de BAIXO privilegio, NUNCA o
+  // service-role.
+  let authClient: AuthClientLike;
   try {
-    client = deps.getServiceClient();
+    authClient = deps.getAuthClient();
   } catch {
     return RESPONSE_INTERNAL_ERROR;
   }
 
-  const identityResult = await verifyAuthenticatedIdentity(request.authorizationHeader, client);
+  const identityResult = await verifyAuthenticatedIdentity(request.authorizationHeader, authClient);
   if (identityResult.status === 'UNAUTHENTICATED') {
     return RESPONSE_UNAUTHENTICATED;
   }
@@ -345,8 +389,20 @@ async function handlePost(request: SendHttpRequest, deps: WhatsappSendHandlerDep
     return RESPONSE_CONFIG_ERROR;
   }
 
-  // 4) Resolucao de contexto — lead/conta/janela de 24h, SEMPRE a
-  // partir da conversa inbound existente, NUNCA do body.
+  // Client PRIVILEGIADO (service_role) — só criado AGORA, depois da
+  // identidade já verificada por um client separado de baixo
+  // privilegio (passo 1). Usado para TODAS as operacoes abaixo.
+  let client: WhatsappSendServiceClient;
+  try {
+    client = deps.getServiceClient();
+  } catch {
+    return RESPONSE_INTERNAL_ERROR;
+  }
+
+  // 4) Resolucao de contexto — lead/conta/janela de 24h/identidade do
+  // destinatario, SEMPRE a partir da conversa inbound existente
+  // (whatsapp_messages.contact_phone_normalized), NUNCA do body, NUNCA
+  // de leads.phone_normalized.
   const contextResult = await resolveOutboundSendContext({ userId, leadId }, client, deps.now);
   switch (contextResult.status) {
     case 'LEAD_NOT_FOUND':
@@ -356,6 +412,10 @@ async function handlePost(request: SendHttpRequest, deps: WhatsappSendHandlerDep
       return RESPONSE_LEAD_DELETED;
     case 'NO_INBOUND_CONVERSATION':
       return RESPONSE_NO_INBOUND_CONVERSATION;
+    case 'IDENTITY_UNAVAILABLE':
+      return RESPONSE_IDENTITY_UNAVAILABLE;
+    case 'IDENTITY_AMBIGUOUS':
+      return RESPONSE_IDENTITY_AMBIGUOUS;
     case 'INTEGRATION_ACCOUNT_INACTIVE':
       return RESPONSE_ACCOUNT_INACTIVE;
     case 'WINDOW_CLOSED':
@@ -379,16 +439,28 @@ async function handlePost(request: SendHttpRequest, deps: WhatsappSendHandlerDep
   }
 
   // 6) Registrar a intenção + reservar a tentativa (RPC
-  // reserve_whatsapp_outbound_attempt, migrations 020/021).
+  // reserve_whatsapp_outbound_attempt, migrations 020/021/022) — a
+  // identidade do destinatário é REVALIDADA de forma independente e
+  // transacional dentro da própria RPC, nunca apenas confiada ao que
+  // foi resolvido no passo 4.
   const reserveResult = await reserveWhatsappOutboundAttempt(
-    { clientToken, userId, leadId, integrationAccountId: context.integrationAccountId, content },
+    {
+      clientToken,
+      userId,
+      leadId,
+      integrationAccountId: context.integrationAccountId,
+      content,
+      contactPhoneNormalized: context.contactPhoneNormalized,
+    },
     client,
   );
   if (reserveResult.outcome === 'REPOSITORY_ERROR') {
     return RESPONSE_INTERNAL_ERROR;
   }
   if (reserveResult.outcome !== 'CLAIMED' && reserveResult.outcome !== 'CLAIMED_WITH_PRIOR_UNCERTAIN') {
-    return respondForBlockedReserveStatus(reserveResult.outcome, reserveResult.messageId, reserveResult.currentStatus);
+    const messageId = 'messageId' in reserveResult ? reserveResult.messageId : undefined;
+    const currentStatus = 'currentStatus' in reserveResult ? reserveResult.currentStatus : undefined;
+    return respondForBlockedReserveStatus(reserveResult.outcome, messageId, currentStatus);
   }
   const messageId = reserveResult.messageId;
   const hadPriorUncertain = reserveResult.outcome === 'CLAIMED_WITH_PRIOR_UNCERTAIN';

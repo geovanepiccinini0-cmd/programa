@@ -26,20 +26,26 @@ function makeFakeClient(rpcImpl: (fn: string, params: Record<string, unknown>) =
   };
 }
 
+const VALID_RESERVE_INPUT = { clientToken: 'tok-1', userId: 'user-1', leadId: 'lead-1', integrationAccountId: 'ia-1', content: 'oi', contactPhoneNormalized: '5551900000001' };
+
 describe('reserveWhatsappOutboundAttempt', () => {
-  test.each(['CLAIMED', 'CLAIMED_WITH_PRIOR_UNCERTAIN'])('%s -> mapeia outcome/messageId/attemptNumber, nomes de parametro p_* corretos', async (outcome) => {
+  test.each(['CLAIMED', 'CLAIMED_WITH_PRIOR_UNCERTAIN'])('%s -> mapeia outcome/messageId/attemptNumber, nomes de parametro p_* corretos (incluindo p_contact_phone_normalized)', async (outcome) => {
     const client = makeFakeClient(async () => ({
       data: [{ outcome, message_id: 'msg-1', attempt_number: 1, current_status: 'queued' }],
       error: null,
     }));
-    const result = await reserveWhatsappOutboundAttempt(
-      { clientToken: 'tok-1', userId: 'user-1', leadId: 'lead-1', integrationAccountId: 'ia-1', content: 'oi' },
-      client,
-    );
+    const result = await reserveWhatsappOutboundAttempt(VALID_RESERVE_INPUT, client);
     expect(result).toEqual({ outcome, messageId: 'msg-1', attemptNumber: 1 });
     expect(client._calls[0]).toEqual({
       fn: 'reserve_whatsapp_outbound_attempt',
-      params: { p_client_token: 'tok-1', p_user_id: 'user-1', p_lead_id: 'lead-1', p_integration_account_id: 'ia-1', p_content: 'oi' },
+      params: {
+        p_client_token: 'tok-1',
+        p_user_id: 'user-1',
+        p_lead_id: 'lead-1',
+        p_integration_account_id: 'ia-1',
+        p_content: 'oi',
+        p_contact_phone_normalized: '5551900000001',
+      },
     });
   });
 
@@ -48,54 +54,48 @@ describe('reserveWhatsappOutboundAttempt', () => {
       data: [{ outcome, message_id: 'msg-1', attempt_number: null, current_status: 'sending' }],
       error: null,
     }));
-    const result = await reserveWhatsappOutboundAttempt(
-      { clientToken: 'tok-1', userId: 'user-1', leadId: 'lead-1', integrationAccountId: 'ia-1', content: 'oi' },
-      client,
-    );
+    const result = await reserveWhatsappOutboundAttempt(VALID_RESERVE_INPUT, client);
     expect(result).toEqual({ outcome, messageId: 'msg-1', currentStatus: 'sending' });
+  });
+
+  test.each(['IDENTITY_UNAVAILABLE', 'IDENTITY_AMBIGUOUS', 'IDENTITY_MISMATCH'])('%s -> mapeia somente outcome, nunca houve reserva', async (outcome) => {
+    const client = makeFakeClient(async () => ({ data: [{ outcome, message_id: null, attempt_number: null, current_status: null }], error: null }));
+    const result = await reserveWhatsappOutboundAttempt(VALID_RESERVE_INPUT, client);
+    expect(result).toEqual({ outcome });
   });
 
   test('erro do client -> REPOSITORY_ERROR, nunca mascarado', async () => {
     const client = makeFakeClient(async () => ({ data: null, error: new Error('boom') }));
-    const result = await reserveWhatsappOutboundAttempt(
-      { clientToken: 'tok-1', userId: 'user-1', leadId: 'lead-1', integrationAccountId: 'ia-1', content: 'oi' },
-      client,
-    );
+    const result = await reserveWhatsappOutboundAttempt(VALID_RESERVE_INPUT, client);
     expect(result.outcome).toBe('REPOSITORY_ERROR');
   });
 
   test('resposta malformada (nao exatamente 1 linha) -> REPOSITORY_ERROR', async () => {
     const client = makeFakeClient(async () => ({ data: [], error: null }));
-    const result = await reserveWhatsappOutboundAttempt(
-      { clientToken: 'tok-1', userId: 'user-1', leadId: 'lead-1', integrationAccountId: 'ia-1', content: 'oi' },
-      client,
-    );
+    const result = await reserveWhatsappOutboundAttempt(VALID_RESERVE_INPUT, client);
     expect(result.outcome).toBe('REPOSITORY_ERROR');
   });
 
   test('clientToken vazio -> lanca antes de chamar o client', async () => {
     const client = makeFakeClient(async () => ({ data: [], error: null }));
-    await expect(reserveWhatsappOutboundAttempt(
-      { clientToken: '', userId: 'user-1', leadId: 'lead-1', integrationAccountId: 'ia-1', content: 'oi' },
-      client,
-    )).rejects.toThrow(TypeError);
+    await expect(reserveWhatsappOutboundAttempt({ ...VALID_RESERVE_INPUT, clientToken: '' }, client)).rejects.toThrow(TypeError);
     expect(client._calls).toHaveLength(0);
   });
 
   test('content vazio -> lanca antes de chamar o client', async () => {
     const client = makeFakeClient(async () => ({ data: [], error: null }));
-    await expect(reserveWhatsappOutboundAttempt(
-      { clientToken: 'tok-1', userId: 'user-1', leadId: 'lead-1', integrationAccountId: 'ia-1', content: '   ' },
-      client,
-    )).rejects.toThrow(TypeError);
+    await expect(reserveWhatsappOutboundAttempt({ ...VALID_RESERVE_INPUT, content: '   ' }, client)).rejects.toThrow(TypeError);
+    expect(client._calls).toHaveLength(0);
+  });
+
+  test('contactPhoneNormalized vazio -> lanca antes de chamar o client', async () => {
+    const client = makeFakeClient(async () => ({ data: [], error: null }));
+    await expect(reserveWhatsappOutboundAttempt({ ...VALID_RESERVE_INPUT, contactPhoneNormalized: '' }, client)).rejects.toThrow(TypeError);
     expect(client._calls).toHaveLength(0);
   });
 
   test('client invalido (sem rpc()) -> lanca', async () => {
-    await expect(reserveWhatsappOutboundAttempt(
-      { clientToken: 'tok-1', userId: 'user-1', leadId: 'lead-1', integrationAccountId: 'ia-1', content: 'oi' },
-      {},
-    )).rejects.toThrow(TypeError);
+    await expect(reserveWhatsappOutboundAttempt(VALID_RESERVE_INPUT, {})).rejects.toThrow(TypeError);
   });
 });
 

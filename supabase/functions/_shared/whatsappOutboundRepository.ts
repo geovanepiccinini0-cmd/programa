@@ -29,6 +29,12 @@ export interface ReserveOutboundAttemptInput {
   leadId: string;
   integrationAccountId: string;
   content: string;
+  // Fase 3.5.2.2 — identidade WhatsApp do destinatário, resolvida pelo
+  // chamador a partir da conversa inbound (NUNCA de leads.phone_normalized,
+  // que é editável). A RPC revalida este valor de forma independente e
+  // transacional — nunca confia apenas nele (ver IDENTITY_MISMATCH/
+  // IDENTITY_AMBIGUOUS/IDENTITY_UNAVAILABLE).
+  contactPhoneNormalized: string;
 }
 
 export type ReserveOutboundAttemptResult =
@@ -39,6 +45,9 @@ export type ReserveOutboundAttemptResult =
   | { outcome: 'UNCERTAIN_BLOCKED'; messageId: string; currentStatus: string }
   | { outcome: 'ALREADY_RESOLVED'; messageId: string; currentStatus: string }
   | { outcome: 'IDENTITY_CONFLICT'; messageId: string; currentStatus: string }
+  | { outcome: 'IDENTITY_UNAVAILABLE' }
+  | { outcome: 'IDENTITY_AMBIGUOUS' }
+  | { outcome: 'IDENTITY_MISMATCH' }
   | { outcome: 'REPOSITORY_ERROR'; error: unknown };
 
 export interface StartOutboundAttemptCallInput {
@@ -130,6 +139,9 @@ export async function reserveWhatsappOutboundAttempt(
   if (!isNonBlankString(input?.content)) {
     throw new TypeError('reserveWhatsappOutboundAttempt: content deve ser uma string nao vazia');
   }
+  if (!isNonBlankString(input?.contactPhoneNormalized)) {
+    throw new TypeError('reserveWhatsappOutboundAttempt: contactPhoneNormalized deve ser uma string nao vazia');
+  }
 
   try {
     const { data, error } = await client.rpc('reserve_whatsapp_outbound_attempt', {
@@ -138,6 +150,7 @@ export async function reserveWhatsappOutboundAttempt(
       p_lead_id: input.leadId,
       p_integration_account_id: input.integrationAccountId,
       p_content: input.content,
+      p_contact_phone_normalized: input.contactPhoneNormalized,
     });
 
     if (error) return { outcome: 'REPOSITORY_ERROR', error };
@@ -148,6 +161,11 @@ export async function reserveWhatsappOutboundAttempt(
     }
 
     const outcome = row.outcome;
+
+    if (outcome === 'IDENTITY_UNAVAILABLE' || outcome === 'IDENTITY_AMBIGUOUS' || outcome === 'IDENTITY_MISMATCH') {
+      return { outcome };
+    }
+
     const messageId = row.message_id as string;
 
     if (outcome === 'CLAIMED' || outcome === 'CLAIMED_WITH_PRIOR_UNCERTAIN') {

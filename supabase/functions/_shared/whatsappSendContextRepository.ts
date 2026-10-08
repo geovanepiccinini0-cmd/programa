@@ -1,19 +1,36 @@
 // Fase 3.5.2.2 — Resolução do contexto de envio outbound a partir da
 // CONVERSA INBOUND EXISTENTE.
 //
+// Fase 3.5.2.2 (correção pós-auditoria): o destinatário NUNCA é mais
+// lido de leads.phone_normalized (campo editável pelo próprio dono do
+// lead a qualquer momento — ver src/lib/db.js, leadToRow). A partir da
+// migration 022, cada linha inbound de whatsapp_messages carrega sua
+// própria identidade imutável (contact_phone_normalized, o wa_id real
+// informado pela Meta para aquela mensagem específica) — é essa coluna,
+// nunca a do lead, que este módulo usa como fonte de autoridade do
+// destinatário. Editar o telefone cadastral do lead NUNCA mais altera
+// o destinatário de uma conversa WhatsApp existente.
+//
 // Responsabilidade ÚNICA: dado (userId verificado, leadId informado
 // pelo chamador), resolver — a partir do próprio banco, NUNCA do
-// corpo da requisição — a conta de integração, o destinatário e a
-// janela de atendimento de 24h. Isso implementa diretamente a decisão
-// de produto da Fase 3.5.2 (V1 só envia para leads com conversa
-// inbound já existente) e a exigência de segurança da Fase 3.5.2.2
-// (item 2/3): `integration_account_id`, `phone_number_id` e o
-// destinatário NUNCA são aceitos como input externo — só derivados
-// aqui, sempre a partir de linhas já existentes e validadas.
+// corpo da requisição — a conta de integração, a identidade imutável
+// do destinatário e a janela de atendimento de 24h. integration_account_id,
+// contact_phone_normalized e todo o resto NUNCA são aceitos como input
+// externo — só derivados aqui, sempre a partir de linhas já existentes
+// e validadas.
+//
+// GARANTIA REFORÇADA (defesa em profundidade, nunca a única camada):
+// esta resolução é só o PRIMEIRO nível de checagem (rejeita rápido com
+// uma resposta HTTP amigável). A identidade aqui resolvida é
+// REVALIDADA de forma independente e transacional dentro da própria
+// RPC reserve_whatsapp_outbound_attempt (migration 022) — se algo
+// mudar entre esta leitura e a reserva (ex. nova mensagem inbound
+// ambígua chega nesse intervalo), a RPC recusa, nunca esta camada
+// sozinha.
 //
 // Este módulo NUNCA reserva, nunca inicia, nunca confirma um envio —
 // isso pertence exclusivamente a whatsappOutboundRepository.ts (RPCs
-// 020/021). Client sempre injetado (nunca criado aqui) — 100%
+// 020/021/022). Client sempre injetado (nunca criado aqui) — 100%
 // testável em Vitest/Node.
 //
 // Vive em supabase/functions/_shared/ — fora de src/, nunca alcançado
@@ -25,7 +42,10 @@ export interface ResolvedOutboundSendContext {
   leadId: string;
   integrationAccountId: string;
   phoneNumberId: string;
-  recipientPhoneNormalized: string;
+  // Fase 3.5.2.2 — identidade imutável do contato, lida de
+  // whatsapp_messages.contact_phone_normalized (NUNCA de
+  // leads.phone_normalized).
+  contactPhoneNormalized: string;
   lastInboundAt: Date;
   windowExpiresAt: Date;
 }
@@ -36,6 +56,14 @@ export type ResolveOutboundSendContextResult =
   | { status: 'LEAD_FORBIDDEN' }
   | { status: 'LEAD_DELETED' }
   | { status: 'NO_INBOUND_CONVERSATION' }
+  // Fase 3.5.2.2 — a conversa inbound existe, mas os dados persistidos
+  // são insuficientes (linha histórica anterior à migration 022, sem
+  // contact_phone_normalized) ou ambíguos (mais de uma identidade
+  // distinta dentro da janela de 24h) para estabelecer o destinatário
+  // com segurança. NUNCA presumido/recuperado de um campo não
+  // validado (leads.phone_normalized) — bloqueado explicitamente.
+  | { status: 'IDENTITY_UNAVAILABLE' }
+  | { status: 'IDENTITY_AMBIGUOUS' }
   | { status: 'INTEGRATION_ACCOUNT_INACTIVE' }
   | { status: 'WINDOW_CLOSED'; windowExpiresAt: Date }
   | { status: 'REPOSITORY_ERROR'; error: unknown };
@@ -52,6 +80,7 @@ export interface SendContextServiceClient {
     select(columns: string): {
       eq(column: string, value: unknown): {
         eq(column: string, value?: unknown): PromiseLike<SupabaseQueryResult>;
+        gte(column: string, value: unknown): PromiseLike<SupabaseQueryResult>;
         order(column: string, options: { ascending: boolean }): {
           limit(count: number): PromiseLike<SupabaseQueryResult>;
         };
@@ -87,6 +116,17 @@ function firstRow(data: unknown[] | null): Record<string, unknown> | null {
   return (row !== null && typeof row === 'object') ? (row as Record<string, unknown>) : null;
 }
 
+function distinctNonNull(rows: Record<string, unknown>[], column: string): Set<unknown> {
+  const values = new Set<unknown>();
+  for (const row of rows) {
+    const value = row[column];
+    if (value !== null && value !== undefined) {
+      values.add(value);
+    }
+  }
+  return values;
+}
+
 export async function resolveOutboundSendContext(
   input: { userId: unknown; leadId: unknown },
   supabaseServiceClient: unknown,
@@ -98,11 +138,11 @@ export async function resolveOutboundSendContext(
 
   try {
     // 1) Lead — ownership e soft-delete são checados ANTES de qualquer
-    // outra consulta (fail fast, nunca revela a existência de um lead
-    // de outro usuário através de um caminho diferente).
+    // outra consulta. Nunca mais usado para obter o destinatário —
+    // só para validar propriedade/existência.
     const leadResult = await client
       .from('leads')
-      .select('id, user_id, deleted_at, phone_normalized')
+      .select('id, user_id, deleted_at')
       .eq('id', leadId);
 
     if (leadResult.error) {
@@ -118,46 +158,71 @@ export async function resolveOutboundSendContext(
     if (leadRow.deleted_at !== null && leadRow.deleted_at !== undefined) {
       return { status: 'LEAD_DELETED' };
     }
-    const recipientPhoneNormalized = leadRow.phone_normalized;
-    if (!isNonBlankString(recipientPhoneNormalized)) {
-      // Lead sem telefone normalizado utilizável — nunca inventa um
-      // destinatário, nunca aceita um substituto do corpo da
-      // requisição (item 2 do pedido).
-      return { status: 'NO_INBOUND_CONVERSATION' };
-    }
 
-    // 2) Conversa inbound mais recente — única fonte da
-    // integration_account_id (decisão V1: nunca aceita do chamador) e
-    // da janela de atendimento de 24h.
-    const inboundResult = await client
+    // 2) Mensagem inbound mais recente — única fonte da
+    // integration_account_id e da identidade imutável do destinatário
+    // (contact_phone_normalized). NUNCA leads.phone_normalized.
+    const latestInboundResult = await client
       .from('whatsapp_messages')
-      .select('integration_account_id, occurred_at')
+      .select('integration_account_id, occurred_at, contact_phone_normalized')
       .eq('lead_id', leadId)
       .eq('direction', 'inbound')
       .order('occurred_at', { ascending: false })
       .limit(1);
 
-    if (inboundResult.error) {
-      return { status: 'REPOSITORY_ERROR', error: inboundResult.error };
+    if (latestInboundResult.error) {
+      return { status: 'REPOSITORY_ERROR', error: latestInboundResult.error };
     }
-    const inboundRow = firstRow(inboundResult.data);
-    if (!inboundRow || !isNonBlankString(inboundRow.integration_account_id) || !inboundRow.occurred_at) {
+    const latestInboundRow = firstRow(latestInboundResult.data);
+    if (!latestInboundRow || !isNonBlankString(latestInboundRow.integration_account_id) || !latestInboundRow.occurred_at) {
       return { status: 'NO_INBOUND_CONVERSATION' };
     }
 
-    const integrationAccountId = inboundRow.integration_account_id;
-    const lastInboundAt = new Date(inboundRow.occurred_at as string);
+    const integrationAccountId = latestInboundRow.integration_account_id;
+    const lastInboundAt = new Date(latestInboundRow.occurred_at as string);
     if (Number.isNaN(lastInboundAt.getTime())) {
       return { status: 'REPOSITORY_ERROR', error: new Error('resolveOutboundSendContext: occurred_at inbound invalido') };
     }
 
-    // 3) Conta de integração — deve existir, estar ativa, e pertencer
-    // ao MESMO usuário (defesa em profundidade: o trigger de 018/021
-    // já garante isso na escrita, mas esta leitura nunca confia
-    // apenas nisso).
+    const latestContactPhoneNormalized = latestInboundRow.contact_phone_normalized;
+    if (!isNonBlankString(latestContactPhoneNormalized)) {
+      // Linha inbound histórica (anterior à migration 022) sem
+      // identidade imutável persistida — dados insuficientes para
+      // estabelecer o destinatário com segurança. NUNCA recuperado de
+      // leads.phone_normalized como substituto.
+      return { status: 'IDENTITY_UNAVAILABLE' };
+    }
+
+    // 3) Ambiguidade — mais de uma identidade de contato distinta
+    // entre as mensagens inbound deste lead dentro da janela de 24h
+    // que fundamenta o atendimento atual. Mesma checagem feita de
+    // forma independente dentro da RPC (defesa em profundidade) —
+    // aqui só para uma resposta HTTP rápida e amigável.
+    const windowStartIso = new Date(lastInboundAt.getTime() - OUTBOUND_MESSAGING_WINDOW_MS).toISOString();
+    const windowInboundResult = await client
+      .from('whatsapp_messages')
+      .select('contact_phone_normalized')
+      .eq('lead_id', leadId)
+      .eq('direction', 'inbound')
+      .gte('occurred_at', windowStartIso);
+
+    if (windowInboundResult.error) {
+      return { status: 'REPOSITORY_ERROR', error: windowInboundResult.error };
+    }
+    if (!Array.isArray(windowInboundResult.data)) {
+      return { status: 'REPOSITORY_ERROR', error: new Error('resolveOutboundSendContext: resposta inesperada na checagem de ambiguidade') };
+    }
+    const distinctContacts = distinctNonNull(windowInboundResult.data as Record<string, unknown>[], 'contact_phone_normalized');
+    if (distinctContacts.size > 1) {
+      return { status: 'IDENTITY_AMBIGUOUS' };
+    }
+
+    // 4) Conta de integração — deve existir, estar ativa, pertencer ao
+    // MESMO usuário, e ser EXPLICITAMENTE provider='whatsapp' (nunca
+    // inferido do contexto — item 2 do pedido de correção).
     const accountResult = await client
       .from('integration_accounts')
-      .select('id, active, user_id, external_account_id')
+      .select('id, active, user_id, provider, external_account_id')
       .eq('id', integrationAccountId);
 
     if (accountResult.error) {
@@ -168,6 +233,7 @@ export async function resolveOutboundSendContext(
       !accountRow
       || accountRow.active !== true
       || accountRow.user_id !== userId
+      || accountRow.provider !== 'whatsapp'
       || !isNonBlankString(accountRow.external_account_id)
     ) {
       return { status: 'INTEGRATION_ACCOUNT_INACTIVE' };
@@ -184,7 +250,7 @@ export async function resolveOutboundSendContext(
         leadId,
         integrationAccountId,
         phoneNumberId: accountRow.external_account_id,
-        recipientPhoneNormalized,
+        contactPhoneNormalized: latestContactPhoneNormalized,
         lastInboundAt,
         windowExpiresAt,
       },
