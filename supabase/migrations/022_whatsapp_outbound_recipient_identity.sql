@@ -91,9 +91,69 @@ begin
 end $$;
 
 comment on column public.whatsapp_messages.contact_phone_normalized is
-  'Fase 3.5.2.2 — identidade WhatsApp do contato (dígitos apenas), IMUTÁVEL a partir da criação da linha. Inbound: o wa_id real informado pela Meta para ESTA mensagem especificamente (nunca leads.phone_normalized, que é editável). Outbound: a identidade validada e vinculada à intenção de envio no momento da reserva (reserve_whatsapp_outbound_attempt revalida de forma independente — nunca confia apenas no chamador). NULL só em linhas inbound históricas anteriores a esta migration.';
+  'Fase 3.5.2.2 — identidade WhatsApp do contato (dígitos apenas), IMUTÁVEL a partir da criação da linha — reforçado por trigger (whatsapp_messages_identity_immutability_check_trigger, seção B2 abaixo), nunca apenas por disciplina de código. Inbound: o wa_id real informado pela Meta para ESTA mensagem especificamente (nunca leads.phone_normalized, que é editável). Outbound: a identidade validada e vinculada à intenção de envio no momento da reserva (reserve_whatsapp_outbound_attempt revalida de forma independente, por lead E por conta — nunca confia apenas no chamador). NULL só em linhas inbound históricas anteriores a esta migration — NUNCA preenchido retroativamente por backfill (a seção B2 bloqueia exatamente essa tentativa, já que seria um UPDATE).';
 
 -- Rollback deste bloco: "alter table public.whatsapp_messages drop constraint if exists whatsapp_messages_contact_phone_normalized_outbound_check; alter table public.whatsapp_messages drop constraint if exists whatsapp_messages_contact_phone_normalized_shape_check; alter table public.whatsapp_messages drop column if exists contact_phone_normalized;" (aditivo, sem dado histórico dependente fora desta própria coluna).
+
+-------------------------------------------------------------------
+-- B2) IMUTABILIDADE REFORÇADA PELO BANCO (correção da auditoria final
+-- — achado CONFIRMED: um UPDATE direto, mesmo por service_role,
+-- conseguia rescrever contact_phone_normalized sem nenhuma
+-- resistência, provado empiricamente). Esta trigger BEFORE UPDATE
+-- bloqueia qualquer alteração a contact_phone_normalized — de um
+-- número para outro, de um número para NULL, OU de NULL para um
+-- número (o que bloqueia, pelo próprio desenho, qualquer backfill
+-- especulativo via UPDATE, inclusive um baseado em
+-- leads.phone_normalized: nenhum caminho legítimo de código precisa
+-- desse UPDATE, pois a coluna é sempre definida no momento do INSERT,
+-- nunca depois). Também bloqueia lead_id/integration_account_id/
+-- direction/provider — qualquer um desses mudando depois da criação
+-- seria um redirecionamento INDIRETO da mesma gravidade (associar a
+-- mensagem, e sua identidade já estabelecida, a um lead/conta/sentido
+-- diferente). Nenhuma RPC existente (018-022) jamais altera nenhuma
+-- dessas 5 colunas via UPDATE — todas as atualizações legítimas
+-- (status, attempt_claimed_at, sent_at, delivered_at, read_at,
+-- error_code, external_message_id, lead_interaction_id, attempt_count,
+-- last_attempted_at) continuam livres. SECURITY INVOKER — vale também
+-- para service_role, que ignora RLS mas NUNCA ignora triggers (mesmo
+-- princípio já usado no trigger de prevenção de DELETE em
+-- whatsapp_outbound_attempts, migration 020).
+-------------------------------------------------------------------
+create or replace function public.whatsapp_messages_identity_immutability_check()
+returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  if new.contact_phone_normalized is distinct from old.contact_phone_normalized then
+    raise exception 'whatsapp_messages: contact_phone_normalized e imutavel apos a criacao da linha (id=%, valor atual=%, valor tentado=%) — nenhum caminho legitimo altera esta coluna via UPDATE, nem mesmo service_role; nunca um backfill especulativo', old.id, old.contact_phone_normalized, new.contact_phone_normalized;
+  end if;
+  if new.lead_id is distinct from old.lead_id then
+    raise exception 'whatsapp_messages: lead_id e imutavel apos a criacao da linha (id=%) — mudar isso seria um redirecionamento indireto', old.id;
+  end if;
+  if new.integration_account_id is distinct from old.integration_account_id then
+    raise exception 'whatsapp_messages: integration_account_id e imutavel apos a criacao da linha (id=%) — mudar isso seria um redirecionamento indireto', old.id;
+  end if;
+  if new.direction is distinct from old.direction then
+    raise exception 'whatsapp_messages: direction e imutavel apos a criacao da linha (id=%)', old.id;
+  end if;
+  if new.provider is distinct from old.provider then
+    raise exception 'whatsapp_messages: provider e imutavel apos a criacao da linha (id=%)', old.id;
+  end if;
+  return new;
+end;
+$$;
+
+comment on function public.whatsapp_messages_identity_immutability_check() is
+  'Fase 3.5.2.2 (correção da auditoria final) — reforça no banco, via trigger, que contact_phone_normalized/lead_id/integration_account_id/direction/provider de whatsapp_messages nunca mudam depois do INSERT. Vale até para service_role (triggers nunca são ignorados, diferente de RLS).';
+
+drop trigger if exists whatsapp_messages_identity_immutability_check_trigger on public.whatsapp_messages;
+create trigger whatsapp_messages_identity_immutability_check_trigger
+  before update on public.whatsapp_messages
+  for each row execute function public.whatsapp_messages_identity_immutability_check();
+
+-- Rollback deste bloco: "drop trigger if exists whatsapp_messages_identity_immutability_check_trigger on public.whatsapp_messages; drop function if exists public.whatsapp_messages_identity_immutability_check();"
 
 -------------------------------------------------------------------
 -- C) process_inbound_whatsapp_event — CREATE OR REPLACE (mesma
@@ -401,16 +461,21 @@ begin
   end if;
 
   -------------------------------------------------------------------
-  -- REVALIDAÇÃO TRANSACIONAL E INDEPENDENTE DA IDENTIDADE (item 1/4 do
-  -- pedido) — re-deriva, agora, dentro desta transacao, qual e a
-  -- identidade de contato mais recente para este lead, a partir das
-  -- proprias mensagens inbound (nunca de leads.phone_normalized).
-  -- Nunca confia no p_contact_phone_normalized informado sem
-  -- confirmar.
+  -- REVALIDAÇÃO TRANSACIONAL E INDEPENDENTE DA IDENTIDADE (item 1/4 da
+  -- correção original + correção da auditoria final, item 2: a
+  -- re-derivação é sempre por lead E por conta — nunca aceita como
+  -- autorização uma mensagem inbound de OUTRA conta WhatsApp, mesmo
+  -- pertencente ao mesmo usuário) — re-deriva, agora, dentro desta
+  -- transação, qual é a identidade de contato mais recente para este
+  -- lead NESTA conta especificamente, a partir das próprias mensagens
+  -- inbound (nunca de leads.phone_normalized). Nunca confia no
+  -- p_contact_phone_normalized informado sem confirmar.
   -------------------------------------------------------------------
   select wm.contact_phone_normalized into v_latest_inbound_contact
   from public.whatsapp_messages wm
-  where wm.lead_id = p_lead_id and wm.direction = 'inbound'
+  where wm.lead_id = p_lead_id
+    and wm.integration_account_id = p_integration_account_id
+    and wm.direction = 'inbound'
   order by wm.occurred_at desc
   limit 1;
 
@@ -419,18 +484,24 @@ begin
     return;
   end if;
 
-  -- Ambiguidade (item 5 do pedido): mais de uma identidade de contato
-  -- distinta entre as mensagens inbound deste lead dentro da janela de
-  -- 24h que fundamenta o atendimento atual — nunca escolhe uma
-  -- silenciosamente.
+  -- Ambiguidade (item 5 da correção original): mais de uma identidade
+  -- de contato distinta entre as mensagens inbound deste lead NESTA
+  -- MESMA conta, dentro da janela de 24h que fundamenta o atendimento
+  -- atual — nunca escolhe uma silenciosamente. Escopada por conta
+  -- (correção da auditoria final): duas contas diferentes, cada uma
+  -- com sua própria identidade consistente, nunca geram uma
+  -- ambiguidade espúria uma contra a outra.
   select count(distinct wm.contact_phone_normalized) into v_distinct_inbound_contacts
   from public.whatsapp_messages wm
   where wm.lead_id = p_lead_id
+    and wm.integration_account_id = p_integration_account_id
     and wm.direction = 'inbound'
     and wm.occurred_at >= (
       select max(wm2.occurred_at) - interval '24 hours'
       from public.whatsapp_messages wm2
-      where wm2.lead_id = p_lead_id and wm2.direction = 'inbound'
+      where wm2.lead_id = p_lead_id
+        and wm2.integration_account_id = p_integration_account_id
+        and wm2.direction = 'inbound'
     );
 
   if v_distinct_inbound_contacts > 1 then

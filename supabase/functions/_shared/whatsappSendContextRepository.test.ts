@@ -140,6 +140,28 @@ describe('resolveOutboundSendContext', () => {
     expect(result.status).toBe('IDENTITY_AMBIGUOUS');
   });
 
+  test('a checagem de ambiguidade e escopada por integration_account_id (correcao da auditoria final)', async () => {
+    const client = makeFakeClient(makeHappyRows());
+    await resolveOutboundSendContext({ userId: USER_ID, leadId: LEAD_ID }, client, fixedNow);
+    const windowCall = client._calls.find((c) => c.kind === 'window');
+    expect(windowCall?.filters).toEqual({
+      lead_id: LEAD_ID,
+      integration_account_id: 'acc-1',
+      direction: 'inbound',
+      occurred_at: new Date(new Date(INBOUND_OCCURRED_AT).getTime() - OUTBOUND_MESSAGING_WINDOW_MS).toISOString(),
+    });
+  });
+
+  test('duas contas diferentes, cada uma com identidade propria consistente, NUNCA geram ambiguidade espuria uma contra a outra', async () => {
+    // Ambiguidade so e avaliada DENTRO da conta resolvida (acc-1) -- o
+    // fake so retorna o que a conta acc-1 teria, nunca mistura com uma
+    // conta B hipotetica (que teria sua propria janela/numero,
+    // irrelevante para esta resolucao).
+    const client = makeFakeClient(makeHappyRows({ whatsapp_messages_window: [{ contact_phone_normalized: CONTACT_PHONE }] }));
+    const result = await resolveOutboundSendContext({ userId: USER_ID, leadId: LEAD_ID }, client, fixedNow);
+    expect(result.status).toBe('OK');
+  });
+
   test('conta de integracao inativa -> INTEGRATION_ACCOUNT_INACTIVE', async () => {
     const client = makeFakeClient(makeHappyRows({ integration_accounts: [{ id: 'acc-1', active: false, user_id: USER_ID, provider: 'whatsapp', external_account_id: 'phone-number-id-A' }] }));
     const result = await resolveOutboundSendContext({ userId: USER_ID, leadId: LEAD_ID }, client, fixedNow);

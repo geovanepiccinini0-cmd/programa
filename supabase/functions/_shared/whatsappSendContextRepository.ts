@@ -74,18 +74,20 @@ export interface SupabaseQueryResult {
 }
 
 // Contrato estrutural mínimo — só o suficiente para as três queries
-// desta fase, nunca o tipo completo de @supabase/supabase-js.
+// desta fase, nunca o tipo completo de @supabase/supabase-js. `eq`
+// retorna a própria cadeia (nunca um nível fixo) — as queries reais
+// encadeiam até 3 `.eq()` antes de `.gte()`/`.order().limit()`.
+export interface SendContextQueryChain extends PromiseLike<SupabaseQueryResult> {
+  eq(column: string, value: unknown): SendContextQueryChain;
+  gte(column: string, value: unknown): PromiseLike<SupabaseQueryResult>;
+  order(column: string, options: { ascending: boolean }): {
+    limit(count: number): PromiseLike<SupabaseQueryResult>;
+  };
+}
+
 export interface SendContextServiceClient {
   from(table: string): {
-    select(columns: string): {
-      eq(column: string, value: unknown): {
-        eq(column: string, value?: unknown): PromiseLike<SupabaseQueryResult>;
-        gte(column: string, value: unknown): PromiseLike<SupabaseQueryResult>;
-        order(column: string, options: { ascending: boolean }): {
-          limit(count: number): PromiseLike<SupabaseQueryResult>;
-        };
-      };
-    };
+    select(columns: string): SendContextQueryChain;
   };
 }
 
@@ -194,15 +196,20 @@ export async function resolveOutboundSendContext(
     }
 
     // 3) Ambiguidade — mais de uma identidade de contato distinta
-    // entre as mensagens inbound deste lead dentro da janela de 24h
-    // que fundamenta o atendimento atual. Mesma checagem feita de
-    // forma independente dentro da RPC (defesa em profundidade) —
-    // aqui só para uma resposta HTTP rápida e amigável.
+    // entre as mensagens inbound deste lead NESTA MESMA conta (correção
+    // da auditoria final — escopado por integration_account_id, nunca
+    // globalmente pelo lead: duas contas diferentes, cada uma com sua
+    // própria identidade consistente, nunca geram ambiguidade espúria
+    // uma contra a outra) dentro da janela de 24h que fundamenta o
+    // atendimento atual. Mesma checagem feita de forma independente e
+    // autoritativa dentro da RPC (defesa em profundidade) — aqui só
+    // para uma resposta HTTP rápida e amigável.
     const windowStartIso = new Date(lastInboundAt.getTime() - OUTBOUND_MESSAGING_WINDOW_MS).toISOString();
     const windowInboundResult = await client
       .from('whatsapp_messages')
       .select('contact_phone_normalized')
       .eq('lead_id', leadId)
+      .eq('integration_account_id', integrationAccountId)
       .eq('direction', 'inbound')
       .gte('occurred_at', windowStartIso);
 
