@@ -99,21 +99,64 @@ export function sortConversationsByRecency(conversations) {
   );
 }
 
+// Fase 3.5.1 — correção do finding HIGH da auditoria independente:
+// occurred_at tem granularidade de SEGUNDO (Unix seconds, ver
+// whatsappWebhook.ts) — mensagens do mesmo lead no mesmo segundo são
+// plausíveis. Um sort/paginação baseado SÓ em occurred_at é não
+// determinístico entre execuções quando há empate, e um cursor
+// `occurred_at < X` estrito pode pular PERMANENTEMENTE mensagens que
+// compartilham o timestamp da borda. A ordenação/paginação real
+// (src/lib/db.js) agora usa o cursor composto (occurred_at DESC, id
+// DESC) — `id` (uuid) nunca é sequencial/ordenável por si só, mas
+// serve como tiebreaker ESTÁVEL (a mesma consulta sempre retorna a
+// mesma ordem) e suficiente para nunca excluir uma linha: o par
+// (occurred_at, id) é único por construção (id é chave primária).
+//
 // Histórico cronológico (mais antiga primeiro) para a visualização de
 // thread — independente da ordem de chegada do array de entrada.
+// Tiebreak por id garante ordem ESTÁVEL entre re-renders quando duas
+// mensagens compartilham occurredAt (nunca "pula" nem reordena
+// aleatoriamente mensagens empatadas a cada sort).
 export function sortMessagesChronologically(messages) {
-  return [...messages].sort(
-    (a, b) => new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime(),
-  );
+  return [...messages].sort((a, b) => {
+    const diff = new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime();
+    if (diff !== 0) return diff;
+    if (a.id === b.id) return 0;
+    return a.id < b.id ? -1 : 1;
+  });
 }
 
 // Mescla uma página mais ANTIGA (vinda em ordem desc — "as N mais
-// recentes antes de X") ao início de uma lista já em ordem ascendente,
-// sem nunca duplicar um id já presente (idempotente a reaplicações).
+// recentes antes do cursor (occurred_at, id)") ao início de uma lista
+// já em ordem ascendente, sem nunca duplicar um id já presente
+// (idempotente a reaplicações).
 export function mergeOlderPage(existingAscending, olderPageDesc) {
   const existingIds = new Set(existingAscending.map((m) => m.id));
   const olderAscending = [...olderPageDesc].reverse().filter((m) => !existingIds.has(m.id));
   return [...olderAscending, ...existingAscending];
+}
+
+// Fase 3.5.1 — correção do finding MEDIUM "corrida entre fetch e
+// Realtime": NUNCA substituir o estado atual por um snapshot buscado
+// (`setX(fetched)`) — sempre mesclar por união de id
+// (`setX(prev => mergeFetchedSnapshot(prev, fetched))`). Uma consulta
+// que estava em voo quando uma mensagem chegou via Realtime nunca
+// apaga essa mensagem: qualquer item já presente em `current` que o
+// snapshot buscado não contém é PRESERVADO; para ids presentes nos
+// dois, o snapshot buscado vence (leitura mais fresca do banco para
+// esses ids especificamente). Nunca duplica (Map por id).
+//
+// Seguro especificamente para corrida fetch-vs-Realtime (não
+// fetch-vs-fetch): dentro do ciclo de vida de UM efeito, só existe uma
+// chamada não cancelada por vez (a flag `cancelled` do próprio efeito
+// já bloqueia qualquer `.then()` de uma chamada anterior/obsoleta
+// antes de chegar aqui) — este merge nunca precisa arbitrar entre
+// duas respostas de fetch diferentes, só entre uma resposta de fetch e
+// atualizações de Realtime que chegaram durante a mesma janela.
+export function mergeFetchedSnapshot(current, fetched) {
+  const byId = new Map(current.map((m) => [m.id, m]));
+  for (const m of fetched) byId.set(m.id, m);
+  return Array.from(byId.values());
 }
 
 // Fio fino de inscrição no canal Realtime — extraído para ser
@@ -123,10 +166,21 @@ export function mergeOlderPage(existingAscending, olderPageDesc) {
 // limpeza (unsubscribe) que o chamador DEVE executar no cleanup do
 // useEffect — nunca deixa um canal pendurado entre remontagens/troca
 // de usuário.
-export function subscribeToWhatsAppMessages(supabaseClient, onChange) {
+//
+// Fase 3.5.1 — correção do finding MEDIUM "nomes de lead não
+// atualizam": UM ÚNICO canal (nunca dois) escuta tanto
+// `whatsapp_messages` quanto `leads` — evita subscription duplicada
+// (exigência explícita da correção) e cobre tanto lead NOVO (INSERT,
+// ex. criado pela RPC de inbound enquanto a caixa está aberta) quanto
+// lead EDITADO (UPDATE, ex. via "Ver lead"). onLeadChange é tipicamente
+// applyRealtimeChange (useAppState.js, reaproveitado, nunca
+// reimplementado) — reaproveita o mecanismo de Realtime já existente e
+// aprovado no resto do CRM, em vez de inventar um novo.
+export function subscribeToWhatsAppInboxRealtime(supabaseClient, { onMessageChange, onLeadChange }) {
   const channel = supabaseClient
     .channel('crm-piccinini-whatsapp-inbox')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'whatsapp_messages' }, onChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'whatsapp_messages' }, onMessageChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, onLeadChange)
     .subscribe();
   return () => supabaseClient.removeChannel(channel);
 }

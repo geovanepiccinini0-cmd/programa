@@ -318,7 +318,10 @@ export async function runCompleteTaskWithResult(task, actionKey, userId, deps) {
   await deps.toggleTask(task.id);
 }
 
-function applyRealtimeChange(setState, fromRow, payload) {
+// Fase 3.5.1 — exportada (sem nenhuma alteração de comportamento) para
+// ser reaproveitada por useWhatsAppInbox.js (mecanismo de merge de
+// Realtime já existente/aprovado, nunca duplicado/reimplementado).
+export function applyRealtimeChange(setState, fromRow, payload) {
   if (payload.eventType === 'DELETE') {
     setState((prev) => prev.filter((item) => item.id !== payload.old.id));
     return;

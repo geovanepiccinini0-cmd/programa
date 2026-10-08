@@ -7,8 +7,9 @@ import {
   sortConversationsByRecency,
   sortMessagesChronologically,
   mergeOlderPage,
+  mergeFetchedSnapshot,
   mergeRealtimeMessage,
-  subscribeToWhatsAppMessages,
+  subscribeToWhatsAppInboxRealtime,
 } from './whatsappMessages.js';
 
 function row(overrides = {}) {
@@ -167,6 +168,64 @@ describe('sortMessagesChronologically', () => {
     const sorted = sortMessagesChronologically(messages);
     expect(sorted.map((m) => m.id)).toEqual(['m1', 'm2', 'm3']);
   });
+
+  // Fase 3.5.1 — correção do finding HIGH: occurred_at tem granularidade
+  // de segundo, então empates são plausíveis. O tiebreak por `id`
+  // garante ordem ESTÁVEL e determinística (nunca embaralha mensagens
+  // empatadas de forma diferente entre chamadas).
+  test('timestamps idênticos -> tiebreak determinístico por id, estável entre chamadas repetidas', () => {
+    const messages = [
+      whatsappMessageFromRow(row({ id: 'm-c', occurred_at: '2026-01-01T12:00:00.000Z' })),
+      whatsappMessageFromRow(row({ id: 'm-a', occurred_at: '2026-01-01T12:00:00.000Z' })),
+      whatsappMessageFromRow(row({ id: 'm-b', occurred_at: '2026-01-01T12:00:00.000Z' })),
+    ];
+    const sorted1 = sortMessagesChronologically(messages);
+    const sorted2 = sortMessagesChronologically([...messages].reverse());
+    expect(sorted1.map((m) => m.id)).toEqual(['m-a', 'm-b', 'm-c']);
+    expect(sorted2.map((m) => m.id)).toEqual(['m-a', 'm-b', 'm-c']); // mesma ordem, input diferente
+  });
+
+  test('mistura de timestamps iguais e diferentes -> occurredAt ainda tem prioridade sobre id', () => {
+    const messages = [
+      whatsappMessageFromRow(row({ id: 'z', occurred_at: '2026-01-02T00:00:00.000Z' })),
+      whatsappMessageFromRow(row({ id: 'b', occurred_at: '2026-01-01T00:00:00.000Z' })),
+      whatsappMessageFromRow(row({ id: 'a', occurred_at: '2026-01-01T00:00:00.000Z' })),
+    ];
+    const sorted = sortMessagesChronologically(messages);
+    expect(sorted.map((m) => m.id)).toEqual(['a', 'b', 'z']);
+  });
+});
+
+describe('mergeFetchedSnapshot — correção do finding MEDIUM (corrida fetch vs Realtime)', () => {
+  test('mensagem entregue pelo Realtime ENQUANTO o fetch estava em voo nunca e apagada pelo snapshot buscado', () => {
+    const deliveredByRealtimeDuringFlight = whatsappMessageFromRow(row({ id: 'm-realtime', occurred_at: '2026-01-05T00:00:00.000Z' }));
+    const current = [deliveredByRealtimeDuringFlight];
+    // O snapshot buscado nao contem m-realtime (a consulta ao banco foi
+    // disparada ANTES dela existir).
+    const fetchedSnapshot = [whatsappMessageFromRow(row({ id: 'm-antiga', occurred_at: '2026-01-01T00:00:00.000Z' }))];
+    const merged = mergeFetchedSnapshot(current, fetchedSnapshot);
+    expect(merged.map((m) => m.id).sort()).toEqual(['m-antiga', 'm-realtime']);
+  });
+
+  test('merge nunca duplica — id presente nos dois usa a versao do snapshot buscado (leitura mais fresca)', () => {
+    const current = [whatsappMessageFromRow(row({ id: 'm1', status: 'received' }))];
+    const fetched = [whatsappMessageFromRow(row({ id: 'm1', status: 'processed' }))];
+    const merged = mergeFetchedSnapshot(current, fetched);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].status).toBe('processed');
+  });
+
+  test('current vazio -> resultado e exatamente o snapshot buscado', () => {
+    const fetched = [whatsappMessageFromRow(row({ id: 'm1' })), whatsappMessageFromRow(row({ id: 'm2' }))];
+    const merged = mergeFetchedSnapshot([], fetched);
+    expect(merged.map((m) => m.id)).toEqual(['m1', 'm2']);
+  });
+
+  test('snapshot buscado vazio -> preserva integralmente o current (nunca apaga por um fetch vazio)', () => {
+    const current = [whatsappMessageFromRow(row({ id: 'm1' }))];
+    const merged = mergeFetchedSnapshot(current, []);
+    expect(merged.map((m) => m.id)).toEqual(['m1']);
+  });
 });
 
 describe('mergeOlderPage', () => {
@@ -192,46 +251,57 @@ describe('mergeOlderPage', () => {
   });
 });
 
-describe('subscribeToWhatsAppMessages', () => {
+describe('subscribeToWhatsAppInboxRealtime — correção do finding MEDIUM (nomes de lead desatualizados, sem subscription duplicada)', () => {
   function makeFakeSupabaseClient() {
     const onCalls = [];
     const removeChannelCalls = [];
+    const channelCalls = [];
     const channel = {
       on(...args) { onCalls.push(args); return channel; },
       subscribe() { return channel; },
     };
     const client = {
-      channel(name) { client._channelNameUsed = name; return channel; },
+      channel(name) { channelCalls.push(name); return channel; },
       removeChannel(ch) { removeChannelCalls.push(ch); },
     };
     client._onCalls = onCalls;
     client._removeChannelCalls = removeChannelCalls;
+    client._channelCalls = channelCalls;
     client._channel = channel;
     return client;
   }
 
-  test('inscreve exatamente na tabela whatsapp_messages, todos os eventos, schema public', () => {
+  test('um UNICO canal (uma unica chamada a .channel()) escutando whatsapp_messages E leads — nunca dois canais separados', () => {
     const client = makeFakeSupabaseClient();
-    subscribeToWhatsAppMessages(client, () => {});
-    expect(client._onCalls).toHaveLength(1);
-    const [eventName, config] = client._onCalls[0];
-    expect(eventName).toBe('postgres_changes');
-    expect(config).toEqual({ event: '*', schema: 'public', table: 'whatsapp_messages' });
+    subscribeToWhatsAppInboxRealtime(client, { onMessageChange: () => {}, onLeadChange: () => {} });
+    expect(client._channelCalls).toHaveLength(1);
+    expect(client._onCalls).toHaveLength(2);
+    const tables = client._onCalls.map(([, config]) => config.table);
+    expect(tables.sort()).toEqual(['leads', 'whatsapp_messages']);
+    client._onCalls.forEach(([eventName, config]) => {
+      expect(eventName).toBe('postgres_changes');
+      expect(config.event).toBe('*');
+      expect(config.schema).toBe('public');
+    });
   });
 
-  test('a funcao de limpeza retornada chama removeChannel com EXATAMENTE o canal criado (nunca um canal diferente/novo)', () => {
+  test('onMessageChange e onLeadChange sao repassados exatamente aos handlers corretos (nunca trocados)', () => {
     const client = makeFakeSupabaseClient();
-    const unsubscribe = subscribeToWhatsAppMessages(client, () => {});
+    const onMessageChange = () => {};
+    const onLeadChange = () => {};
+    subscribeToWhatsAppInboxRealtime(client, { onMessageChange, onLeadChange });
+    const messageCall = client._onCalls.find(([, config]) => config.table === 'whatsapp_messages');
+    const leadCall = client._onCalls.find(([, config]) => config.table === 'leads');
+    expect(messageCall[2]).toBe(onMessageChange);
+    expect(leadCall[2]).toBe(onLeadChange);
+  });
+
+  test('a funcao de limpeza retornada chama removeChannel com EXATAMENTE o UNICO canal criado', () => {
+    const client = makeFakeSupabaseClient();
+    const unsubscribe = subscribeToWhatsAppInboxRealtime(client, { onMessageChange: () => {}, onLeadChange: () => {} });
     expect(client._removeChannelCalls).toHaveLength(0);
     unsubscribe();
     expect(client._removeChannelCalls).toEqual([client._channel]);
-  });
-
-  test('o handler recebido e repassado tal como foi dado ao .on()', () => {
-    const client = makeFakeSupabaseClient();
-    const handler = () => {};
-    subscribeToWhatsAppMessages(client, handler);
-    expect(client._onCalls[0][2]).toBe(handler);
   });
 });
 
