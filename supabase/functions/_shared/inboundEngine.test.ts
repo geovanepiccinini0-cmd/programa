@@ -22,10 +22,25 @@ const RESOLVED_CANDIDATE = {
   active: true,
 };
 
+function snapshot(overrides = {}) {
+  return {
+    id: 'evt-1',
+    status: 'received',
+    errorCode: null,
+    resolvedUserId: null,
+    resolvedLeadId: null,
+    resolvedInteractionId: null,
+    integrationAccountId: null,
+    processedAt: null,
+    ...overrides,
+  };
+}
+
 function makeDeps(overrides = {}) {
   return {
     findAccountCandidates: vi.fn(async () => ({ status: 'OK', candidates: [RESOLVED_CANDIDATE] })),
     processInboundWhatsAppEvent: vi.fn(async () => ({ lead_id: 'lead-1', interaction_id: 'int-1', was_new_lead: true, event_status: 'processed' })),
+    getIntegrationEventById: vi.fn(async () => ({ status: 'FOUND', event: snapshot({ status: 'received' }) })),
     markIntegrationEventIgnored: vi.fn(async () => ({ status: 'OK' })),
     markIntegrationEventFailed: vi.fn(async () => ({ status: 'OK' })),
     ...overrides,
@@ -47,6 +62,7 @@ describe('processInboundEvent — contrato canonico (secao 29)', () => {
     expect(result).toEqual({ status: 'FAILED', reason: 'invalid_event', retryable: false });
     expect(deps.findAccountCandidates).not.toHaveBeenCalled();
     expect(deps.processInboundWhatsAppEvent).not.toHaveBeenCalled();
+    expect(deps.getIntegrationEventById).not.toHaveBeenCalled();
     expect(deps.markIntegrationEventIgnored).not.toHaveBeenCalled();
     expect(deps.markIntegrationEventFailed).toHaveBeenCalledTimes(1);
     expect(deps.markIntegrationEventFailed).toHaveBeenCalledWith({ eventId: 'evt-1', errorCode: 'invalid_event' });
@@ -68,6 +84,12 @@ describe('processInboundEvent — contrato canonico (secao 29)', () => {
   test('precondicao: deps malformadas lancam TypeError', async () => {
     await expect(processInboundEvent('evt-1', VALID_EVENT, {})).rejects.toThrow(TypeError);
     await expect(processInboundEvent('evt-1', VALID_EVENT, null)).rejects.toThrow(TypeError);
+  });
+
+  test('precondicao: deps sem getIntegrationEventById lanca TypeError', async () => {
+    const deps = makeDeps();
+    delete (deps as Record<string, unknown>).getIntegrationEventById;
+    await expect(processInboundEvent('evt-1', VALID_EVENT, deps)).rejects.toThrow(TypeError);
   });
 });
 
@@ -185,6 +207,7 @@ describe('processInboundEvent — process/RPC mapping (secao 33)', () => {
     const deps = makeDeps({ processInboundWhatsAppEvent: vi.fn(async () => ({ lead_id: 'lead-x', interaction_id: 'int-x', was_new_lead: true, event_status: 'processed' })) });
     const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
     expect(result).toEqual({ status: 'PROCESSED', leadId: 'lead-x', interactionId: 'int-x', wasNewLead: true });
+    expect(deps.getIntegrationEventById).not.toHaveBeenCalled();
   });
 
   test('lead existente: wasNewLead=false propagado', async () => {
@@ -222,6 +245,8 @@ describe('processInboundEvent — failures (secao 34)', () => {
     const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
     expect(result).toEqual({ status: 'FAILED', reason: 'processing_error', retryable: true });
     expect(deps.processInboundWhatsAppEvent).toHaveBeenCalledTimes(1);
+    expect(deps.getIntegrationEventById).toHaveBeenCalledTimes(1);
+    expect(deps.getIntegrationEventById).toHaveBeenCalledWith('evt-1');
     expect(deps.markIntegrationEventFailed).toHaveBeenCalledTimes(1);
   });
 
@@ -278,14 +303,161 @@ describe('processInboundEvent — failures (secao 34)', () => {
   });
 });
 
+describe('processInboundEvent — AMBIGUOUS COMMIT recovery (Fase 3.3.3.3.1, secoes 36-39, CRITICO)', () => {
+  test('secao 36: RPC lanca mas releitura mostra processed com IDs validos -> PROCESSED reconciliado, ZERO markFailed/markIgnored/segunda RPC', async () => {
+    const deps = makeDeps({
+      processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('transporte falhou apos commit real'); }),
+      getIntegrationEventById: vi.fn(async () => ({
+        status: 'FOUND',
+        event: snapshot({ status: 'processed', resolvedLeadId: 'lead-ambig', resolvedInteractionId: 'int-ambig' }),
+      })),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'PROCESSED', leadId: 'lead-ambig', interactionId: 'int-ambig', wasNewLead: false });
+    expect(deps.processInboundWhatsAppEvent).toHaveBeenCalledTimes(1);
+    expect(deps.markIntegrationEventFailed).not.toHaveBeenCalled();
+    expect(deps.markIntegrationEventIgnored).not.toHaveBeenCalled();
+  });
+
+  test('secao 37: RPC lanca, releitura mostra received (falha genuina) -> conditional markFailed sucede -> FAILED retryable=true', async () => {
+    const deps = makeDeps({
+      processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('falha de rede antes de qualquer commit'); }),
+      getIntegrationEventById: vi.fn(async () => ({ status: 'FOUND', event: snapshot({ status: 'received' }) })),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'FAILED', reason: 'processing_error', retryable: true });
+  });
+
+  test('secao 38 CRITICO (TOCTOU): releitura inicial mostra received, mas o UPDATE condicional do finalizer descobre que o evento ja virou processed -> Engine reconcilia para PROCESSED, nunca FAILED', async () => {
+    const deps = makeDeps({
+      processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('rpc boom'); }),
+      getIntegrationEventById: vi.fn(async () => ({ status: 'FOUND', event: snapshot({ status: 'received' }) })),
+      markIntegrationEventFailed: vi.fn(async () => ({
+        status: 'ALREADY_PROCESSED',
+        event: snapshot({ status: 'processed', resolvedLeadId: 'lead-race', resolvedInteractionId: 'int-race' }),
+      })),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'PROCESSED', leadId: 'lead-race', interactionId: 'int-race', wasNewLead: false });
+  });
+
+  test('secao 39: ignored tentando finalizar enquanto o evento ja virou processed -> processed vence, Engine retorna PROCESSED', async () => {
+    const deps = makeDeps({
+      findAccountCandidates: vi.fn(async () => ({ status: 'OK', candidates: [] })), // -> tentaria IGNORED account_not_found
+      markIntegrationEventIgnored: vi.fn(async () => ({
+        status: 'ALREADY_PROCESSED',
+        event: snapshot({ status: 'processed', resolvedLeadId: 'lead-win', resolvedInteractionId: 'int-win' }),
+      })),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'PROCESSED', leadId: 'lead-win', interactionId: 'int-win', wasNewLead: false });
+  });
+
+  test('releitura mostra failed SEM residuo -> retryable=true', async () => {
+    const deps = makeDeps({
+      processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('rpc boom'); }),
+      getIntegrationEventById: vi.fn(async () => ({ status: 'FOUND', event: snapshot({ status: 'failed' }) })),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'FAILED', reason: 'processing_error', retryable: true });
+  });
+
+  test('releitura mostra failed COM residuo (resolvedInteractionId preenchido) -> retryable=false, nunca afirma seguranca falsa', async () => {
+    const deps = makeDeps({
+      processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('rpc boom'); }),
+      getIntegrationEventById: vi.fn(async () => ({
+        status: 'FOUND',
+        event: snapshot({ status: 'failed', resolvedInteractionId: 'int-residual', resolvedLeadId: 'lead-residual' }),
+      })),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'FAILED', reason: 'processing_error', retryable: false });
+  });
+
+  test('releitura mostra ignored com errorCode conhecido -> IGNORED reconciliado com a razao real', async () => {
+    const deps = makeDeps({
+      processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('rpc boom'); }),
+      getIntegrationEventById: vi.fn(async () => ({ status: 'FOUND', event: snapshot({ status: 'ignored', errorCode: 'account_inactive' }) })),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'IGNORED', reason: 'account_inactive' });
+    expect(deps.markIntegrationEventFailed).not.toHaveBeenCalled();
+  });
+
+  test('releitura mostra ignored com errorCode desconhecido -> EVENT_RECONCILIATION_FAILED, fail-closed', async () => {
+    const deps = makeDeps({
+      processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('rpc boom'); }),
+      getIntegrationEventById: vi.fn(async () => ({ status: 'FOUND', event: snapshot({ status: 'ignored', errorCode: 'codigo_desconhecido' }) })),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'EVENT_RECONCILIATION_FAILED', reason: 'ignored_reason_unknown' });
+  });
+
+  test('releitura mostra processed sem resolvedLeadId/resolvedInteractionId -> EVENT_RECONCILIATION_FAILED, nunca finge sucesso', async () => {
+    const deps = makeDeps({
+      processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('rpc boom'); }),
+      getIntegrationEventById: vi.fn(async () => ({ status: 'FOUND', event: snapshot({ status: 'processed' }) })),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'EVENT_RECONCILIATION_FAILED', reason: 'processed_invariants_missing' });
+  });
+
+  test('releitura retorna REPOSITORY_ERROR -> EVENT_RECONCILIATION_FAILED read_failed, nunca markFailed cego', async () => {
+    const deps = makeDeps({
+      processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('rpc boom'); }),
+      getIntegrationEventById: vi.fn(async () => ({ status: 'REPOSITORY_ERROR', error: new Error('select boom') })),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'EVENT_RECONCILIATION_FAILED', reason: 'read_failed' });
+    expect(deps.markIntegrationEventFailed).not.toHaveBeenCalled();
+  });
+
+  test('releitura retorna NOT_FOUND -> EVENT_RECONCILIATION_FAILED event_not_found', async () => {
+    const deps = makeDeps({
+      processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('rpc boom'); }),
+      getIntegrationEventById: vi.fn(async () => ({ status: 'NOT_FOUND' })),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'EVENT_RECONCILIATION_FAILED', reason: 'event_not_found' });
+  });
+
+  test('getIntegrationEventById lanca exception (nao so rejeita) -> EVENT_RECONCILIATION_FAILED read_failed, nunca propaga throw', async () => {
+    const deps = makeDeps({
+      processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('rpc boom'); }),
+      getIntegrationEventById: vi.fn(async () => { throw new Error('conexao caiu'); }),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'EVENT_RECONCILIATION_FAILED', reason: 'read_failed' });
+  });
+
+  test('releitura mostra status inesperado/malformado nao tratavel -> EVENT_RECONCILIATION_FAILED unexpected_terminal_state', async () => {
+    const deps = makeDeps({
+      processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('rpc boom'); }),
+      markIntegrationEventFailed: vi.fn(async () => ({ status: 'STATE_CONFLICT', event: snapshot({ status: 'processing' }) })),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'EVENT_RECONCILIATION_FAILED', reason: 'unexpected_terminal_state' });
+  });
+
+  test('releitura mostra EVENT_NOT_FOUND no retry do finalizer (apos fresh ok) -> EVENT_RECONCILIATION_FAILED event_not_found', async () => {
+    const deps = makeDeps({
+      processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('rpc boom'); }),
+      markIntegrationEventFailed: vi.fn(async () => ({ status: 'EVENT_NOT_FOUND' })),
+    });
+    const result = await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(result).toEqual({ status: 'EVENT_RECONCILIATION_FAILED', reason: 'event_not_found' });
+  });
+});
+
 describe('processInboundEvent — call counts exatos (secao 35)', () => {
-  test('conta ativa e telefone valido: 1 account lookup, 1 RPC, 0 markIgnored, 0 markFailed', async () => {
+  test('conta ativa e telefone valido: 1 account lookup, 1 RPC, 0 markIgnored, 0 markFailed, 0 getIntegrationEventById', async () => {
     const deps = makeDeps();
     await processInboundEvent('evt-1', VALID_EVENT, deps);
     expect(deps.findAccountCandidates).toHaveBeenCalledTimes(1);
     expect(deps.processInboundWhatsAppEvent).toHaveBeenCalledTimes(1);
     expect(deps.markIntegrationEventIgnored).toHaveBeenCalledTimes(0);
     expect(deps.markIntegrationEventFailed).toHaveBeenCalledTimes(0);
+    expect(deps.getIntegrationEventById).toHaveBeenCalledTimes(0);
   });
 
   test('account not found: 1 account lookup, 0 RPC, 1 markIgnored', async () => {
@@ -301,6 +473,14 @@ describe('processInboundEvent — call counts exatos (secao 35)', () => {
     await processInboundEvent('evt-1', { ...VALID_EVENT, provider: '' }, deps);
     expect(deps.findAccountCandidates).toHaveBeenCalledTimes(0);
     expect(deps.processInboundWhatsAppEvent).toHaveBeenCalledTimes(0);
+    expect(deps.markIntegrationEventFailed).toHaveBeenCalledTimes(1);
+  });
+
+  test('RPC lanca: 1 RPC, 1 getIntegrationEventById, 1 markFailed, ZERO segunda chamada da RPC', async () => {
+    const deps = makeDeps({ processInboundWhatsAppEvent: vi.fn(async () => { throw new Error('rpc boom'); }) });
+    await processInboundEvent('evt-1', VALID_EVENT, deps);
+    expect(deps.processInboundWhatsAppEvent).toHaveBeenCalledTimes(1);
+    expect(deps.getIntegrationEventById).toHaveBeenCalledTimes(1);
     expect(deps.markIntegrationEventFailed).toHaveBeenCalledTimes(1);
   });
 });

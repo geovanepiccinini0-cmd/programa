@@ -1,12 +1,41 @@
 import { describe, expect, test, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { markIntegrationEventIgnored, markIntegrationEventFailed } from './integrationEventRepository.ts';
+import {
+  markIntegrationEventIgnored,
+  markIntegrationEventFailed,
+  getIntegrationEventById,
+} from './integrationEventRepository.ts';
 
-function makeClient({ data, error } = { data: [{ id: 'evt-1' }], error: null }) {
-  const eq = vi.fn(() => ({ select: vi.fn(() => Promise.resolve({ data, error })) }));
-  const update = vi.fn(() => ({ eq }));
-  const from = vi.fn(() => ({ update }));
-  return { from, update, eq };
+function row(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'evt-1',
+    status: 'received',
+    error_code: null,
+    resolved_user_id: null,
+    resolved_lead_id: null,
+    resolved_interaction_id: null,
+    integration_account_id: null,
+    processed_at: null,
+    ...overrides,
+  };
+}
+
+// updateResult: { data, error } retornado pelo UPDATE condicional.
+// selectResult: { data, error } retornado pelo SELECT de read-after-zero
+// (ou pela leitura direta via getIntegrationEventById).
+function makeClient({ updateResult, selectResult }: { updateResult?: unknown; selectResult?: unknown } = {}) {
+  const defaultUpdateResult = updateResult ?? { data: [{ id: 'evt-1' }], error: null };
+  const defaultSelectResult = selectResult ?? { data: [row()], error: null };
+
+  const updateIn = vi.fn(() => ({ select: vi.fn(() => Promise.resolve(defaultUpdateResult)) }));
+  const updateEq = vi.fn(() => ({ in: updateIn }));
+  const update = vi.fn(() => ({ eq: updateEq }));
+
+  const selectEq = vi.fn(() => Promise.resolve(defaultSelectResult));
+  const select = vi.fn(() => ({ eq: selectEq }));
+
+  const from = vi.fn(() => ({ update, select }));
+  return { from, update, updateEq, updateIn, select, selectEq };
 }
 
 describe('markIntegrationEventIgnored', () => {
@@ -36,26 +65,21 @@ describe('markIntegrationEventIgnored', () => {
     expect(patch).not.toHaveProperty('resolved_interaction_id');
   });
 
-  test('eq chamado com id=eventId', async () => {
+  test('UPDATE usa eq(id) seguido de in(status, [received,processing,failed])', async () => {
     const client = makeClient();
     await markIntegrationEventIgnored({ eventId: 'evt-42', errorCode: 'account_not_found' }, client);
-    expect(client.eq).toHaveBeenCalledWith('id', 'evt-42');
+    expect(client.updateEq).toHaveBeenCalledWith('id', 'evt-42');
+    expect(client.updateIn).toHaveBeenCalledWith('status', ['received', 'processing', 'failed']);
   });
 
-  test('REPOSITORY_ERROR quando o client retorna error', async () => {
-    const client = makeClient({ data: null, error: new Error('boom') });
+  test('REPOSITORY_ERROR quando o client retorna error no UPDATE', async () => {
+    const client = makeClient({ updateResult: { data: null, error: new Error('boom') } });
     const result = await markIntegrationEventIgnored({ eventId: 'evt-1', errorCode: 'account_not_found' }, client);
     expect(result.status).toBe('REPOSITORY_ERROR');
   });
 
-  test('REPOSITORY_ERROR fail-closed quando zero linhas afetadas (eventId inexistente)', async () => {
-    const client = makeClient({ data: [], error: null });
-    const result = await markIntegrationEventIgnored({ eventId: 'evt-inexistente', errorCode: 'account_not_found' }, client);
-    expect(result.status).toBe('REPOSITORY_ERROR');
-  });
-
-  test('REPOSITORY_ERROR quando data nao e array (sem error reportado)', async () => {
-    const client = makeClient({ data: null, error: null });
+  test('REPOSITORY_ERROR quando data do UPDATE nao e array (sem error reportado)', async () => {
+    const client = makeClient({ updateResult: { data: null, error: null } });
     const result = await markIntegrationEventIgnored({ eventId: 'evt-1', errorCode: 'account_not_found' }, client);
     expect(result.status).toBe('REPOSITORY_ERROR');
   });
@@ -86,6 +110,45 @@ describe('markIntegrationEventIgnored', () => {
   test('lanca TypeError quando client nao expoe from()', async () => {
     await expect(markIntegrationEventIgnored({ eventId: 'evt-1', errorCode: 'account_not_found' }, {})).rejects.toThrow(TypeError);
   });
+
+  describe('hardening — transicoes terminais (Fase 3.3.3.3.1)', () => {
+    test('zero linhas afetadas + read-after-zero mostra processed -> ALREADY_PROCESSED, nunca sobrescreve', async () => {
+      const processedRow = row({ status: 'processed', resolved_lead_id: 'lead-1', resolved_interaction_id: 'int-1' });
+      const client = makeClient({ updateResult: { data: [], error: null }, selectResult: { data: [processedRow], error: null } });
+      const result = await markIntegrationEventIgnored({ eventId: 'evt-1', errorCode: 'account_not_found' }, client);
+      expect(result.status).toBe('ALREADY_PROCESSED');
+      if (result.status !== 'ALREADY_PROCESSED') throw new Error('unreachable');
+      expect(result.event.resolvedLeadId).toBe('lead-1');
+      expect(result.event.resolvedInteractionId).toBe('int-1');
+    });
+
+    test('zero linhas afetadas + read-after-zero mostra ignored -> ALREADY_IGNORED (idempotente, sem novo UPDATE)', async () => {
+      const ignoredRow = row({ status: 'ignored', error_code: 'account_inactive' });
+      const client = makeClient({ updateResult: { data: [], error: null }, selectResult: { data: [ignoredRow], error: null } });
+      const result = await markIntegrationEventIgnored({ eventId: 'evt-1', errorCode: 'account_not_found' }, client);
+      expect(result.status).toBe('ALREADY_IGNORED');
+      expect(client.update).toHaveBeenCalledTimes(1); // so a tentativa original, nenhum retry
+    });
+
+    test('zero linhas afetadas + read-after-zero nao encontra a linha -> EVENT_NOT_FOUND', async () => {
+      const client = makeClient({ updateResult: { data: [], error: null }, selectResult: { data: [], error: null } });
+      const result = await markIntegrationEventIgnored({ eventId: 'evt-inexistente', errorCode: 'account_not_found' }, client);
+      expect(result).toEqual({ status: 'EVENT_NOT_FOUND' });
+    });
+
+    test('zero linhas afetadas + read-after-zero mostra status ainda finalizavel -> STATE_CONFLICT (fail-closed defensivo)', async () => {
+      const conflictRow = row({ status: 'processing' });
+      const client = makeClient({ updateResult: { data: [], error: null }, selectResult: { data: [conflictRow], error: null } });
+      const result = await markIntegrationEventIgnored({ eventId: 'evt-1', errorCode: 'account_not_found' }, client);
+      expect(result.status).toBe('STATE_CONFLICT');
+    });
+
+    test('read-after-zero falha (erro de repository) -> REPOSITORY_ERROR, nunca falso sucesso', async () => {
+      const client = makeClient({ updateResult: { data: [], error: null }, selectResult: { data: null, error: new Error('read boom') } });
+      const result = await markIntegrationEventIgnored({ eventId: 'evt-1', errorCode: 'account_not_found' }, client);
+      expect(result.status).toBe('REPOSITORY_ERROR');
+    });
+  });
 });
 
 describe('markIntegrationEventFailed', () => {
@@ -104,14 +167,14 @@ describe('markIntegrationEventFailed', () => {
     expect(patch).not.toHaveProperty('retry_count');
   });
 
-  test('REPOSITORY_ERROR fail-closed quando zero linhas afetadas', async () => {
-    const client = makeClient({ data: [], error: null });
-    const result = await markIntegrationEventFailed({ eventId: 'evt-x', errorCode: 'processing_error' }, client);
-    expect(result.status).toBe('REPOSITORY_ERROR');
+  test('UPDATE usa eq(id) seguido de in(status, [received,processing,failed])', async () => {
+    const client = makeClient();
+    await markIntegrationEventFailed({ eventId: 'evt-1', errorCode: 'processing_error' }, client);
+    expect(client.updateIn).toHaveBeenCalledWith('status', ['received', 'processing', 'failed']);
   });
 
   test('REPOSITORY_ERROR quando o client retorna error', async () => {
-    const client = makeClient({ data: null, error: new Error('boom') });
+    const client = makeClient({ updateResult: { data: null, error: new Error('boom') } });
     const result = await markIntegrationEventFailed({ eventId: 'evt-1', errorCode: 'processing_error' }, client);
     expect(result.status).toBe('REPOSITORY_ERROR');
   });
@@ -125,6 +188,95 @@ describe('markIntegrationEventFailed', () => {
     await expect(markIntegrationEventFailed(input, client)).rejects.toThrow(TypeError);
     expect(client.from).not.toHaveBeenCalled();
   });
+
+  describe('hardening — transicoes terminais e TOCTOU (Fase 3.3.3.3.1)', () => {
+    test('CRITICO: processed nao pode regredir para failed — UPDATE condicional afeta zero linhas, read-after-zero confirma processed', async () => {
+      const processedRow = row({ status: 'processed', resolved_lead_id: 'lead-1', resolved_interaction_id: 'int-1', processed_at: '2026-01-01T00:00:00.000Z' });
+      const client = makeClient({ updateResult: { data: [], error: null }, selectResult: { data: [processedRow], error: null } });
+      const result = await markIntegrationEventFailed({ eventId: 'evt-1', errorCode: 'processing_error' }, client);
+      expect(result.status).toBe('ALREADY_PROCESSED');
+      if (result.status !== 'ALREADY_PROCESSED') throw new Error('unreachable');
+      expect(result.event.status).toBe('processed');
+      expect(result.event.resolvedInteractionId).toBe('int-1');
+    });
+
+    test('CRITICO: ignored nao pode regredir para failed', async () => {
+      const ignoredRow = row({ status: 'ignored', error_code: 'account_not_found' });
+      const client = makeClient({ updateResult: { data: [], error: null }, selectResult: { data: [ignoredRow], error: null } });
+      const result = await markIntegrationEventFailed({ eventId: 'evt-1', errorCode: 'processing_error' }, client);
+      expect(result.status).toBe('ALREADY_IGNORED');
+    });
+
+    test('failed -> failed e idempotente (status permanece finalizavel, UPDATE normal)', async () => {
+      const client = makeClient({ updateResult: { data: [{ id: 'evt-1' }], error: null } });
+      const result = await markIntegrationEventFailed({ eventId: 'evt-1', errorCode: 'processing_error' }, client);
+      expect(result).toEqual({ status: 'OK' });
+    });
+
+    test('EVENT_NOT_FOUND quando zero linhas e leitura nao encontra a linha', async () => {
+      const client = makeClient({ updateResult: { data: [], error: null }, selectResult: { data: [], error: null } });
+      const result = await markIntegrationEventFailed({ eventId: 'evt-x', errorCode: 'processing_error' }, client);
+      expect(result).toEqual({ status: 'EVENT_NOT_FOUND' });
+    });
+  });
+});
+
+describe('getIntegrationEventById', () => {
+  test('retorna FOUND com snapshot mapeado camelCase', async () => {
+    const client = makeClient({ selectResult: { data: [row({ status: 'processing' })], error: null } });
+    const result = await getIntegrationEventById('evt-1', client);
+    expect(result).toEqual({
+      status: 'FOUND',
+      event: {
+        id: 'evt-1',
+        status: 'processing',
+        errorCode: null,
+        resolvedUserId: null,
+        resolvedLeadId: null,
+        resolvedInteractionId: null,
+        integrationAccountId: null,
+        processedAt: null,
+      },
+    });
+  });
+
+  test('NOT_FOUND quando zero linhas', async () => {
+    const client = makeClient({ selectResult: { data: [], error: null } });
+    const result = await getIntegrationEventById('evt-x', client);
+    expect(result).toEqual({ status: 'NOT_FOUND' });
+  });
+
+  test('REPOSITORY_ERROR quando o client retorna error', async () => {
+    const client = makeClient({ selectResult: { data: null, error: new Error('boom') } });
+    const result = await getIntegrationEventById('evt-1', client);
+    expect(result.status).toBe('REPOSITORY_ERROR');
+  });
+
+  test('REPOSITORY_ERROR quando mais de uma linha e encontrada', async () => {
+    const client = makeClient({ selectResult: { data: [row({ id: 'a' }), row({ id: 'b' })], error: null } });
+    const result = await getIntegrationEventById('evt-1', client);
+    expect(result.status).toBe('REPOSITORY_ERROR');
+  });
+
+  test('REPOSITORY_ERROR quando a linha retornada tem status fora do dominio', async () => {
+    const client = makeClient({ selectResult: { data: [row({ status: 'bogus' })], error: null } });
+    const result = await getIntegrationEventById('evt-1', client);
+    expect(result.status).toBe('REPOSITORY_ERROR');
+  });
+
+  test.each([
+    ['eventId ausente', undefined],
+    ['eventId vazio', ''],
+    ['eventId whitespace', '   '],
+  ])('lanca TypeError para eventId invalido: %s', async (_label, eventId) => {
+    const client = makeClient();
+    await expect(getIntegrationEventById(eventId, client)).rejects.toThrow(TypeError);
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  test('lanca TypeError quando client nao expoe from()', async () => {
+    await expect(getIntegrationEventById('evt-1', {})).rejects.toThrow(TypeError);
+  });
 });
 
 describe('auditoria estatica de seguranca (integrationEventRepository.ts)', () => {
@@ -137,10 +289,17 @@ describe('auditoria estatica de seguranca (integrationEventRepository.ts)', () =
     ['import real de createClient', /from\s+['"]@supabase\/supabase-js/],
     ['console.log', /console\.log/],
     ['payload_minimized', /payload_minimized/],
-    ['user_id', /\buser_id\b/],
+    ['user_id como identificador aceito em input', /\buser_id\s*:/],
   ];
 
   test.each(forbiddenPatterns)('codigo real nao contem: %s', (_label, pattern) => {
     expect(codeLines).not.toMatch(pattern);
+  });
+
+  test('FINALIZABLE_FROM_STATUSES contem exatamente received/processing/failed, nunca processed/ignored', () => {
+    const match = source.match(/const FINALIZABLE_FROM_STATUSES:[^=]*=\s*\[([^\]]*)\]/);
+    expect(match).not.toBeNull();
+    const values = (match as RegExpMatchArray)[1].match(/'([a-z]+)'/g)?.map((s) => s.replace(/'/g, ''));
+    expect(values).toEqual(['received', 'processing', 'failed']);
   });
 });
