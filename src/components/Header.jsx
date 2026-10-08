@@ -5,6 +5,7 @@ const TABS = [
   { key: 'hoje', label: 'Hoje' },
   { key: 'funil', label: 'Funil' },
   { key: 'rotina', label: 'Rotina' },
+  { key: 'conversas', label: 'Conversas' },
 ];
 
 export default function Header({ activeTab, onTabChange, onNewLead, onOpenExport, onExportBackup, onImportBackup, onSignOut, isAdmin }) {

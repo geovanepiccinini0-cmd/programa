@@ -1,5 +1,6 @@
 import { supabase } from './supabaseClient.js';
 import { normalizePhoneIdentity } from './phoneIdentity.js';
+import { whatsappMessageFromRow } from './whatsappMessages.js';
 
 function leadFromRow(r) {
   return {
@@ -252,6 +253,82 @@ export const auditLogApi = {
   insert: async (data) => {
     const { error } = await supabase.from('audit_log').insert(auditLogToRow(data));
     if (error) throw error;
+  },
+};
+
+// Fase 3.5.1 — Caixa de entrada WhatsApp, SOMENTE LEITURA.
+//
+// Zero INSERT/UPDATE/DELETE aqui de propósito: esta fase não implementa
+// envio nem qualquer escrita em public.whatsapp_messages pelo
+// navegador — toda escrita continua exclusiva da RPC
+// process_inbound_whatsapp_event (migrations 018/019, service_role),
+// nunca alcançável pela sessão autenticada do usuário (RLS só tem
+// policies de SELECT para dono/admin — ver migration 018). As queries
+// abaixo usam a sessão autenticada normal (o mesmo `supabase` client
+// de src/lib/supabaseClient.js, anon key); a segurança real vem da RLS
+// no banco, nunca do filtro `.eq('user_id', userId)` adicionado aqui
+// (esse filtro é só otimização de índice — removê-lo não abriria
+// nenhum acesso extra, porque a RLS já restringe as linhas visíveis).
+export const whatsappMessagesApi = {
+  fromRow: whatsappMessageFromRow,
+
+  // Janela recente de mensagens do usuário autenticado, para montar a
+  // lista de conversas por agrupamento client-side (buildConversationSummaries,
+  // src/lib/whatsappMessages.js) — nunca o histórico inteiro de uma vez.
+  //
+  // Fase 3.5.1 — correção do finding HIGH: ordenação por
+  // (occurred_at DESC, id DESC) — occurred_at tem granularidade de
+  // SEGUNDO (mensagens do mesmo lead no mesmo segundo são plausíveis);
+  // sem um tiebreaker determinístico, a MESMA consulta poderia truncar
+  // o `limit` em pontos diferentes entre execuções quando há empate.
+  // `id` nunca decide SIGNIFICADO nenhum (não é usado como timestamp),
+  // só garante ordem estável.
+  fetchRecentForUser: async (userId, limit) => {
+    let query = supabase
+      .from('whatsapp_messages')
+      .select('*')
+      .order('occurred_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(limit);
+    if (userId) query = query.eq('user_id', userId);
+    const { data, error } = await query;
+    if (error) throw error;
+    return data.map(whatsappMessageFromRow);
+  },
+
+  // Uma página do histórico de UM lead, mais recentes primeiro
+  // (invertida para ordem cronológica pelo chamador/mergeOlderPage).
+  //
+  // Fase 3.5.1 — correção do finding HIGH (cursor composto): o cursor
+  // de paginação agora é o PAR (beforeOccurredAt, beforeId) — nunca só
+  // o timestamp. Um cursor baseado só em `occurred_at` com `.lt()`
+  // estrito EXCLUI PERMANENTEMENTE qualquer mensagem que compartilhe o
+  // timestamp exato da borda da página anterior (occurred_at é
+  // granularidade de segundo — colisão plausível). O filtro composto
+  // replica exatamente a semântica de keyset pagination sobre
+  // (occurred_at, id) DESC: ocurred_at estritamente menor, OU
+  // occurred_at igual com id estritamente menor — nunca pula uma linha
+  // cujo par (occurred_at, id) seja único por construção (id é chave
+  // primária).
+  fetchPageForLead: async (leadId, { beforeOccurredAt, beforeId, limit } = {}) => {
+    let query = supabase
+      .from('whatsapp_messages')
+      .select('*')
+      .eq('lead_id', leadId)
+      .order('occurred_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(limit);
+    if (beforeOccurredAt && beforeId) {
+      query = query.or(`occurred_at.lt.${beforeOccurredAt},and(occurred_at.eq.${beforeOccurredAt},id.lt.${beforeId})`);
+    } else if (beforeOccurredAt) {
+      // Defensivo: nunca deveria ocorrer (o chamador sempre passa os
+      // dois juntos — ver useWhatsAppInbox.js), mas nunca aplicar um
+      // cursor incompleto/inconsistente sem o tiebreaker.
+      query = query.lt('occurred_at', beforeOccurredAt);
+    }
+    const { data, error } = await query;
+    if (error) throw error;
+    return data.map(whatsappMessageFromRow);
   },
 };
 

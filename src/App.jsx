@@ -9,6 +9,7 @@ import ExportModal from './components/ExportModal.jsx';
 import Login from './components/Login.jsx';
 import SetupNeeded from './components/SetupNeeded.jsx';
 import MetricasView from './components/MetricasView.jsx';
+import WhatsAppInboxView from './components/WhatsAppInboxView.jsx';
 import AppointmentAlertBanner from './components/AppointmentAlertBanner.jsx';
 import { useAppState } from './hooks/useAppState.js';
 import { useAuth } from './hooks/useAuth.js';
@@ -193,6 +194,10 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
           onMoveStage={handleMoveStage}
           onDropStage={handleDropStage}
         />
+      )}
+
+      {activeTab === 'conversas' && (
+        <WhatsAppInboxView userId={userId} />
       )}
 
       {activeTab === 'rotina' && (
