@@ -675,3 +675,144 @@ describe('Excecoes inesperadas', () => {
     expect(res.status).toBe(500);
   });
 });
+
+// ===========================================================================
+// REENTREGA REAL END-TO-END — Fase 3.3.3 (fechamento da homologacao de
+// idempotencia). Diferente da "matriz de resultado do ingress" acima
+// (que pre-semeia `events` com uma linha duplicada ja existente), os
+// testes abaixo chamam handleWhatsappWebhookRequest MAIS DE UMA VEZ,
+// sequencialmente, contra a MESMA instancia de client/deps, com o MESMO
+// rawBody/signatureHeader — exatamente como a Meta reenviando o mesmo
+// webhook delivery. Prova o caminho completo parse -> ingress -> gate
+// de status terminal do handler -> Engine -> RPC-mock, nao apenas a
+// logica de cada camada isolada.
+//
+// LIMITE CONHECIDO (documentado, nunca escondido): o fake client é
+// sincrono/single-threaded (JS) — seu check-then-push de unicidade em
+// eventsTable().insert().select() roda inteiro antes de qualquer
+// `await`, entao mesmo duas chamadas via Promise.all() contra ele nunca
+// produzem uma corrida real. Ele prova a LOGICA de deduplicacao (os
+// mesmos branches que o Postgres real exercitaria via 23505), nunca a
+// ATOMICIDADE sob concorrencia genuina — essa garantia depende somente
+// do UNIQUE INDEX e do SELECT...FOR UPDATE do Postgres real (migrations
+// 016/017), ja validados empiricamente em fase anterior contra Postgres
+// local descartavel, nunca neste arquivo e nunca contra producao.
+// ===========================================================================
+describe('POST — reentrega real end-to-end (homologacao de idempotencia)', () => {
+  test('1a entrega valida -> 200, 1 evento processed, exatamente 1 chamada a RPC', async () => {
+    const client = makeFakeClient({ accounts: [RESOLVED_ACCOUNT], rpcImpl: rpcSuccess() });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(textMessagePayload());
+
+    const res = await handleWhatsappWebhookRequest(req, deps);
+
+    expect(res.status).toBe(200);
+    expect(client._rpcCalls).toHaveLength(1);
+    expect(client._events).toHaveLength(1);
+    expect(client._events[0].status).toBe('processed');
+  });
+
+  test('2a entrega com corpo e assinatura IDENTICOS (mesmo client) -> 200, ZERO nova chamada a RPC, ZERO novo evento', async () => {
+    const client = makeFakeClient({ accounts: [RESOLVED_ACCOUNT], rpcImpl: rpcSuccess() });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(textMessagePayload());
+
+    const firstRes = await handleWhatsappWebhookRequest(req, deps);
+    expect(firstRes.status).toBe(200);
+    expect(client._rpcCalls).toHaveLength(1);
+    expect(client._events).toHaveLength(1);
+
+    // Reentrega real: MESMO objeto de requisicao (rawBody + signatureHeader
+    // identicos byte-a-byte), MESMO client/deps — nunca um novo fixture
+    // pre-semeado, nunca um novo client.
+    const secondRes = await handleWhatsappWebhookRequest(req, deps);
+
+    expect(secondRes.status).toBe(200);
+    expect(client._rpcCalls).toHaveLength(1); // nenhuma nova chamada a RPC
+    expect(client._events).toHaveLength(1); // nenhum novo evento inserido
+    expect(client._events[0].status).toBe('processed'); // estado terminal preservado
+    expect(client._events[0].resolved_lead_id).toBe('lead-1');
+    expect(client._events[0].resolved_interaction_id).toBe('int-1');
+  });
+
+  test('falha transitoria na 1a entrega -> retry legitimo processa -> reentrega subsequente apos sucesso e bloqueada', async () => {
+    let rpcCallCount = 0;
+    const succeed = rpcSuccess();
+    const client = makeFakeClient({
+      accounts: [RESOLVED_ACCOUNT],
+      // 1a chamada: falha transitoria (ex. timeout/erro de rede simulado).
+      // 2a chamada em diante: sucesso real, com o mesmo efeito colateral
+      // que process_inbound_whatsapp_event teria no banco real.
+      rpcImpl: async (fn, params, c) => {
+        rpcCallCount += 1;
+        if (rpcCallCount === 1) {
+          throw new Error('erro transitorio simulado (ex. timeout de rede)');
+        }
+        return succeed(fn, params, c);
+      },
+    });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(textMessagePayload());
+
+    // 1a entrega: RPC lanca -> Engine reconcilia (leitura fresca ainda
+    // 'received') -> finaliza como 'failed' retryable -> 500.
+    const firstRes = await handleWhatsappWebhookRequest(req, deps);
+    expect(firstRes.status).toBe(500);
+    expect(client._events).toHaveLength(1);
+    expect(client._events[0].status).toBe('failed');
+    expect(client._events[0].resolved_lead_id).toBeNull();
+    expect(client._events[0].resolved_interaction_id).toBeNull();
+
+    // Retry legitimo: MESMO corpo/assinatura (Meta reentrega apos 500) ->
+    // ingress reconhece DUPLICATE failed (sem residuo) -> Engine tenta de
+    // novo -> 2a chamada a RPC agora sucede -> 200, evento processed.
+    const retryRes = await handleWhatsappWebhookRequest(req, deps);
+    expect(retryRes.status).toBe(200);
+    expect(client._rpcCalls).toHaveLength(2);
+    expect(client._events).toHaveLength(1);
+    expect(client._events[0].status).toBe('processed');
+    expect(client._events[0].resolved_lead_id).toBe('lead-1');
+    expect(client._events[0].resolved_interaction_id).toBe('int-1');
+
+    // Reentrega subsequente (3a chamada HTTP) apos o sucesso: evento ja
+    // 'processed' -> ACK direto, bloqueada ANTES do Engine/RPC. Prova que
+    // o bloqueio pos-sucesso e real, nao so um efeito colateral do mock
+    // de falha ja ter sido "consumido".
+    const thirdRes = await handleWhatsappWebhookRequest(req, deps);
+    expect(thirdRes.status).toBe(200);
+    expect(client._rpcCalls).toHaveLength(2); // nenhuma 3a chamada a RPC
+    expect(client._events).toHaveLength(1);
+  });
+
+  test('o fake client nunca e confundido com uma transacao Postgres real — nao ha lock/atomicidade genuina sob Promise.all', async () => {
+    // Documenta explicitamente o limite descrito no comentario de topo
+    // deste describe: chamar o handler duas vezes "concorrentemente" via
+    // Promise.all contra o MESMO client ainda produz exatamente o mesmo
+    // resultado deduplicado que a chamada sequencial acima — porque o
+    // fake client e sincrono (JS, single-threaded), nunca porque ele
+    // implementa um UNIQUE INDEX ou um SELECT...FOR UPDATE reais. Este
+    // teste prova que o mock e honesto sobre o que ele cobre (a logica
+    // de branch de deduplicacao) e nunca finge cobrir atomicidade real
+    // de banco — essa garantia continua dependendo exclusivamente do
+    // Postgres real (migrations 016/017), validada empiricamente em fase
+    // anterior contra Postgres local descartavel, nunca neste arquivo.
+    const client = makeFakeClient({ accounts: [RESOLVED_ACCOUNT], rpcImpl: rpcSuccess() });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(textMessagePayload());
+
+    const [resA, resB] = await Promise.all([
+      handleWhatsappWebhookRequest(req, deps),
+      handleWhatsappWebhookRequest(req, deps),
+    ]);
+
+    expect(resA.status).toBe(200);
+    expect(resB.status).toBe(200);
+    // Zero duplicacao observavel — mas isto e uma propriedade do
+    // JavaScript ser single-threaded (cada microtask do fake client
+    // roda do inicio ao fim sem interrupcao), nunca uma prova de
+    // locking real. Nenhuma asserção aqui deve ser lida como "prova de
+    // concorrencia" — ver comentario de topo do describe.
+    expect(client._events).toHaveLength(1);
+    expect(client._rpcCalls.length).toBeGreaterThanOrEqual(1);
+  });
+});
