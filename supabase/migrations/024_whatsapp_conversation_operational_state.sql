@@ -190,17 +190,37 @@ grant all on public.whatsapp_conversation_state to service_role;
 -- ANTERIOR ao último já aplicado é IGNORADO (nunca aplicado, nunca
 -- um erro — redelivery legítima da Meta sempre recebe ACK).
 --
+-- CORREÇÃO 2 (revisão adicional, achado CONFIRMED: concorrência real
+-- na PRIMEIRA inserção): um `SELECT ... FOR UPDATE` isolado só trava
+-- uma linha que já existe — contra DUAS chamadas simultâneas criando
+-- a linha pela PRIMEIRA vez para o MESMO lead, não há nada para
+-- travar antes de qualquer uma delas commitar, e a antiga versão
+-- desta função não tinha NENHUMA guarda de ordenação dentro do
+-- próprio INSERT ... ON CONFLICT DO UPDATE (sempre sobrescrevia,
+-- incondicionalmente). Corrigido: a guarda de ordenação agora vive
+-- DENTRO da cláusula WHERE do próprio ON CONFLICT DO UPDATE —
+-- avaliada pelo Postgres atomicamente contra a linha JÁ COMMITADA no
+-- exato momento do conflito (nunca contra uma leitura separada e
+-- potencialmente obsoleta). Duas transações concorrentes tentando
+-- criar a linha pela primeira vez para o mesmo lead_id são
+-- serializadas pelo próprio índice único da chave primária — a
+-- segunda delas SEMPRE enxerga o conflito com a primeira já
+-- committada (nunca um "ambas inserem", nunca uma leitura suja) e
+-- decide com a WHERE abaixo, nunca com um valor obsoleto. O
+-- `SELECT ... FOR UPDATE` isolado foi removido (não é mais necessário
+-- nem suficiente — a correção real é só a cláusula WHERE).
+--
 -- REGRA DE PRECEDÊNCIA (simples, documentada, verificada SOMENTE
--- depois da guarda de ordenação acima): 'em_atendimento' é PEGAJOSO —
--- uma vez definido (sempre manualmente, nunca por esta função),
--- nenhum evento automático (inbound_received OU outbound_sent) o
--- sobrescreve. Qualquer OUTRO estado atual
--- (pendente_resposta/aguardando_cliente/concluido) É sobrescrito pelo
--- evento automático correspondente — inclusive reabrindo uma
--- conversa 'concluido' quando chega uma nova mensagem do cliente
--- (comportamento esperado: uma conversa não permanece "concluída"
--- para sempre só porque foi marcada assim antes de uma nova
--- mensagem).
+-- quando a guarda de ordenação acima permite a atualização):
+-- 'em_atendimento' é PEGAJOSO — uma vez definido (sempre
+-- manualmente, nunca por esta função), nenhum evento automático
+-- (inbound_received OU outbound_sent) o sobrescreve. Qualquer OUTRO
+-- estado atual (pendente_resposta/aguardando_cliente/concluido) É
+-- sobrescrito pelo evento automático correspondente — inclusive
+-- reabrindo uma conversa 'concluido' quando chega uma nova mensagem
+-- do cliente (comportamento esperado: uma conversa não permanece
+-- "concluída" para sempre só porque foi marcada assim antes de uma
+-- nova mensagem).
 -------------------------------------------------------------------
 create or replace function public.apply_whatsapp_conversation_operational_event(
   p_lead_id uuid,
@@ -215,8 +235,7 @@ as $$
 declare
   v_user_id uuid;
   v_new_status text;
-  v_current_last_event_at timestamptz;
-  v_row_exists boolean := false;
+  v_applied_status text;
 begin
   if p_lead_id is null then
     raise exception 'apply_whatsapp_conversation_operational_event: p_lead_id nao pode ser nulo';
@@ -233,30 +252,19 @@ begin
     raise exception 'apply_whatsapp_conversation_operational_event: lead % nao encontrado', p_lead_id;
   end if;
 
-  -- Lock da linha (se existir) ANTES de decidir — fecha a janela de
-  -- concorrência entre duas chamadas simultâneas para o MESMO lead
-  -- (ex. webhook inbound e confirmação outbound processando em
-  -- paralelo): a segunda chamada só lê last_event_at depois que a
-  -- primeira já commitou.
-  select c.last_event_at, true into v_current_last_event_at, v_row_exists
-  from public.whatsapp_conversation_state c
-  where c.lead_id = p_lead_id
-  for update;
-
-  if v_row_exists and v_current_last_event_at is not null and p_event_timestamp < v_current_last_event_at then
-    -- Evento atrasado/fora de ordem — IGNORADO. Nunca sobrescreve um
-    -- estado mais recente, nunca lança (uma reentrega legítima da
-    -- Meta ou uma confirmação atrasada precisam sempre de ACK, nunca
-    -- de um retry storm).
-    return query select c.status from public.whatsapp_conversation_state c where c.lead_id = p_lead_id;
-    return;
-  end if;
-
   v_new_status := case p_event_type
     when 'inbound_received' then 'pendente_resposta'
     when 'outbound_sent' then 'aguardando_cliente'
   end;
 
+  -- Upsert atômico único — tanto a criação da linha (primeira
+  -- inserção, nunca em conflito) quanto a atualização concorrente
+  -- (conflito, decidido pela WHERE abaixo) acontecem na MESMA
+  -- instrução SQL, sem nenhuma janela entre "ler" e "decidir". Quando
+  -- a WHERE é falsa (evento atrasado/fora de ordem), a linha
+  -- simplesmente NÃO é tocada — nem o trigger de consistência
+  -- (seção B) chega a rodar para essa tentativa, e o RETURNING abaixo
+  -- não devolve nenhuma linha (nunca um erro).
   insert into public.whatsapp_conversation_state as wcs (lead_id, user_id, status, last_event_at)
   values (p_lead_id, v_user_id, v_new_status, p_event_timestamp)
   on conflict (lead_id) do update
@@ -264,9 +272,20 @@ begin
       when wcs.status = 'em_atendimento' then wcs.status
       else excluded.status
     end,
-    last_event_at = excluded.last_event_at;
+    last_event_at = excluded.last_event_at
+  where wcs.last_event_at is null or excluded.last_event_at >= wcs.last_event_at
+  returning wcs.status into v_applied_status;
 
-  return query select c.status from public.whatsapp_conversation_state c where c.lead_id = p_lead_id;
+  if v_applied_status is null then
+    -- A WHERE recusou a atualização (evento atrasado/fora de ordem)
+    -- — devolve o estado ATUAL (inalterado) para o chamador. A linha
+    -- com certeza já existe neste ponto (só chegamos aqui quando o
+    -- INSERT colidiu e a WHERE foi falsa — nunca na primeira
+    -- inserção de um lead, que nunca colide).
+    select c.status into v_applied_status from public.whatsapp_conversation_state c where c.lead_id = p_lead_id;
+  end if;
+
+  return query select v_applied_status;
   return;
 end;
 $$;
