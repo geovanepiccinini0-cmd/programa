@@ -54,6 +54,7 @@ import {
   applyWhatsappOutboundStatusEvent,
   type OutboundStatusEventStatus,
 } from '../_shared/whatsappOutboundRepository.ts';
+import { applyConversationOperationalEvent } from '../_shared/whatsappConversationStateRepository.ts';
 
 // ===========================================================================
 // CONTRATO HTTP MÍNIMO — nunca o Request/Response real do Deno. index.ts
@@ -308,6 +309,20 @@ async function processSingleCanonicalEvent(
     engineResult = await processInboundEvent(persistedEvent.id, event, engineDeps);
   } catch {
     return 'retryable_failure';
+  }
+
+  if (engineResult.status === 'PROCESSED') {
+    // Fase 3.6.2 — estado OPERACIONAL (nunca o status de entrega da
+    // Meta): melhor esforço, SEMPRE depois da mensagem já persistida
+    // com sucesso. Uma falha aqui NUNCA altera o outcome do webhook
+    // (o ACK para a Meta é decidido só por classifyEngineResult,
+    // abaixo) — este eixo é secundário, nunca a fonte de verdade de
+    // recebimento.
+    try {
+      await applyConversationOperationalEvent({ leadId: engineResult.leadId, eventType: 'inbound_received' }, client);
+    } catch {
+      // nunca propaga — ver comentário acima.
+    }
   }
 
   return classifyEngineResult(engineResult);

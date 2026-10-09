@@ -181,6 +181,16 @@ function rpcSuccess(leadId = 'lead-1', interactionId = 'int-1', wasNewLead = tru
   };
 }
 
+// Fase 3.6.2 — process_inbound_whatsapp_event agora é sempre seguida,
+// em melhor esforço, por uma chamada a
+// apply_whatsapp_conversation_operational_event (handler.ts, quando
+// PROCESSED) — um eixo secundário, nunca o foco destes testes de
+// ingress/idempotência. Esta helper isola só as chamadas à RPC de
+// inbound em si, preservando a intenção original de cada assert.
+function inboundRpcCalls(client: ReturnType<typeof makeFakeClient>) {
+  return client._rpcCalls.filter((c) => c.fn === 'process_inbound_whatsapp_event');
+}
+
 function textMessagePayload(overrides: Record<string, unknown> = {}) {
   return {
     object: 'whatsapp_business_account',
@@ -385,7 +395,7 @@ describe('POST — parse e JSON', () => {
     const req = await postRequest(textMessagePayload());
     const res = await handleWhatsappWebhookRequest(req, deps);
     expect(res.status).toBe(200);
-    expect(client._rpcCalls).toHaveLength(1);
+    expect(inboundRpcCalls(client)).toHaveLength(1);
   });
 
   test('1 mensagem non-text (image) -> content null, messageType preservado, ainda processada', async () => {
@@ -411,7 +421,7 @@ describe('POST — parse e JSON', () => {
     const req = await postRequest(payload);
     const res = await handleWhatsappWebhookRequest(req, deps);
     expect(res.status).toBe(200);
-    expect(client._rpcCalls).toHaveLength(2);
+    expect(inboundRpcCalls(client)).toHaveLength(2);
     expect(client._events).toHaveLength(2);
   });
 
@@ -435,7 +445,7 @@ describe('POST — matriz de resultado do ingress', () => {
     const req = await postRequest(textMessagePayload());
     const res = await handleWhatsappWebhookRequest(req, deps);
     expect(res.status).toBe(200);
-    expect(client._rpcCalls).toHaveLength(1);
+    expect(inboundRpcCalls(client)).toHaveLength(1);
     expect(client._events[0].status).toBe('processed');
   });
 
@@ -485,7 +495,7 @@ describe('POST — matriz de resultado do ingress', () => {
     const req = await postRequest(textMessagePayload());
     const res = await handleWhatsappWebhookRequest(req, deps);
     expect(res.status).toBe(200);
-    expect(client._rpcCalls).toHaveLength(1);
+    expect(inboundRpcCalls(client)).toHaveLength(1);
     expect(client._rpcCalls[0].params.p_integration_event_id).toBe('evt-existing');
   });
 
@@ -499,7 +509,7 @@ describe('POST — matriz de resultado do ingress', () => {
     const req = await postRequest(textMessagePayload());
     const res = await handleWhatsappWebhookRequest(req, deps);
     expect(res.status).toBe(200);
-    expect(client._rpcCalls).toHaveLength(1);
+    expect(inboundRpcCalls(client)).toHaveLength(1);
   });
 
   test('IDENTITY_CONFLICT -> NUNCA Engine, ACK (nao gera retry storm), zero RPC', async () => {
@@ -709,7 +719,7 @@ describe('POST — reentrega real end-to-end (homologacao de idempotencia)', () 
     const res = await handleWhatsappWebhookRequest(req, deps);
 
     expect(res.status).toBe(200);
-    expect(client._rpcCalls).toHaveLength(1);
+    expect(inboundRpcCalls(client)).toHaveLength(1);
     expect(client._events).toHaveLength(1);
     expect(client._events[0].status).toBe('processed');
   });
@@ -721,7 +731,7 @@ describe('POST — reentrega real end-to-end (homologacao de idempotencia)', () 
 
     const firstRes = await handleWhatsappWebhookRequest(req, deps);
     expect(firstRes.status).toBe(200);
-    expect(client._rpcCalls).toHaveLength(1);
+    expect(inboundRpcCalls(client)).toHaveLength(1);
     expect(client._events).toHaveLength(1);
 
     // Reentrega real: MESMO objeto de requisicao (rawBody + signatureHeader
@@ -730,7 +740,7 @@ describe('POST — reentrega real end-to-end (homologacao de idempotencia)', () 
     const secondRes = await handleWhatsappWebhookRequest(req, deps);
 
     expect(secondRes.status).toBe(200);
-    expect(client._rpcCalls).toHaveLength(1); // nenhuma nova chamada a RPC
+    expect(inboundRpcCalls(client)).toHaveLength(1); // nenhuma nova chamada a RPC de inbound
     expect(client._events).toHaveLength(1); // nenhum novo evento inserido
     expect(client._events[0].status).toBe('processed'); // estado terminal preservado
     expect(client._events[0].resolved_lead_id).toBe('lead-1');
@@ -770,7 +780,7 @@ describe('POST — reentrega real end-to-end (homologacao de idempotencia)', () 
     // novo -> 2a chamada a RPC agora sucede -> 200, evento processed.
     const retryRes = await handleWhatsappWebhookRequest(req, deps);
     expect(retryRes.status).toBe(200);
-    expect(client._rpcCalls).toHaveLength(2);
+    expect(inboundRpcCalls(client)).toHaveLength(2);
     expect(client._events).toHaveLength(1);
     expect(client._events[0].status).toBe('processed');
     expect(client._events[0].resolved_lead_id).toBe('lead-1');
@@ -782,7 +792,7 @@ describe('POST — reentrega real end-to-end (homologacao de idempotencia)', () 
     // de falha ja ter sido "consumido".
     const thirdRes = await handleWhatsappWebhookRequest(req, deps);
     expect(thirdRes.status).toBe(200);
-    expect(client._rpcCalls).toHaveLength(2); // nenhuma 3a chamada a RPC
+    expect(inboundRpcCalls(client)).toHaveLength(2); // nenhuma 3a chamada a RPC de inbound
     expect(client._events).toHaveLength(1);
   });
 
@@ -1007,6 +1017,11 @@ describe('POST — status outbound (Fase 3.5.2.3)', () => {
       rpcImpl: async (fn: string, params: Record<string, unknown>, c?: ReturnType<typeof makeFakeClient>) => {
         if (fn === 'process_inbound_whatsapp_event') return rpcSuccess()(fn, params, c);
         if (fn === 'apply_whatsapp_outbound_status_event') return { data: [{ outcome: 'APPLIED', message_id: 'msg-1' }], error: null };
+        // Fase 3.6.2 — apply_whatsapp_conversation_operational_event,
+        // chamada em melhor esforço após a mensagem inbound ser
+        // processada (ver handler.ts). Sucesso aqui nunca é exigido
+        // pelo teste (é um eixo secundário) — só não deve lançar.
+        if (fn === 'apply_whatsapp_conversation_operational_event') return { data: [{ status: 'pendente_resposta' }], error: null };
         return { data: null, error: new Error(`rpc inesperada: ${fn}`) };
       },
     });
@@ -1015,7 +1030,11 @@ describe('POST — status outbound (Fase 3.5.2.3)', () => {
     const req = await postRequest(payload);
     const res = await handleWhatsappWebhookRequest(req, deps);
     expect(res.status).toBe(200);
-    expect(client._rpcCalls.map((c) => c.fn).sort()).toEqual(['apply_whatsapp_outbound_status_event', 'process_inbound_whatsapp_event']);
+    expect(client._rpcCalls.map((c) => c.fn).sort()).toEqual([
+      'apply_whatsapp_conversation_operational_event',
+      'apply_whatsapp_outbound_status_event',
+      'process_inbound_whatsapp_event',
+    ]);
   });
 
   test('integration_account_id NUNCA vem do payload -- so e passado para a RPC apos resolucao propria via phone_number_id', async () => {
