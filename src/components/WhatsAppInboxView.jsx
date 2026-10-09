@@ -27,6 +27,7 @@ export default function WhatsAppInboxView({ userId }) {
     threadMessages, threadLoading, threadError, retryThread,
     hasMoreOlderMessages, loadingOlderMessages, loadOlderMessages,
     sendMessage, composerSending, composerNotice, sendGate,
+    conversationFilters, setConversationFilters, clearConversationFilters, totalConversationsCount,
   } = useWhatsAppInbox(userId);
 
   const [editingLead, setEditingLead] = useState(null);
@@ -55,6 +56,10 @@ export default function WhatsAppInboxView({ userId }) {
             onRetry={refetchConversations}
             hasMore={hasMoreConversationHistory}
             onLoadMore={loadMoreConversationHistory}
+            filters={conversationFilters}
+            onFiltersChange={setConversationFilters}
+            onClearFilters={clearConversationFilters}
+            totalCount={totalConversationsCount}
           />
         </div>
         <div className="wa-inbox-thread-pane">
