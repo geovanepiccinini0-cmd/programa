@@ -14,6 +14,16 @@ import {
   PAGE_SIZE,
   RECENT_WINDOW_SIZE,
 } from '../lib/whatsappMessages.js';
+import {
+  generateClientToken,
+  computeSendGateStatus,
+  buildOptimisticMessage,
+  mergeOptimisticWithAuthoritative,
+  statusForOutcomeKind,
+  classifySendOutcome,
+  invokeWhatsappSend,
+  SEND_ERROR_MESSAGES,
+} from '../lib/whatsappSend.js';
 
 // Fase 3.5.1 — Caixa de entrada WhatsApp, SOMENTE LEITURA.
 // Fase 3.5.1 (correção pós-auditoria) — ver comentários inline para
@@ -62,6 +72,15 @@ export function useWhatsAppInbox(userId) {
   const [threadRetryToken, setThreadRetryToken] = useState(0);
   const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState(false);
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
+
+  // Fase 3.5.2.4 — Interface de envio. `pendingSends` guarda mensagens
+  // otimistas locais (uma por intenção de envio, nunca persistida —
+  // ver whatsappSend.js) até a linha autoritativa correspondente
+  // chegar via Realtime (reconciliada por clientToken, nunca por id:
+  // o id real só é conhecido depois da resposta da Edge Function).
+  const [pendingSends, setPendingSends] = useState([]);
+  const [composerSending, setComposerSending] = useState(false);
+  const [composerNotice, setComposerNotice] = useState(null);
 
   // Carrega leads (nome de exibição + reaproveitar LeadModal na
   // navegação "ver lead") e a janela recente de mensagens — mesma
@@ -185,6 +204,110 @@ export function useWhatsAppInbox(userId) {
     setThreadRetryToken((n) => n + 1);
   }, []);
 
+  // Fase 3.5.2.4 — limpa o aviso do composer (ex. "janela de 24h
+  // encerrada" de uma conversa anterior) ao trocar de conversa — nunca
+  // deixa um erro de uma intenção de envio de OUTRO lead vazar para a
+  // conversa recém-aberta. `pendingSends` nunca é limpo aqui de
+  // propósito: cada item já carrega seu próprio leadId e só é
+  // exibido na thread correspondente (ver threadMessagesWithPending
+  // abaixo) — trocar de conversa e voltar preserva o status de um
+  // envio ainda em andamento.
+  useEffect(() => {
+    setComposerNotice(null);
+  }, [selectedLeadId]);
+
+  // Fase 3.5.2.4 — remove do overlay otimista local qualquer intenção
+  // cuja linha autoritativa já tenha chegado (recentMessages é
+  // atualizado via Realtime para TODAS as conversas, nunca só a
+  // selecionada — ver assinatura mais abaixo). mergeOptimisticWithAuthoritative
+  // já evita a duplicação visual mesmo antes desta limpeza; isto só
+  // libera memória, nunca a correção em si.
+  useEffect(() => {
+    setPendingSends((prev) => {
+      if (prev.length === 0) return prev;
+      const knownTokens = new Set(recentMessages.map((m) => m.clientToken).filter((t) => t != null));
+      const next = prev.filter((p) => !knownTokens.has(p.clientToken));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [recentMessages]);
+
+  // Mensagens exibidas na thread aberta: autoritativas (banco/Realtime)
+  // + pendentes otimistas desta MESMA conversa ainda não reconciliadas.
+  // Nunca duplica (mergeOptimisticWithAuthoritative dedup por
+  // clientToken) e nunca mistura pendentes de outra conversa.
+  const threadMessagesWithPending = useMemo(() => {
+    const pendingForThisLead = pendingSends.filter((p) => p.leadId === selectedLeadId);
+    return sortMessagesChronologically(mergeOptimisticWithAuthoritative(threadMessages, pendingForThisLead));
+  }, [threadMessages, pendingSends, selectedLeadId]);
+
+  // Fase 3.5.2.4 — heurística client-side (nunca a autoridade real,
+  // ver computeSendGateStatus) usada só para desabilitar o composer
+  // antecipadamente e mostrar o aviso certo, evitando uma chamada HTTP
+  // claramente fadada ao WINDOW_CLOSED/NO_INBOUND_CONVERSATION.
+  const sendGate = useMemo(
+    () => computeSendGateStatus(threadMessages, new Date()),
+    [threadMessages],
+  );
+
+  // Fase 3.5.2.4 — envia uma mensagem para a conversa SELECIONADA.
+  // Regras de segurança (nunca relaxadas aqui): só chama
+  // invokeWhatsappSend com {leadId, content, clientToken} — nunca
+  // telefone/conta/userId no payload (a Edge Function resolve tudo a
+  // partir do JWT da sessão); um clientToken NOVO é gerado só nesta
+  // função, uma vez por clique explícito — nunca regenerado
+  // silenciosamente para repetir uma tentativa anterior. `composerSending`
+  // bloqueia qualquer nova chamada enquanto uma está em voo (prevenção
+  // de duplo clique, requisito 8) — nunca duas chamadas concorrentes
+  // para a mesma conversa.
+  const sendMessage = useCallback(async (content) => {
+    if (!selectedLeadId || !userId) return;
+    if (composerSending) return;
+    const trimmed = typeof content === 'string' ? content.trim() : '';
+    if (trimmed.length === 0) return;
+
+    const gate = computeSendGateStatus(threadMessages, new Date());
+    if (!gate.canSend) {
+      setComposerNotice({ kind: gate.reason, windowExpiresAt: gate.windowExpiresAt });
+      return;
+    }
+
+    const leadId = selectedLeadId;
+    const clientToken = generateClientToken();
+    const optimistic = buildOptimisticMessage({ leadId, userId, content: trimmed, clientToken });
+
+    setComposerNotice(null);
+    setComposerSending(true);
+    setPendingSends((prev) => [...prev, optimistic]);
+
+    try {
+      const result = await invokeWhatsappSend(supabase, { leadId, content: trimmed, clientToken });
+      const classified = classifySendOutcome(result);
+      const bubbleStatus = statusForOutcomeKind(classified.kind);
+
+      if (bubbleStatus) {
+        // Uma linha real existe no banco (messageId presente) — nunca
+        // removida aqui; a troca pela linha autoritativa acontece
+        // sozinha quando o Realtime a entregar (ver efeito acima).
+        // NUNCA marcado como 'delivered'/'read' aqui — só a confirmação
+        // de aceite da Meta ('sent') ou estados de incerteza/falha.
+        setPendingSends((prev) => prev.map((p) => (
+          p.clientToken === clientToken
+            ? { ...p, status: bubbleStatus, errorCode: classified.errorCode ?? null }
+            : p
+        )));
+      } else {
+        // Nenhuma linha foi criada — nunca deixa uma bolha "fantasma"
+        // para uma intenção que não chegou a existir no banco.
+        setPendingSends((prev) => prev.filter((p) => p.clientToken !== clientToken));
+      }
+      if (classified.kind !== 'accepted') {
+        setComposerNotice({ kind: classified.kind, windowExpiresAt: classified.windowExpiresAt ?? null });
+      }
+    } finally {
+      setComposerSending(false);
+    }
+  }, [selectedLeadId, userId, composerSending, threadMessages]);
+
   // Fase 3.5.1 — correção do finding HIGH "paginação com timestamps
   // iguais": o cursor agora é o PAR (occurred_at, id) da mensagem mais
   // antiga já carregada — nunca só occurred_at (ver db.js para o
@@ -263,13 +386,19 @@ export function useWhatsAppInbox(userId) {
     selectedLead,
     selectConversation,
 
-    threadMessages,
+    threadMessages: threadMessagesWithPending,
     threadLoading,
     threadError,
     retryThread,
     hasMoreOlderMessages,
     loadingOlderMessages,
     loadOlderMessages,
+
+    // Fase 3.5.2.4 — Interface de envio.
+    sendMessage,
+    composerSending,
+    composerNotice,
+    sendGate,
 
     leads,
   };

@@ -33,6 +33,7 @@ function row(overrides = {}) {
     delivered_at: null,
     read_at: null,
     created_at: '2026-01-01T12:00:01.000Z',
+    client_token: null,
     ...overrides,
   };
 }
@@ -59,7 +60,13 @@ describe('whatsappMessageFromRow', () => {
       deliveredAt: null,
       readAt: null,
       createdAt: '2026-01-01T12:00:01.000Z',
+      clientToken: null,
     });
+  });
+
+  test('expõe client_token (coluna da migration 020) mapeado para clientToken', () => {
+    const mapped = whatsappMessageFromRow(row({ client_token: 'tok-1', direction: 'outbound' }));
+    expect(mapped.clientToken).toBe('tok-1');
   });
 });
 

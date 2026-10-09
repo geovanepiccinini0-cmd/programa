@@ -6,14 +6,15 @@ import WhatsAppConversationList from './WhatsAppConversationList.jsx';
 import WhatsAppConversationThread from './WhatsAppConversationThread.jsx';
 import LeadModal from './LeadModal.jsx';
 
-// Fase 3.5.1 — Caixa de entrada WhatsApp (página "Conversas"),
-// SOMENTE LEITURA das mensagens já persistidas em
-// public.whatsapp_messages (migrations 018/019, já homologadas em
-// produção). Nenhum envio, template, automação ou alteração de status
-// é implementado aqui — ver banner "somente leitura" no cabeçalho da
-// thread. Self-contido (mesmo padrão de MetricasView.jsx): busca os
-// próprios dados via useWhatsAppInbox, nunca entrelaçado com
-// useAppState.js — minimiza o raio de alteração desta fase.
+// Fase 3.5.1 (leitura) + 3.5.2.4 (envio) — Caixa de entrada WhatsApp
+// (página "Conversas"). Lê public.whatsapp_messages (migrations
+// 018/019) e agora também envia, exclusivamente através da Edge
+// Function `whatsapp-send` (useWhatsAppInbox.sendMessage ->
+// src/lib/whatsappSend.js) — nenhuma escrita direta em
+// whatsapp_messages pelo navegador (RLS continua só SELECT para
+// dono/admin). Self-contido (mesmo padrão de MetricasView.jsx): busca
+// os próprios dados via useWhatsAppInbox, nunca entrelaçado com
+// useAppState.js.
 //
 // "Ver lead" reabre exatamente o mesmo LeadModal/leadsApi já usados em
 // todo o resto do CRM (FunilView, HojeView, MetricasView) — mesma RLS,
@@ -25,6 +26,7 @@ export default function WhatsAppInboxView({ userId }) {
     selectedLeadId, selectedLead, selectConversation,
     threadMessages, threadLoading, threadError, retryThread,
     hasMoreOlderMessages, loadingOlderMessages, loadOlderMessages,
+    sendMessage, composerSending, composerNotice, sendGate,
   } = useWhatsAppInbox(userId);
 
   const [editingLead, setEditingLead] = useState(null);
@@ -67,6 +69,10 @@ export default function WhatsAppInboxView({ userId }) {
             onLoadOlder={loadOlderMessages}
             onOpenLead={handleOpenLead}
             onBack={() => selectConversation(null)}
+            onSend={sendMessage}
+            sending={composerSending}
+            composerNotice={composerNotice}
+            sendGate={sendGate}
           />
         </div>
       </div>
