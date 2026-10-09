@@ -273,6 +273,12 @@ describe('applyWhatsappOutboundStatusEvent', () => {
     expect(result).toEqual({ outcome: 'IGNORED_OUT_OF_ORDER_OR_DUPLICATE', messageId: 'msg-1' });
   });
 
+  test('IGNORED_LATE_FAILURE_PROTECTED_DELIVERY -> mapeia messageId (correção pós-auditoria, Finding #1)', async () => {
+    const client = makeFakeClient(async () => ({ data: [{ outcome: 'IGNORED_LATE_FAILURE_PROTECTED_DELIVERY', message_id: 'msg-1' }], error: null }));
+    const result = await applyWhatsappOutboundStatusEvent({ ...VALID_STATUS_EVENT_INPUT, newStatus: 'failed', errorCode: '131052' }, client);
+    expect(result).toEqual({ outcome: 'IGNORED_LATE_FAILURE_PROTECTED_DELIVERY', messageId: 'msg-1' });
+  });
+
   test('integrationAccountId vazio -> lanca antes de chamar o client', async () => {
     const client = makeFakeClient(async () => ({ data: [], error: null }));
     await expect(applyWhatsappOutboundStatusEvent({ ...VALID_STATUS_EVENT_INPUT, integrationAccountId: '' }, client)).rejects.toThrow(TypeError);

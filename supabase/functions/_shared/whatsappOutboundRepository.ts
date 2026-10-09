@@ -109,6 +109,13 @@ export interface ApplyOutboundStatusEventInput {
 export type ApplyOutboundStatusEventResult =
   | { outcome: 'APPLIED'; messageId: string }
   | { outcome: 'IGNORED_OUT_OF_ORDER_OR_DUPLICATE'; messageId: string }
+  // Correção pós-auditoria (Finding #1) — 'failed' tardio bloqueado
+  // por 'delivered'/'read' já comprovados. Nunca aplicado, nunca
+  // descartado em silêncio: a RPC grava uma anomalia auditável
+  // (whatsapp_outbound_status_anomalies). Distinto de
+  // IGNORED_OUT_OF_ORDER_OR_DUPLICATE para permitir observabilidade
+  // específica deste caso.
+  | { outcome: 'IGNORED_LATE_FAILURE_PROTECTED_DELIVERY'; messageId: string }
   | { outcome: 'PENDING_WAMID'; messageId: null }
   | { outcome: 'ACCOUNT_MISMATCH'; messageId: null }
   | { outcome: 'REPOSITORY_ERROR'; error: unknown };
@@ -351,7 +358,11 @@ export async function applyWhatsappOutboundStatusEvent(
     }
 
     const outcome = row.outcome;
-    if (outcome === 'APPLIED' || outcome === 'IGNORED_OUT_OF_ORDER_OR_DUPLICATE') {
+    if (
+      outcome === 'APPLIED'
+      || outcome === 'IGNORED_OUT_OF_ORDER_OR_DUPLICATE'
+      || outcome === 'IGNORED_LATE_FAILURE_PROTECTED_DELIVERY'
+    ) {
       return { outcome, messageId: row.message_id as string };
     }
     if (outcome === 'PENDING_WAMID' || outcome === 'ACCOUNT_MISMATCH') {

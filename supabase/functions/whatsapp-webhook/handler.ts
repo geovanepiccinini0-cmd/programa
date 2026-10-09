@@ -418,9 +418,13 @@ async function processSingleStatusEvent(
     // nunca vai se resolver sozinho.
     return 'non_retryable_failure';
   }
-  // APPLIED / IGNORED_OUT_OF_ORDER_OR_DUPLICATE / PENDING_WAMID — os
-  // três são sucesso do PONTO DE VISTA DO WEBHOOK (o evento foi
-  // corretamente processado ou corretamente estagiado, nunca perdido).
+  // APPLIED / IGNORED_OUT_OF_ORDER_OR_DUPLICATE / PENDING_WAMID /
+  // IGNORED_LATE_FAILURE_PROTECTED_DELIVERY (correção pós-auditoria,
+  // Finding #1 — 'failed' tardio bloqueado por 'delivered'/'read' já
+  // comprovados e auditado pela RPC) — todos são sucesso do PONTO DE
+  // VISTA DO WEBHOOK (o evento foi corretamente processado,
+  // corretamente estagiado, ou corretamente recusado e auditado;
+  // nunca perdido).
   return 'handled';
 }
 

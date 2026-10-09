@@ -51,6 +51,20 @@ alter table public.whatsapp_outbound_status_events
 create index if not exists whatsapp_outbound_status_events_account_idx
   on public.whatsapp_outbound_status_events (integration_account_id);
 
+-- CORREÇÃO (Finding #3 da auditoria adversarial) — deduplicação
+-- idempotente de eventos antecipados/desconhecidos: um evento
+-- EXATAMENTE igual (mesma conta, mesmo wamid, mesmo status, mesmo
+-- timestamp original do evento e mesmo error_code) nunca gera uma
+-- segunda linha de staging — reentregas idênticas da Meta (comuns no
+-- protocolo de webhooks, que usa "at-least-once") não crescem a
+-- tabela sem limite. Eventos tecnicamente DIFERENTES (timestamp
+-- diferente, status diferente ou error_code diferente) continuam
+-- gerando linhas distintas — nunca descartados.
+create unique index if not exists whatsapp_outbound_status_events_dedup_idx
+  on public.whatsapp_outbound_status_events (
+    integration_account_id, external_message_id, new_status, event_timestamp, (coalesce(error_code, ''))
+  );
+
 do $$
 begin
   if exists (select 1 from pg_constraint where conname = 'whatsapp_outbound_status_events_new_status_check') then
@@ -68,6 +82,78 @@ comment on column public.whatsapp_outbound_status_events.error_code is
   'Fase 3.5.2.3 — código de erro da Meta para um evento new_status=failed pendente de reconciliação. NUNCA conteúdo de mensagem, NUNCA token.';
 
 -- Rollback deste bloco: "alter table public.whatsapp_outbound_status_events drop constraint if exists whatsapp_outbound_status_events_new_status_check; alter table public.whatsapp_outbound_status_events add constraint whatsapp_outbound_status_events_new_status_check check (new_status in ('delivered','read','failed')); alter table public.whatsapp_outbound_status_events drop column if exists integration_account_id; alter table public.whatsapp_outbound_status_events drop column if exists error_code;" (só seguro se nenhuma linha tiver new_status='sent' no momento do rollback).
+
+-------------------------------------------------------------------
+-- A2) CORREÇÃO (Finding #2 da auditoria adversarial) —
+-- whatsapp_outbound_status_anomalies: antes desta correção,
+-- ACCOUNT_MISMATCH era recusado mas não deixava rastro algum —
+-- impossível investigar depois do fato. Esta tabela append-only
+-- registra ACCOUNT_MISMATCH e também LATE_FAILURE_AFTER_DELIVERY
+-- (Finding #1 — um 'failed' tardio bloqueado por entrega/leitura já
+-- comprovada). Nunca token, nunca conteúdo de mensagem, nunca
+-- telefone — só identificadores técnicos (ids de conta, wamid,
+-- status). RLS habilitado SEM nenhuma policy: anon/authenticated
+-- nunca leem nem escrevem; só service_role (que ignora RLS por
+-- padrão do Postgres) tem acesso, via GRANT explícito.
+-------------------------------------------------------------------
+create table if not exists public.whatsapp_outbound_status_anomalies (
+  id uuid primary key default gen_random_uuid(),
+  anomaly_type text not null check (anomaly_type in ('ACCOUNT_MISMATCH', 'LATE_FAILURE_AFTER_DELIVERY')),
+  reporting_integration_account_id uuid references public.integration_accounts(id) on delete set null,
+  message_integration_account_id uuid references public.integration_accounts(id) on delete set null,
+  external_message_id text not null,
+  attempted_status text not null,
+  current_status text,
+  error_code text,
+  event_timestamp timestamptz not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists whatsapp_outbound_status_anomalies_wamid_idx
+  on public.whatsapp_outbound_status_anomalies (external_message_id);
+
+comment on table public.whatsapp_outbound_status_anomalies is
+  'Fase 3.5.2.3 (correção pós-auditoria) — auditoria append-only de anomalias de status outbound (conta incorreta reportando evento, ou falha tardia bloqueada por entrega/leitura já comprovada). Nunca token, nunca conteúdo de mensagem, nunca telefone. Só service_role lê/escreve. Nunca altera a mensagem legítima, nunca cria associação especulativa.';
+
+alter table public.whatsapp_outbound_status_anomalies enable row level security;
+
+revoke all on public.whatsapp_outbound_status_anomalies from public;
+revoke all on public.whatsapp_outbound_status_anomalies from anon;
+revoke all on public.whatsapp_outbound_status_anomalies from authenticated;
+grant select, insert on public.whatsapp_outbound_status_anomalies to service_role;
+
+create or replace function public.log_whatsapp_outbound_status_anomaly(
+  p_anomaly_type text,
+  p_reporting_account_id uuid,
+  p_message_account_id uuid,
+  p_external_message_id text,
+  p_attempted_status text,
+  p_current_status text,
+  p_error_code text,
+  p_event_timestamp timestamptz
+)
+returns void
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  insert into public.whatsapp_outbound_status_anomalies (
+    anomaly_type, reporting_integration_account_id, message_integration_account_id,
+    external_message_id, attempted_status, current_status, error_code, event_timestamp
+  ) values (
+    p_anomaly_type, p_reporting_account_id, p_message_account_id,
+    p_external_message_id, p_attempted_status, p_current_status, p_error_code, p_event_timestamp
+  );
+end;
+$$;
+
+revoke all on function public.log_whatsapp_outbound_status_anomaly(text, uuid, uuid, text, text, text, text, timestamptz) from public;
+revoke all on function public.log_whatsapp_outbound_status_anomaly(text, uuid, uuid, text, text, text, text, timestamptz) from anon;
+revoke all on function public.log_whatsapp_outbound_status_anomaly(text, uuid, uuid, text, text, text, text, timestamptz) from authenticated;
+grant execute on function public.log_whatsapp_outbound_status_anomaly(text, uuid, uuid, text, text, text, text, timestamptz) to service_role;
+
+-- Rollback deste bloco: "drop function if exists public.log_whatsapp_outbound_status_anomaly(text, uuid, uuid, text, text, text, text, timestamptz); drop table if exists public.whatsapp_outbound_status_anomalies;"
 
 -------------------------------------------------------------------
 -- B) apply_whatsapp_outbound_status_event — CREATE OR REPLACE. Novo
@@ -142,10 +228,35 @@ begin
     -- recusado, nunca aplicado, nunca uma segunda tentativa de
     -- adivinhar a conta certa.
     if v_message_account_id is distinct from p_integration_account_id then
+      -- CORREÇÃO (Finding #2) — antes recusado em silêncio; agora
+      -- auditado (sem dados sensíveis), sem alterar a mensagem
+      -- legítima e sem associação especulativa.
+      perform public.log_whatsapp_outbound_status_anomaly(
+        'ACCOUNT_MISMATCH', p_integration_account_id, v_message_account_id,
+        p_external_message_id, p_new_status, v_message_status, p_error_code, p_event_timestamp
+      );
       return query select 'ACCOUNT_MISMATCH'::text, null::uuid;
       return;
     end if;
 
+    -- CORREÇÃO (Finding #1 — regressão de status) — política de
+    -- transição documentada:
+    --   sent -> delivered -> read: progressão normal, sempre válida.
+    --   failed só é aceito partindo de 'sent' (nenhuma evidência de
+    --     entrega ainda existe). Uma vez 'delivered' ou 'read'
+    --     comprovados, um 'failed' tardio/fora de ordem (reordenação
+    --     de webhooks da Meta é um comportamento real e documentado)
+    --     NUNCA os sobrescreve — evidência positiva de entrega/leitura
+    --     é tratada como mais confiável que um evento de falha
+    --     posterior, e nunca é descartada silenciosamente (ver
+    --     log_whatsapp_outbound_status_anomaly abaixo).
+    --   delivered/read SÃO aceitos partindo de 'failed' — um 'failed'
+    --     marcado anteriormente pode ser corrigido por uma entrega/
+    --     leitura comprovada depois (ex.: falha reportada antes de uma
+    --     reentrega bem-sucedida, ou reordenação do próprio webhook).
+    --     Esta é a política conservadora: nunca descarta a evidência
+    --     POSITIVA mais forte disponível. error_code é limpo nesse
+    --     caso (deixaria de refletir o estado atual da mensagem).
     v_allowed_from := case p_new_status
       -- 'sent': por construção, toda linha com external_message_id já
       -- preenchido está, no mínimo, em 'sent' (confirm_whatsapp_outbound_sent
@@ -154,9 +265,9 @@ begin
       -- linha é SEMPRE um duplicado/fora de ordem, nunca uma transição
       -- nova.
       when 'sent' then array[]::text[]
-      when 'delivered' then array['sent']
-      when 'read' then array['sent', 'delivered']
-      when 'failed' then array['sent', 'delivered']
+      when 'delivered' then array['sent', 'failed']
+      when 'read' then array['sent', 'delivered', 'failed']
+      when 'failed' then array['sent']
       else array[]::text[]
     end;
 
@@ -165,10 +276,25 @@ begin
       set status = p_new_status,
           delivered_at = case when p_new_status = 'delivered' then coalesce(delivered_at, p_event_timestamp) else delivered_at end,
           read_at = case when p_new_status = 'read' then coalesce(read_at, p_event_timestamp) else read_at end,
-          error_code = case when p_new_status = 'failed' then p_error_code else error_code end
+          error_code = case
+            when p_new_status = 'failed' then p_error_code
+            when p_new_status in ('delivered', 'read') then null
+            else error_code
+          end
       where id = v_id;
 
       return query select 'APPLIED'::text, v_id;
+      return;
+    end if;
+
+    if p_new_status = 'failed' and v_message_status in ('delivered', 'read') then
+      -- CORREÇÃO (Finding #1) — bloqueado propositalmente (ver
+      -- política acima). Nunca descartado em silêncio: auditado.
+      perform public.log_whatsapp_outbound_status_anomaly(
+        'LATE_FAILURE_AFTER_DELIVERY', p_integration_account_id, v_message_account_id,
+        p_external_message_id, p_new_status, v_message_status, p_error_code, p_event_timestamp
+      );
+      return query select 'IGNORED_LATE_FAILURE_PROTECTED_DELIVERY'::text, v_id;
       return;
     end if;
 
@@ -186,12 +312,18 @@ begin
   -- "eventos antecipados"). Persiste em staging, JUNTO com a conta que
   -- reportou e o error_code (se houver) — nunca descarta, nunca
   -- associa especulativamente a nenhuma mensagem existente.
+  -- CORREÇÃO (Finding #3) — deduplicação idempotente: um evento
+  -- EXATAMENTE igual a um já estagiado (mesma conta, wamid, status,
+  -- timestamp e error_code) não gera uma segunda linha. Eventos
+  -- tecnicamente distintos continuam sendo preservados normalmente.
   insert into public.whatsapp_outbound_status_events (
     external_message_id, new_status, event_timestamp, integration_account_id, error_code
   )
   values (
     p_external_message_id, p_new_status, p_event_timestamp, p_integration_account_id, p_error_code
-  );
+  )
+  on conflict (integration_account_id, external_message_id, new_status, event_timestamp, (coalesce(error_code, '')))
+  do nothing;
 
   return query select 'PENDING_WAMID'::text, null::uuid;
   return;
@@ -199,7 +331,7 @@ end;
 $$;
 
 comment on function public.apply_whatsapp_outbound_status_event(text, text, timestamptz, uuid, text) is
-  'Fase 3.5.2.1 (base) + 3.5.2.3 (suporte a sent, validação de conta via ACCOUNT_MISMATCH, error_code preservado para failed) — aplica um evento de status outbound vindo do webhook Meta já autenticado. Chamável só por service_role.';
+  'Fase 3.5.2.1 (base) + 3.5.2.3 (suporte a sent, validação de conta via ACCOUNT_MISMATCH auditado, error_code preservado para failed, dedup idempotente de staging) + correção pós-auditoria (failed nunca regride delivered/read; delivered/read podem corrigir um failed anterior) — aplica um evento de status outbound vindo do webhook Meta já autenticado. Chamável só por service_role.';
 
 revoke all on function public.apply_whatsapp_outbound_status_event(text, text, timestamptz, uuid, text) from public;
 revoke all on function public.apply_whatsapp_outbound_status_event(text, text, timestamptz, uuid, text) from anon;
@@ -340,20 +472,41 @@ begin
       and integration_account_id = v_integration_account_id
     order by event_timestamp asc
   loop
-    update public.whatsapp_messages
-    set status = v_pending.new_status,
-        delivered_at = case when v_pending.new_status = 'delivered' then coalesce(delivered_at, v_pending.event_timestamp) else delivered_at end,
-        read_at = case when v_pending.new_status = 'read' then coalesce(read_at, v_pending.event_timestamp) else read_at end,
-        error_code = case when v_pending.new_status = 'failed' then v_pending.error_code else error_code end
-    where id = p_message_id
-      and status = any(
-        case v_pending.new_status
-          when 'delivered' then array['sent']
-          when 'read' then array['sent', 'delivered']
-          when 'failed' then array['sent', 'delivered']
-          else array[]::text[]
-        end
+    -- CORREÇÃO (Finding #1) — mesma política de transição do caminho
+    -- direto (apply_whatsapp_outbound_status_event), aplicada também
+    -- na reconciliação de eventos antecipados: lê o status ATUAL
+    -- (pode já ter sido alterado por uma iteração anterior deste
+    -- mesmo loop) antes de decidir.
+    select wm.status into v_status from public.whatsapp_messages wm where wm.id = p_message_id;
+
+    if v_pending.new_status = 'failed' and v_status in ('delivered', 'read') then
+      -- Bloqueado propositalmente — nunca descartado em silêncio: a
+      -- linha de staging é marcada processada (decisão tomada) e a
+      -- anomalia é auditada.
+      perform public.log_whatsapp_outbound_status_anomaly(
+        'LATE_FAILURE_AFTER_DELIVERY', v_integration_account_id, v_integration_account_id,
+        p_external_message_id, v_pending.new_status, v_status, v_pending.error_code, v_pending.event_timestamp
       );
+    else
+      update public.whatsapp_messages
+      set status = v_pending.new_status,
+          delivered_at = case when v_pending.new_status = 'delivered' then coalesce(delivered_at, v_pending.event_timestamp) else delivered_at end,
+          read_at = case when v_pending.new_status = 'read' then coalesce(read_at, v_pending.event_timestamp) else read_at end,
+          error_code = case
+            when v_pending.new_status = 'failed' then v_pending.error_code
+            when v_pending.new_status in ('delivered', 'read') then null
+            else error_code
+          end
+      where id = p_message_id
+        and status = any(
+          case v_pending.new_status
+            when 'delivered' then array['sent', 'failed']
+            when 'read' then array['sent', 'delivered', 'failed']
+            when 'failed' then array['sent']
+            else array[]::text[]
+          end
+        );
+    end if;
 
     update public.whatsapp_outbound_status_events
     set processed_at = now(), whatsapp_message_id = p_message_id
@@ -366,7 +519,7 @@ end;
 $$;
 
 comment on function public.confirm_whatsapp_outbound_sent(uuid, text) is
-  'Fase 3.5.2.1 (base) + 3.5.2.2 + 3.5.2.3 (reconciliação de eventos pendentes escopada também por integration_account_id, nunca aplica um evento estagiado de outra conta) — confirma atomicamente o aceite da Meta para uma tentativa de envio outbound.';
+  'Fase 3.5.2.1 (base) + 3.5.2.2 + 3.5.2.3 (reconciliação escopada por integration_account_id) + correção pós-auditoria (mesma política de transição do caminho direto: failed nunca regride delivered/read, auditado quando bloqueado) — confirma atomicamente o aceite da Meta para uma tentativa de envio outbound.';
 
 revoke all on function public.confirm_whatsapp_outbound_sent(uuid, text) from public;
 revoke all on function public.confirm_whatsapp_outbound_sent(uuid, text) from anon;
