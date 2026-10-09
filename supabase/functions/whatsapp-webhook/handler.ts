@@ -54,6 +54,7 @@ import {
   applyWhatsappOutboundStatusEvent,
   type OutboundStatusEventStatus,
 } from '../_shared/whatsappOutboundRepository.ts';
+import { applyConversationOperationalEvent } from '../_shared/whatsappConversationStateRepository.ts';
 
 // ===========================================================================
 // CONTRATO HTTP MÍNIMO — nunca o Request/Response real do Deno. index.ts
@@ -255,6 +256,21 @@ function classifyEngineResult(result: EngineResult): EventOutcomeCategory {
 // 017 protege 'failed' com resíduo).
 const DUPLICATE_TERMINAL_STATUSES = new Set(['processed', 'ignored', 'processing']);
 
+// Fase 3.6.2 (correção pós-revisão do PR #68) — `event.occurredAt` é
+// `unknown` no contrato público de CanonicalInboundEvent (seção 7 do
+// Engine), mas já foi validado como timestamp real pelo parser antes
+// de chegar aqui (parseWhatsAppWebhookPayload nunca empurra uma
+// mensagem sem occurredAt válido). Narrowing defensivo aqui, nunca
+// confiando em cast — um valor inesperado cai no fallback `now()`
+// (nunca lança, nunca bloqueia o ACK do webhook por causa de um eixo
+// secundário).
+function resolveEventTimestampForOperationalState(occurredAt: unknown, now: () => Date): string {
+  if (typeof occurredAt === 'string' && occurredAt.trim().length > 0 && !Number.isNaN(new Date(occurredAt).getTime())) {
+    return occurredAt;
+  }
+  return now().toISOString();
+}
+
 async function processSingleCanonicalEvent(
   event: CanonicalInboundEvent,
   client: WhatsappWebhookServiceClient,
@@ -308,6 +324,29 @@ async function processSingleCanonicalEvent(
     engineResult = await processInboundEvent(persistedEvent.id, event, engineDeps);
   } catch {
     return 'retryable_failure';
+  }
+
+  if (engineResult.status === 'PROCESSED') {
+    // Fase 3.6.2 — estado OPERACIONAL (nunca o status de entrega da
+    // Meta): melhor esforço, SEMPRE depois da mensagem já persistida
+    // com sucesso. Uma falha aqui NUNCA altera o outcome do webhook
+    // (o ACK para a Meta é decidido só por classifyEngineResult,
+    // abaixo) — este eixo é secundário, nunca a fonte de verdade de
+    // recebimento.
+    //
+    // Correção pós-revisão do PR #68: eventTimestamp é SEMPRE o
+    // occurredAt REAL da mensagem (nunca `now()`) — é o que permite a
+    // RPC recusar uma reentrega/processamento atrasado fora de ordem
+    // (migration 024, seção D) sem depender de quando o webhook foi
+    // efetivamente processado.
+    try {
+      await applyConversationOperationalEvent(
+        { leadId: engineResult.leadId, eventType: 'inbound_received', eventTimestamp: resolveEventTimestampForOperationalState(event.occurredAt, now) },
+        client,
+      );
+    } catch {
+      // nunca propaga — ver comentário acima.
+    }
   }
 
   return classifyEngineResult(engineResult);

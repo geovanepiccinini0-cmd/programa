@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabaseClient.js';
-import { leadsApi, whatsappMessagesApi } from '../lib/db.js';
+import { leadsApi, whatsappMessagesApi, conversationStateApi } from '../lib/db.js';
 import { applyRealtimeChange } from './useAppState.js';
 import {
   buildConversationSummaries,
@@ -205,6 +205,57 @@ export function useWhatsAppInbox(userId) {
   const selectConversation = useCallback((leadId) => {
     setSelectedLeadId(leadId);
   }, []);
+
+  // Fase 3.6.2 — estado OPERACIONAL de atendimento (nunca confundido
+  // com status de entrega da Meta, ver conversationOperationalState.js).
+  // Carregado/atualizado só para a conversa SELECIONADA — nunca para
+  // toda a lista (evita N consultas/subscrições simultâneas). `null`
+  // é um valor legítimo (conversa ainda sem nenhum evento automático
+  // registrado — tratado pela UI como "pendente_resposta" implícito
+  // via conversationOperationalStateLabel).
+  const [conversationState, setConversationState] = useState(null);
+
+  useEffect(() => {
+    if (!selectedLeadId) {
+      setConversationState(null);
+      return undefined;
+    }
+    let cancelled = false;
+    conversationStateApi.fetchForLead(selectedLeadId)
+      .then((state) => { if (!cancelled) setConversationState(state); })
+      .catch(() => { if (!cancelled) setConversationState(null); });
+    return () => { cancelled = true; };
+  }, [selectedLeadId]);
+
+  // Realtime escopado só à conversa aberta (filtro server-side por
+  // lead_id) — canal PRÓPRIO e isolado do canal principal de
+  // whatsapp_messages/leads (nunca reaproveita/alarga aquele, que já
+  // está aprovado e testado para seu próprio escopo). Refeito a cada
+  // troca de conversa.
+  useEffect(() => {
+    if (!selectedLeadId) return undefined;
+    const channel = supabase
+      .channel(`crm-piccinini-conversation-state-${selectedLeadId}`)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'whatsapp_conversation_state', filter: `lead_id=eq.${selectedLeadId}`,
+      }, (payload) => {
+        setConversationState(conversationStateApi.fromRow(payload.new || null));
+      })
+      .subscribe();
+    return () => supabase.removeChannel(channel);
+  }, [selectedLeadId]);
+
+  // Alteração manual (requisito explícito da Fase 3.6.2) — UPDATE/
+  // upsert direto via RLS (dono do lead), nunca uma RPC: as transições
+  // AUTOMÁTICAS (inbound_received/outbound_sent) são exclusivas das
+  // Edge Functions (service_role) — este caminho nunca as reexecuta
+  // nem as substitui, só sobrescreve o status atual por decisão
+  // explícita do usuário.
+  const setConversationStatus = useCallback(async (status) => {
+    if (!selectedLeadId) return;
+    const updated = await conversationStateApi.setStatus(selectedLeadId, status);
+    setConversationState(updated);
+  }, [selectedLeadId]);
 
   // Fase 3.5.1 — correção do finding MEDIUM "retry sem cancelamento":
   // `threadRetryToken` entra na dependência deste efeito — retryThread
@@ -416,6 +467,10 @@ export function useWhatsAppInbox(userId) {
     selectedLeadId,
     selectedLead,
     selectConversation,
+
+    // Fase 3.6.2 — estado operacional (ver bloco acima).
+    conversationState,
+    setConversationStatus,
 
     threadMessages: threadMessagesWithPending,
     threadLoading,

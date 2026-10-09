@@ -154,6 +154,7 @@ input:focus,select:focus,textarea:focus{outline:1px solid var(--blue);}
 .wa-conversation-preview{font-size:12.5px;color:var(--text-dim);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .wa-thread{display:flex;flex-direction:column;height:100%;padding:10px;min-width:0;}
 .wa-thread-header{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:10px;}
+.wa-thread-status-select{flex-shrink:0;font-size:12px;padding:6px 8px;}
 .wa-thread-header-info{flex:1;min-width:0;}
 .wa-thread-nome{font-size:14px;font-weight:700;}
 .wa-thread-back{display:none;}

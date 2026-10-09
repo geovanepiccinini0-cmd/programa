@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { messageDisplayText } from '../lib/whatsappMessages.js';
 import { SEND_ERROR_MESSAGES } from '../lib/whatsappSend.js';
+import { CONVERSATION_OPERATIONAL_STATES } from '../lib/conversationOperationalState.js';
 
 function fmtMessageTime(iso) {
   if (!iso) return '';
@@ -65,6 +66,7 @@ function ComposerNotice({ notice }) {
 export default function WhatsAppConversationThread({
   lead, messages, loading, error, onRetry, hasMoreOlder, loadingOlder, onLoadOlder, onOpenLead, onBack,
   onSend, sending, composerNotice, sendGate,
+  conversationState, onChangeConversationStatus,
 }) {
   const [draft, setDraft] = useState('');
 
@@ -99,6 +101,23 @@ export default function WhatsAppConversationThread({
         <div className="wa-thread-header-info">
           <div className="wa-thread-nome">{lead.nome}</div>
         </div>
+        {/* Fase 3.6.2 — estado OPERACIONAL de atendimento (nunca o
+            status de entrega da Meta). Alteração manual direta — a
+            conversa pode ainda não ter nenhuma linha em
+            whatsapp_conversation_state (nenhuma mensagem trocada
+            desde a migration 024), daí o fallback para
+            'pendente_resposta' via (conversationState?.status ||
+            'pendente_resposta'). */}
+        <select
+          className="wa-thread-status-select"
+          value={(conversationState && conversationState.status) || 'pendente_resposta'}
+          onChange={(e) => onChangeConversationStatus(e.target.value)}
+          aria-label="Estado de atendimento da conversa"
+        >
+          {CONVERSATION_OPERATIONAL_STATES.map((s) => (
+            <option key={s.value} value={s.value}>{s.label}</option>
+          ))}
+        </select>
         <button type="button" className="btn-ghost" onClick={() => onOpenLead(lead)}>Ver lead</button>
       </div>
 

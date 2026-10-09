@@ -28,6 +28,7 @@ export default function WhatsAppInboxView({ userId }) {
     hasMoreOlderMessages, loadingOlderMessages, loadOlderMessages,
     sendMessage, composerSending, composerNotice, sendGate,
     conversationFilters, setConversationFilters, clearConversationFilters, totalConversationsCount,
+    conversationState, setConversationStatus,
   } = useWhatsAppInbox(userId);
 
   const [editingLead, setEditingLead] = useState(null);
@@ -78,6 +79,8 @@ export default function WhatsAppInboxView({ userId }) {
             sending={composerSending}
             composerNotice={composerNotice}
             sendGate={sendGate}
+            conversationState={conversationState}
+            onChangeConversationStatus={setConversationStatus}
           />
         </div>
       </div>

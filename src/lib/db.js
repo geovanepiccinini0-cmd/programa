@@ -1,6 +1,7 @@
 import { supabase } from './supabaseClient.js';
 import { normalizePhoneIdentity } from './phoneIdentity.js';
 import { whatsappMessageFromRow } from './whatsappMessages.js';
+import { conversationOperationalStateFromRow } from './conversationOperationalState.js';
 
 function leadFromRow(r) {
   return {
@@ -329,6 +330,43 @@ export const whatsappMessagesApi = {
     const { data, error } = await query;
     if (error) throw error;
     return data.map(whatsappMessageFromRow);
+  },
+};
+
+// Fase 3.6.2 — Estados operacionais de atendimento (migration 024).
+// Leitura/escrita SEMPRE com a sessão autenticada do usuário (mesmo
+// client de src/lib/supabaseClient.js, anon key); a segurança real é
+// a RLS de whatsapp_conversation_state (dono do lead pode ler/criar/
+// atualizar; admin lê/atualiza tudo; nunca DELETE). Alteração manual
+// do status é um UPDATE direto permitido pela RLS — nunca uma RPC
+// (as transições AUTOMÁTICAS, essas sim via RPC service_role, vivem
+// exclusivamente nas Edge Functions, nunca aqui).
+export const conversationStateApi = {
+  fromRow: conversationOperationalStateFromRow,
+
+  fetchForLead: async (leadId) => {
+    const { data, error } = await supabase
+      .from('whatsapp_conversation_state')
+      .select('*')
+      .eq('lead_id', leadId)
+      .maybeSingle();
+    if (error) throw error;
+    return conversationOperationalStateFromRow(data);
+  },
+
+  // Upsert manual — cobre tanto o caso "conversa ainda sem nenhum
+  // evento automático registrado" (nenhuma linha existe ainda) quanto
+  // a alteração normal de uma linha já existente. `user_id` nunca é
+  // enviado aqui — o trigger da migration 024 sempre o deriva de
+  // leads.user_id, nunca confia no client.
+  setStatus: async (leadId, status) => {
+    const { data, error } = await supabase
+      .from('whatsapp_conversation_state')
+      .upsert({ lead_id: leadId, status }, { onConflict: 'lead_id' })
+      .select()
+      .maybeSingle();
+    if (error) throw error;
+    return conversationOperationalStateFromRow(data);
   },
 };
 

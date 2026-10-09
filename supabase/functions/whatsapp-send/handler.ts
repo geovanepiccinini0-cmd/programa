@@ -63,6 +63,7 @@ import {
   type WhatsappOutboundServiceClient,
 } from '../_shared/whatsappOutboundRepository.ts';
 import type { GraphSendInput, GraphSendResult } from '../_shared/whatsappGraphSendAdapter.ts';
+import { applyConversationOperationalEvent } from '../_shared/whatsappConversationStateRepository.ts';
 
 // ===========================================================================
 // CONTRATO HTTP MÍNIMO — nunca o Request/Response real do Deno.
@@ -281,6 +282,25 @@ async function sendAndReconcile(
       const confirmResult = await confirmWhatsappOutboundSent({ messageId, externalMessageId }, client);
 
       if (confirmResult.outcome === 'CONFIRMED' || confirmResult.outcome === 'ALREADY_CONFIRMED') {
+        // Fase 3.6.2 — estado OPERACIONAL (nunca o status de entrega
+        // da Meta): melhor esforço, SEMPRE depois do envio já
+        // confirmado. Uma falha aqui NUNCA altera a resposta HTTP do
+        // envio (já decidida abaixo) — este eixo é secundário, nunca
+        // a fonte de verdade de aceite/entrega.
+        // Correção pós-revisão do PR #68: eventTimestamp = agora
+        // (deps.now(), nunca Date.now() direto — mesma fonte injetada
+        // usada no resto do handler) — é o instante real da
+        // confirmação, usado pela RPC para recusar uma confirmação
+        // atrasada que chegue depois de uma mensagem inbound mais
+        // recente (migration 024, seção D).
+        try {
+          await applyConversationOperationalEvent(
+            { leadId: context.leadId, eventType: 'outbound_sent', eventTimestamp: deps.now().toISOString() },
+            client,
+          );
+        } catch {
+          // nunca propaga — ver comentário acima.
+        }
         return respond(200, 'ACCEPTED', {
           messageId,
           externalMessageId,
