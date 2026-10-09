@@ -24,6 +24,11 @@ import {
   invokeWhatsappSend,
   SEND_ERROR_MESSAGES,
 } from '../lib/whatsappSend.js';
+import {
+  EMPTY_CONVERSATION_FILTERS,
+  buildLeadsById,
+  filterConversations,
+} from '../lib/whatsappConversationFilters.js';
 
 // Fase 3.5.1 — Caixa de entrada WhatsApp, SOMENTE LEITURA.
 // Fase 3.5.1 (correção pós-auditoria) — ver comentários inline para
@@ -138,6 +143,26 @@ export function useWhatsAppInbox(userId) {
     () => sortConversationsByRecency(buildConversationSummaries(recentMessages, leadNomeById)),
     [recentMessages, leadNomeById],
   );
+
+  // Fase 3.6.0 — busca/filtros da lista de conversas. Opera
+  // exclusivamente sobre `conversations` (já carregado, já ordenado
+  // por recência) e `leads` (já em memória) — nunca dispara uma nova
+  // consulta ao Supabase, nunca abrange conversas ainda não trazidas
+  // pela paginação (`hasMoreConversationHistory`). Nunca usa
+  // read_at/delivered_at/sent_at (status de entrega da Meta) como
+  // critério — só nome, etapa e tags do LEAD.
+  const [conversationFilters, setConversationFilters] = useState(EMPTY_CONVERSATION_FILTERS);
+
+  const leadsById = useMemo(() => buildLeadsById(leads), [leads]);
+
+  const filteredConversations = useMemo(
+    () => filterConversations(conversations, leadsById, conversationFilters),
+    [conversations, leadsById, conversationFilters],
+  );
+
+  const clearConversationFilters = useCallback(() => {
+    setConversationFilters(EMPTY_CONVERSATION_FILTERS);
+  }, []);
 
   const selectedLead = useMemo(
     () => leads.find((l) => l.id === selectedLeadId) || null,
@@ -375,12 +400,18 @@ export function useWhatsAppInbox(userId) {
   }, [userId, selectedLeadId]);
 
   return {
-    conversations,
+    conversations: filteredConversations,
     conversationsLoading,
     conversationsError,
     refetchConversations,
     hasMoreConversationHistory,
     loadMoreConversationHistory,
+
+    // Fase 3.6.0 — busca/filtros (ver bloco acima).
+    conversationFilters,
+    setConversationFilters,
+    clearConversationFilters,
+    totalConversationsCount: conversations.length,
 
     selectedLeadId,
     selectedLead,
