@@ -287,8 +287,17 @@ async function sendAndReconcile(
         // confirmado. Uma falha aqui NUNCA altera a resposta HTTP do
         // envio (já decidida abaixo) — este eixo é secundário, nunca
         // a fonte de verdade de aceite/entrega.
+        // Correção pós-revisão do PR #68: eventTimestamp = agora
+        // (deps.now(), nunca Date.now() direto — mesma fonte injetada
+        // usada no resto do handler) — é o instante real da
+        // confirmação, usado pela RPC para recusar uma confirmação
+        // atrasada que chegue depois de uma mensagem inbound mais
+        // recente (migration 024, seção D).
         try {
-          await applyConversationOperationalEvent({ leadId: context.leadId, eventType: 'outbound_sent' }, client);
+          await applyConversationOperationalEvent(
+            { leadId: context.leadId, eventType: 'outbound_sent', eventTimestamp: deps.now().toISOString() },
+            client,
+          );
         } catch {
           // nunca propaga — ver comentário acima.
         }

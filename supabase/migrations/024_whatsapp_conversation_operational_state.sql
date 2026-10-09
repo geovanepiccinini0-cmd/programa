@@ -47,6 +47,15 @@ create table if not exists public.whatsapp_conversation_state (
   lead_id uuid primary key references public.leads(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
   status text not null default 'pendente_resposta',
+  -- Correção pós-revisão do PR #68 (achado CONFIRMED: sem nenhuma
+  -- noção de ordem, a RPC automática podia aplicar um evento
+  -- ATRASADO/fora de ordem por cima de um estado mais recente —
+  -- ver seção D). last_event_at é o timestamp do evento (mensagem
+  -- inbound real / confirmação outbound real) que determinou a
+  -- ÚLTIMA transição AUTOMÁTICA aplicada — nunca escrito por uma
+  -- alteração manual (ver seção C/db.js), que nunca inclui esta
+  -- coluna no UPDATE.
+  last_event_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint whatsapp_conversation_state_status_check
@@ -61,6 +70,9 @@ comment on table public.whatsapp_conversation_state is
 
 comment on column public.whatsapp_conversation_state.status is
   'pendente_resposta (cliente enviou, aguardando o CRM) | em_atendimento (definido manualmente — nunca sobrescrito por evento automático, ver apply_whatsapp_conversation_operational_event) | aguardando_cliente (CRM enviou, aguardando o cliente) | concluido (definido manualmente). Alteração manual sempre permitida para qualquer um dos 4 valores, via UPDATE direto (RLS, seção C) — nunca via RPC.';
+
+comment on column public.whatsapp_conversation_state.last_event_at is
+  'Timestamp do evento (mensagem inbound real / confirmação outbound real) que determinou a última transição AUTOMÁTICA — usado pela RPC (seção D) para recusar um evento atrasado/fora de ordem (p_event_timestamp menor que este valor). NUNCA tocado por alteração manual.';
 
 -- Rollback deste bloco: "drop table if exists public.whatsapp_conversation_state cascade;"
 
@@ -161,10 +173,28 @@ grant all on public.whatsapp_conversation_state to service_role;
 -- user_id NUNCA é parâmetro (nunca aceito de fora) — sempre derivado
 -- de leads.user_id, mesmo princípio do trigger da seção B.
 --
--- REGRA DE PRECEDÊNCIA (simples, documentada): 'em_atendimento' é
--- PEGAJOSO — uma vez definido (sempre manualmente, nunca por esta
--- função), nenhum evento automático (inbound_received OU
--- outbound_sent) o sobrescreve. Qualquer OUTRO estado atual
+-- CORREÇÃO (revisão do PR #68 antes da implantação, achado
+-- CONFIRMED): a assinatura original só recebia lead_id/event_type,
+-- sem NENHUMA noção de quando o evento realmente ocorreu. Isso
+-- permitia que um evento ATRASADO ou entregue FORA DE ORDEM (ex.: a
+-- confirmação de um envio outbound demora alguns segundos — timeout/
+-- retry de rede — e só é persistida DEPOIS de uma mensagem inbound
+-- mais recente já ter marcado a conversa como pendente_resposta; a
+-- confirmação atrasada então sobrescreveria isso de volta para
+-- aguardando_cliente, escondendo que o cliente já respondeu) ou uma
+-- REENTREGA genuína da Meta chegando fora de ordem sobrescrevesse
+-- indevidamente um estado mais recente. Novo parâmetro obrigatório
+-- p_event_timestamp (o timestamp REAL do evento — occurredAt da
+-- mensagem inbound, ou o instante da confirmação outbound) +
+-- last_event_at (seção A) resolvem isso: um evento cujo timestamp é
+-- ANTERIOR ao último já aplicado é IGNORADO (nunca aplicado, nunca
+-- um erro — redelivery legítima da Meta sempre recebe ACK).
+--
+-- REGRA DE PRECEDÊNCIA (simples, documentada, verificada SOMENTE
+-- depois da guarda de ordenação acima): 'em_atendimento' é PEGAJOSO —
+-- uma vez definido (sempre manualmente, nunca por esta função),
+-- nenhum evento automático (inbound_received OU outbound_sent) o
+-- sobrescreve. Qualquer OUTRO estado atual
 -- (pendente_resposta/aguardando_cliente/concluido) É sobrescrito pelo
 -- evento automático correspondente — inclusive reabrindo uma
 -- conversa 'concluido' quando chega uma nova mensagem do cliente
@@ -174,7 +204,8 @@ grant all on public.whatsapp_conversation_state to service_role;
 -------------------------------------------------------------------
 create or replace function public.apply_whatsapp_conversation_operational_event(
   p_lead_id uuid,
-  p_event_type text
+  p_event_type text,
+  p_event_timestamp timestamptz
 )
 returns table (status text)
 language plpgsql
@@ -184,6 +215,8 @@ as $$
 declare
   v_user_id uuid;
   v_new_status text;
+  v_current_last_event_at timestamptz;
+  v_row_exists boolean := false;
 begin
   if p_lead_id is null then
     raise exception 'apply_whatsapp_conversation_operational_event: p_lead_id nao pode ser nulo';
@@ -191,10 +224,32 @@ begin
   if p_event_type not in ('inbound_received', 'outbound_sent') then
     raise exception 'apply_whatsapp_conversation_operational_event: p_event_type invalido (%)', p_event_type;
   end if;
+  if p_event_timestamp is null then
+    raise exception 'apply_whatsapp_conversation_operational_event: p_event_timestamp nao pode ser nulo';
+  end if;
 
   select l.user_id into v_user_id from public.leads l where l.id = p_lead_id;
   if v_user_id is null then
     raise exception 'apply_whatsapp_conversation_operational_event: lead % nao encontrado', p_lead_id;
+  end if;
+
+  -- Lock da linha (se existir) ANTES de decidir — fecha a janela de
+  -- concorrência entre duas chamadas simultâneas para o MESMO lead
+  -- (ex. webhook inbound e confirmação outbound processando em
+  -- paralelo): a segunda chamada só lê last_event_at depois que a
+  -- primeira já commitou.
+  select c.last_event_at, true into v_current_last_event_at, v_row_exists
+  from public.whatsapp_conversation_state c
+  where c.lead_id = p_lead_id
+  for update;
+
+  if v_row_exists and v_current_last_event_at is not null and p_event_timestamp < v_current_last_event_at then
+    -- Evento atrasado/fora de ordem — IGNORADO. Nunca sobrescreve um
+    -- estado mais recente, nunca lança (uma reentrega legítima da
+    -- Meta ou uma confirmação atrasada precisam sempre de ACK, nunca
+    -- de um retry storm).
+    return query select c.status from public.whatsapp_conversation_state c where c.lead_id = p_lead_id;
+    return;
   end if;
 
   v_new_status := case p_event_type
@@ -202,25 +257,26 @@ begin
     when 'outbound_sent' then 'aguardando_cliente'
   end;
 
-  insert into public.whatsapp_conversation_state as wcs (lead_id, user_id, status)
-  values (p_lead_id, v_user_id, v_new_status)
+  insert into public.whatsapp_conversation_state as wcs (lead_id, user_id, status, last_event_at)
+  values (p_lead_id, v_user_id, v_new_status, p_event_timestamp)
   on conflict (lead_id) do update
     set status = case
       when wcs.status = 'em_atendimento' then wcs.status
       else excluded.status
-    end;
+    end,
+    last_event_at = excluded.last_event_at;
 
   return query select c.status from public.whatsapp_conversation_state c where c.lead_id = p_lead_id;
   return;
 end;
 $$;
 
-comment on function public.apply_whatsapp_conversation_operational_event(uuid, text) is
-  'Fase 3.6.2 — aplica uma transicao AUTOMATICA de estado operacional (inbound_received->pendente_resposta, outbound_sent->aguardando_cliente). NUNCA sobrescreve em_atendimento (regra de precedencia documentada acima). Chamavel so por service_role, sempre APOS o evento real (mensagem persistida/envio confirmado). NUNCA toca leads.etapa/tags nem whatsapp_messages.';
+comment on function public.apply_whatsapp_conversation_operational_event(uuid, text, timestamptz) is
+  'Fase 3.6.2 (+ correção de ordenação, revisão do PR #68) — aplica uma transicao AUTOMATICA de estado operacional (inbound_received->pendente_resposta, outbound_sent->aguardando_cliente). Um evento cujo p_event_timestamp seja ANTERIOR ao last_event_at ja registrado e IGNORADO (nunca sobrescreve um estado mais recente). NUNCA sobrescreve em_atendimento (regra de precedencia documentada acima). Chamavel so por service_role, sempre APOS o evento real (mensagem persistida/envio confirmado). NUNCA toca leads.etapa/tags nem whatsapp_messages.';
 
-revoke all on function public.apply_whatsapp_conversation_operational_event(uuid, text) from public;
-revoke all on function public.apply_whatsapp_conversation_operational_event(uuid, text) from anon;
-revoke all on function public.apply_whatsapp_conversation_operational_event(uuid, text) from authenticated;
-grant execute on function public.apply_whatsapp_conversation_operational_event(uuid, text) to service_role;
+revoke all on function public.apply_whatsapp_conversation_operational_event(uuid, text, timestamptz) from public;
+revoke all on function public.apply_whatsapp_conversation_operational_event(uuid, text, timestamptz) from anon;
+revoke all on function public.apply_whatsapp_conversation_operational_event(uuid, text, timestamptz) from authenticated;
+grant execute on function public.apply_whatsapp_conversation_operational_event(uuid, text, timestamptz) to service_role;
 
--- Rollback deste bloco: "drop function if exists public.apply_whatsapp_conversation_operational_event(uuid, text);"
+-- Rollback deste bloco: "drop function if exists public.apply_whatsapp_conversation_operational_event(uuid, text, timestamptz);"

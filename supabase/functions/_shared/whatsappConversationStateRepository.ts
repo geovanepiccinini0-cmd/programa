@@ -25,6 +25,13 @@ export type ConversationOperationalEventType = 'inbound_received' | 'outbound_se
 export interface ApplyConversationOperationalEventInput {
   leadId: string;
   eventType: ConversationOperationalEventType;
+  // Correção pós-revisão do PR #68 (achado CONFIRMED: sem isto, um
+  // evento atrasado ou fora de ordem podia sobrescrever um estado
+  // mais recente — ver migration 024, seção D). SEMPRE o timestamp
+  // REAL do evento (occurredAt da mensagem inbound; o instante da
+  // confirmação outbound) — NUNCA "agora" por conveniência quando o
+  // evento em si já tem um timestamp mais preciso disponível.
+  eventTimestamp: string;
 }
 
 export type ApplyConversationOperationalEventResult =
@@ -69,11 +76,15 @@ export async function applyConversationOperationalEvent(
   if (input?.eventType !== 'inbound_received' && input?.eventType !== 'outbound_sent') {
     throw new TypeError('applyConversationOperationalEvent: eventType deve ser inbound_received ou outbound_sent');
   }
+  if (!isNonBlankString(input?.eventTimestamp)) {
+    throw new TypeError('applyConversationOperationalEvent: eventTimestamp deve ser uma string nao vazia');
+  }
 
   try {
     const { data, error } = await client.rpc('apply_whatsapp_conversation_operational_event', {
       p_lead_id: input.leadId,
       p_event_type: input.eventType,
+      p_event_timestamp: input.eventTimestamp,
     });
 
     if (error) return { outcome: 'REPOSITORY_ERROR', error };
