@@ -104,6 +104,25 @@ async function sendGraphMessage(input: GraphSendInput): Promise<GraphSendResult>
   });
 }
 
+// Correção pós-homologação (evidência: OPTIONS -> 405, nenhum POST
+// registrado, falha de conexão no navegador) — CORS. O browser emite
+// um preflight OPTIONS antes de QUALQUER POST autenticado com
+// Authorization/Content-Type cross-origin (este site é servido pelo
+// Netlify, a função pelo domínio *.supabase.co — origens distintas).
+// Sem cabeçalhos CORS em NENHUMA resposta, o preflight nunca passa e o
+// POST real nunca chega a ser enviado pelo navegador — é exatamente o
+// que a evidência mostra (zero POST registrado no Supabase).
+//
+// Cabeçalhos efetivamente enviados pelo client (@supabase/supabase-js
+// via supabase.functions.invoke): Authorization, apikey, x-client-info,
+// Content-Type — mesmo conjunto documentado pelo próprio Supabase para
+// CORS em Edge Functions.
+const CORS_HEADERS: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
+
 async function toHandlerRequest(req: Request): Promise<SendHttpRequest> {
   const rawBody = await req.text();
   return {
@@ -116,11 +135,20 @@ async function toHandlerRequest(req: Request): Promise<SendHttpRequest> {
 function toResponse(result: SendHttpResponse): Response {
   return new Response(result.body, {
     status: result.status,
-    headers: { 'Content-Type': result.contentType },
+    headers: { 'Content-Type': result.contentType, ...CORS_HEADERS },
   });
 }
 
 Deno.serve(async (req: Request) => {
+  // Preflight — NUNCA chega a ler Authorization/corpo, NUNCA chama
+  // handleWhatsappSendRequest (zero JWT exigido, zero reserva de
+  // tentativa, zero acesso ao banco). Só confirma ao navegador que o
+  // POST seguinte é permitido. Resposta vazia (204), só com os
+  // cabeçalhos CORS.
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+
   const handlerRequest = await toHandlerRequest(req);
 
   const response = await handleWhatsappSendRequest(handlerRequest, {
