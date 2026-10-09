@@ -217,28 +217,28 @@ describe('parseWhatsAppWebhookPayload — top-level', () => {
 
   test('entry ausente -> OK, zero messages, zero issues', () => {
     const result = parseWhatsAppWebhookPayload({ object: 'whatsapp_business_account' }, new Date());
-    expect(result).toEqual({ outcome: 'OK', messages: [], issues: [], statusOnly: false });
+    expect(result).toEqual({ outcome: 'OK', messages: [], statusEvents: [], issues: [], statusOnly: false });
   });
 
   test('entry nao-array -> OK, tratado como vazio', () => {
     const result = parseWhatsAppWebhookPayload({ object: 'whatsapp_business_account', entry: 'nao-array' }, new Date());
-    expect(result).toEqual({ outcome: 'OK', messages: [], issues: [], statusOnly: false });
+    expect(result).toEqual({ outcome: 'OK', messages: [], statusEvents: [], issues: [], statusOnly: false });
   });
 
   test('changes ausente -> OK, zero messages', () => {
     const result = parseWhatsAppWebhookPayload({ object: 'whatsapp_business_account', entry: [{ id: 'w1' }] }, new Date());
-    expect(result).toEqual({ outcome: 'OK', messages: [], issues: [], statusOnly: false });
+    expect(result).toEqual({ outcome: 'OK', messages: [], statusEvents: [], issues: [], statusOnly: false });
   });
 
   test('changes nao-array -> OK, tratado como vazio', () => {
     const result = parseWhatsAppWebhookPayload({ object: 'whatsapp_business_account', entry: [{ id: 'w1', changes: 'x' }] }, new Date());
-    expect(result).toEqual({ outcome: 'OK', messages: [], issues: [], statusOnly: false });
+    expect(result).toEqual({ outcome: 'OK', messages: [], statusEvents: [], issues: [], statusOnly: false });
   });
 
   test('change field diferente de messages -> ignorado deterministicamente, zero issue', () => {
     const payload = buildPayload([], { changeField: 'account_update' });
     const result = parseWhatsAppWebhookPayload(payload, new Date());
-    expect(result).toEqual({ outcome: 'OK', messages: [], issues: [], statusOnly: false });
+    expect(result).toEqual({ outcome: 'OK', messages: [], statusEvents: [], issues: [], statusOnly: false });
   });
 });
 
@@ -461,24 +461,144 @@ describe('parseWhatsAppWebhookPayload — mensagens', () => {
 });
 
 describe('parseWhatsAppWebhookPayload — status-only e mixed', () => {
-  test('status-only payload: zero messages, statusOnly=true', () => {
+  test('status-only payload: zero messages, statusOnly=true, status extraido (timestamp ausente cai para receivedAt)', () => {
     const payload = buildPayload([], { statuses: [{ id: 'wamid.status1', status: 'read', recipient_id: '5551992322166' }] });
-    const result = parseWhatsAppWebhookPayload(payload, new Date());
-    expect(result).toEqual({ outcome: 'OK', messages: [], issues: [], statusOnly: true });
+    const now = new Date('2026-01-10T12:00:00.000Z');
+    const result = parseWhatsAppWebhookPayload(payload, now);
+    if (result.outcome !== 'OK') throw new Error('unreachable');
+    expect(result.messages).toEqual([]);
+    expect(result.statusOnly).toBe(true);
+    expect(result.statusEvents).toEqual([{
+      provider: 'whatsapp',
+      externalAccountId: PHONE_NUMBER_ID,
+      externalMessageId: 'wamid.status1',
+      status: 'read',
+      occurredAt: now.toISOString(),
+      errorCode: undefined,
+    }]);
   });
 
-  test('payload vazio (sem messages e sem statuses): statusOnly=false', () => {
+  test('payload vazio (sem messages e sem statuses): statusOnly=false, statusEvents vazio', () => {
     const payload = buildPayload([]);
     const result = parseWhatsAppWebhookPayload(payload, new Date());
-    expect(result).toEqual({ outcome: 'OK', messages: [], issues: [], statusOnly: false });
+    expect(result).toEqual({ outcome: 'OK', messages: [], statusEvents: [], issues: [], statusOnly: false });
   });
 
-  test('mixed: messages + statuses -> messages extraidas, statusOnly=false', () => {
-    const payload = buildPayload([VALID_MESSAGE], { statuses: [{ id: 'wamid.status1', status: 'delivered' }] });
+  test('mixed: messages + statuses -> ambos extraidos, statusOnly=false', () => {
+    const payload = buildPayload([VALID_MESSAGE], { statuses: [{ id: 'wamid.status1', status: 'delivered', timestamp: '1700000100' }] });
     const result = parseWhatsAppWebhookPayload(payload, new Date());
     if (result.outcome !== 'OK') throw new Error('unreachable');
     expect(result.messages).toHaveLength(1);
+    expect(result.statusEvents).toHaveLength(1);
     expect(result.statusOnly).toBe(false);
+  });
+});
+
+describe('parseWhatsAppWebhookPayload — eventos de status outbound (Fase 3.5.2.3)', () => {
+  test('status sent com timestamp valido -> extraido corretamente', () => {
+    const payload = buildPayload([], { statuses: [{ id: 'wamid.OUT1', status: 'sent', timestamp: '1700000200', recipient_id: '5551992322166' }] });
+    const result = parseWhatsAppWebhookPayload(payload, new Date());
+    if (result.outcome !== 'OK') throw new Error('unreachable');
+    expect(result.statusEvents).toEqual([{
+      provider: 'whatsapp',
+      externalAccountId: PHONE_NUMBER_ID,
+      externalMessageId: 'wamid.OUT1',
+      status: 'sent',
+      occurredAt: new Date(1700000200 * 1000).toISOString(),
+      errorCode: undefined,
+    }]);
+  });
+
+  test('status failed com errors[] -> errorCode extraido do primeiro erro', () => {
+    const payload = buildPayload([], {
+      statuses: [{
+        id: 'wamid.OUT2',
+        status: 'failed',
+        timestamp: '1700000300',
+        errors: [{ code: 131026, title: 'Message undeliverable' }],
+      }],
+    });
+    const result = parseWhatsAppWebhookPayload(payload, new Date());
+    if (result.outcome !== 'OK') throw new Error('unreachable');
+    expect(result.statusEvents[0].errorCode).toBe('131026');
+  });
+
+  test('status failed SEM errors[] -> errorCode undefined, nunca inventado', () => {
+    const payload = buildPayload([], { statuses: [{ id: 'wamid.OUT3', status: 'failed', timestamp: '1700000300' }] });
+    const result = parseWhatsAppWebhookPayload(payload, new Date());
+    if (result.outcome !== 'OK') throw new Error('unreachable');
+    expect(result.statusEvents[0].errorCode).toBeUndefined();
+  });
+
+  test('multiplos status no mesmo payload (item obrigatorio) -> todos extraidos, em ordem', () => {
+    const payload = buildPayload([], {
+      statuses: [
+        { id: 'wamid.M1', status: 'sent', timestamp: '1700000100' },
+        { id: 'wamid.M2', status: 'delivered', timestamp: '1700000200' },
+        { id: 'wamid.M3', status: 'read', timestamp: '1700000300' },
+      ],
+    });
+    const result = parseWhatsAppWebhookPayload(payload, new Date());
+    if (result.outcome !== 'OK') throw new Error('unreachable');
+    expect(result.statusEvents.map((e) => [e.externalMessageId, e.status])).toEqual([
+      ['wamid.M1', 'sent'],
+      ['wamid.M2', 'delivered'],
+      ['wamid.M3', 'read'],
+    ]);
+  });
+
+  test('status entry nao-objeto -> issue invalid_status_entry, nunca lanca', () => {
+    const payload = buildPayload([], { statuses: ['nao-e-objeto'] });
+    const result = parseWhatsAppWebhookPayload(payload, new Date());
+    if (result.outcome !== 'OK') throw new Error('unreachable');
+    expect(result.statusEvents).toHaveLength(0);
+    expect(result.issues).toEqual([{ code: 'invalid_status_entry', entryIndex: 0, changeIndex: 0, messageIndex: 0 }]);
+  });
+
+  test('status sem id -> issue missing_status_message_id', () => {
+    const payload = buildPayload([], { statuses: [{ status: 'sent', timestamp: '1700000100' }] });
+    const result = parseWhatsAppWebhookPayload(payload, new Date());
+    if (result.outcome !== 'OK') throw new Error('unreachable');
+    expect(result.statusEvents).toHaveLength(0);
+    expect(result.issues[0].code).toBe('missing_status_message_id');
+  });
+
+  test('status sem valor de status -> issue missing_status_value', () => {
+    const payload = buildPayload([], { statuses: [{ id: 'wamid.X', timestamp: '1700000100' }] });
+    const result = parseWhatsAppWebhookPayload(payload, new Date());
+    if (result.outcome !== 'OK') throw new Error('unreachable');
+    expect(result.statusEvents).toHaveLength(0);
+    expect(result.issues[0].code).toBe('missing_status_value');
+  });
+
+  test('status com valor nao suportado (ex. "deleted") -> issue unsupported_status_value, nunca propagado', () => {
+    const payload = buildPayload([], { statuses: [{ id: 'wamid.X', status: 'deleted', timestamp: '1700000100' }] });
+    const result = parseWhatsAppWebhookPayload(payload, new Date());
+    if (result.outcome !== 'OK') throw new Error('unreachable');
+    expect(result.statusEvents).toHaveLength(0);
+    expect(result.issues[0].code).toBe('unsupported_status_value');
+  });
+
+  test('status sem metadata.phone_number_id -> issue missing_phone_number_id, nunca aceita conta sem identificador confiavel', () => {
+    const payload = { object: 'whatsapp_business_account', entry: [{ id: 'w1', changes: [{ field: 'messages', value: { statuses: [{ id: 'wamid.X', status: 'sent', timestamp: '1700000100' }] } }] }] };
+    const result = parseWhatsAppWebhookPayload(payload, new Date());
+    if (result.outcome !== 'OK') throw new Error('unreachable');
+    expect(result.statusEvents).toHaveLength(0);
+    expect(result.issues[0].code).toBe('missing_phone_number_id');
+  });
+
+  test('um status malformado nao descarta os demais validos do mesmo payload', () => {
+    const payload = buildPayload([], {
+      statuses: [
+        { id: 'wamid.BOM1', status: 'sent', timestamp: '1700000100' },
+        { status: 'delivered', timestamp: '1700000200' }, // sem id
+        { id: 'wamid.BOM2', status: 'read', timestamp: '1700000300' },
+      ],
+    });
+    const result = parseWhatsAppWebhookPayload(payload, new Date());
+    if (result.outcome !== 'OK') throw new Error('unreachable');
+    expect(result.statusEvents.map((e) => e.externalMessageId)).toEqual(['wamid.BOM1', 'wamid.BOM2']);
+    expect(result.issues).toHaveLength(1);
   });
 });
 

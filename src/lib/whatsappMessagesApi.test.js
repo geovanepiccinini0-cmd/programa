@@ -48,6 +48,7 @@ describe('whatsappMessagesApi.fetchRecentForUser', () => {
       external_message_id: 'wamid.1', direction: 'inbound', message_type: 'text',
       content: 'oi', status: 'processed', error_code: null, occurred_at: '2026-01-01T00:00:00.000Z',
       sent_at: null, delivered_at: null, read_at: null, created_at: '2026-01-01T00:00:01.000Z',
+      client_token: null,
     };
     const { supabase, fromCalls, getLastQuery } = makeFakeSupabase({ data: [row], error: null });
     vi.doMock('./supabaseClient.js', () => ({ supabase }));
@@ -70,6 +71,7 @@ describe('whatsappMessagesApi.fetchRecentForUser', () => {
       externalMessageId: 'wamid.1', direction: 'inbound', messageType: 'text', content: 'oi',
       status: 'processed', errorCode: null, occurredAt: '2026-01-01T00:00:00.000Z',
       sentAt: null, deliveredAt: null, readAt: null, createdAt: '2026-01-01T00:00:01.000Z',
+      clientToken: null,
     }]);
     vi.doUnmock('./supabaseClient.js');
   });

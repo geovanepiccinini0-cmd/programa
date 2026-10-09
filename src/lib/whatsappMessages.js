@@ -34,6 +34,13 @@ export function whatsappMessageFromRow(r) {
     deliveredAt: r.delivered_at,
     readAt: r.read_at,
     createdAt: r.created_at,
+    // Fase 3.5.2.4 — coluna já existente desde a migration 020
+    // (client_token), nunca exposta ao frontend até agora. Permite
+    // reconciliar uma mensagem otimista local (ver whatsappSend.js)
+    // com a linha autoritativa real quando ela chega via Realtime —
+    // nulo para toda mensagem inbound (a coluna só é preenchida para
+    // outbound, por construção da migration 020).
+    clientToken: r.client_token ?? null,
   };
 }
 

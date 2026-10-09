@@ -369,12 +369,14 @@ describe('POST — parse e JSON', () => {
     expect(deps.getServiceClient).not.toHaveBeenCalled();
   });
 
-  test('status-only (statuses, zero messages) -> ACK 200, zero client', async () => {
-    const deps = makeDeps();
+  test('status-only (statuses, zero messages), conta nao resolvida -> ACK 200, client criado (Fase 3.5.2.3), zero RPC (NOT_FOUND encerra antes)', async () => {
+    const client = makeFakeClient();
+    const deps = makeDeps({}, client);
     const req = await postRequest(statusOnlyPayload());
     const res = await handleWhatsappWebhookRequest(req, deps);
     expect(res.status).toBe(200);
-    expect(deps.getServiceClient).not.toHaveBeenCalled();
+    expect(deps.getServiceClient).toHaveBeenCalledTimes(1);
+    expect(client._rpcCalls).toHaveLength(0);
   });
 
   test('1 mensagem text -> processada, Engine/RPC chamados', async () => {
@@ -814,5 +816,216 @@ describe('POST — reentrega real end-to-end (homologacao de idempotencia)', () 
     // concorrencia" — ver comentario de topo do describe.
     expect(client._events).toHaveLength(1);
     expect(client._rpcCalls.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ===========================================================================
+// POST — PROCESSAMENTO DE STATUS OUTBOUND (Fase 3.5.2.3)
+// ===========================================================================
+function statusPayload(statuses: Record<string, unknown>[]) {
+  return {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        id: 'entry-1',
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              metadata: { phone_number_id: 'phone-number-id-1' },
+              statuses,
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function statusRpcImpl(byWamid: Record<string, { outcome: string; message_id: string | null }>) {
+  return async (fn: string, params: Record<string, unknown>) => {
+    if (fn !== 'apply_whatsapp_outbound_status_event') {
+      return { data: null, error: new Error(`rpc inesperada: ${fn}`) };
+    }
+    const result = byWamid[params.p_external_message_id as string];
+    if (!result) {
+      return { data: null, error: new Error(`wamid nao mockado: ${params.p_external_message_id}`) };
+    }
+    return { data: [result], error: null };
+  };
+}
+
+describe('POST — status outbound (Fase 3.5.2.3)', () => {
+  test('sent -> delivered -> read (3 eventos no mesmo payload) -> todos aplicados em ordem, ACK 200', async () => {
+    const client = makeFakeClient({
+      accounts: [RESOLVED_ACCOUNT],
+      rpcImpl: statusRpcImpl({
+        'wamid.SEQ1': { outcome: 'IGNORED_OUT_OF_ORDER_OR_DUPLICATE', message_id: 'msg-1' },
+      }),
+    });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(statusPayload([
+      { id: 'wamid.SEQ1', status: 'sent', timestamp: '1700000100' },
+      { id: 'wamid.SEQ1', status: 'delivered', timestamp: '1700000200' },
+      { id: 'wamid.SEQ1', status: 'read', timestamp: '1700000300' },
+    ]));
+    const res = await handleWhatsappWebhookRequest(req, deps);
+    expect(res.status).toBe(200);
+    expect(client._rpcCalls).toHaveLength(3);
+    expect(client._rpcCalls.map((c) => c.params.p_new_status)).toEqual(['sent', 'delivered', 'read']);
+  });
+
+  test('read recebido ANTES de delivered -> aplicado normalmente (RPC decide a validade da transicao, handler so repassa)', async () => {
+    const client = makeFakeClient({
+      accounts: [RESOLVED_ACCOUNT],
+      rpcImpl: statusRpcImpl({ 'wamid.OOO1': { outcome: 'APPLIED', message_id: 'msg-1' } }),
+    });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(statusPayload([{ id: 'wamid.OOO1', status: 'read', timestamp: '1700000100' }]));
+    const res = await handleWhatsappWebhookRequest(req, deps);
+    expect(res.status).toBe(200);
+    expect(client._rpcCalls).toHaveLength(1);
+  });
+
+  test('evento duplicado (IGNORED_OUT_OF_ORDER_OR_DUPLICATE) -> ACK 200, nunca tratado como erro', async () => {
+    const client = makeFakeClient({
+      accounts: [RESOLVED_ACCOUNT],
+      rpcImpl: statusRpcImpl({ 'wamid.DUP1': { outcome: 'IGNORED_OUT_OF_ORDER_OR_DUPLICATE', message_id: 'msg-1' } }),
+    });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(statusPayload([{ id: 'wamid.DUP1', status: 'delivered', timestamp: '1700000100' }]));
+    const res = await handleWhatsappWebhookRequest(req, deps);
+    expect(res.status).toBe(200);
+  });
+
+  test('multiplos status de wamids DIFERENTES no mesmo payload -> todos processados independentemente', async () => {
+    const client = makeFakeClient({
+      accounts: [RESOLVED_ACCOUNT],
+      rpcImpl: statusRpcImpl({
+        'wamid.A': { outcome: 'APPLIED', message_id: 'msg-a' },
+        'wamid.B': { outcome: 'APPLIED', message_id: 'msg-b' },
+        'wamid.C': { outcome: 'PENDING_WAMID', message_id: null },
+      }),
+    });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(statusPayload([
+      { id: 'wamid.A', status: 'delivered', timestamp: '1700000100' },
+      { id: 'wamid.B', status: 'read', timestamp: '1700000200' },
+      { id: 'wamid.C', status: 'sent', timestamp: '1700000300' },
+    ]));
+    const res = await handleWhatsappWebhookRequest(req, deps);
+    expect(res.status).toBe(200);
+    expect(client._rpcCalls).toHaveLength(3);
+  });
+
+  test('status recebido ANTES da confirmacao local (PENDING_WAMID) -> ACK 200, nunca tratado como erro, nunca cria nada no handler', async () => {
+    const client = makeFakeClient({
+      accounts: [RESOLVED_ACCOUNT],
+      rpcImpl: statusRpcImpl({ 'wamid.EARLY1': { outcome: 'PENDING_WAMID', message_id: null } }),
+    });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(statusPayload([{ id: 'wamid.EARLY1', status: 'delivered', timestamp: '1700000100' }]));
+    const res = await handleWhatsappWebhookRequest(req, deps);
+    expect(res.status).toBe(200);
+  });
+
+  test('wamid desconhecido permanece PENDING_WAMID -> ACK 200 (rastreavel no staging, nao e erro do webhook)', async () => {
+    const client = makeFakeClient({
+      accounts: [RESOLVED_ACCOUNT],
+      rpcImpl: statusRpcImpl({ 'wamid.UNKNOWN1': { outcome: 'PENDING_WAMID', message_id: null } }),
+    });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(statusPayload([{ id: 'wamid.UNKNOWN1', status: 'failed', timestamp: '1700000100' }]));
+    const res = await handleWhatsappWebhookRequest(req, deps);
+    expect(res.status).toBe(200);
+  });
+
+  test('conta incorreta (ACCOUNT_MISMATCH) -> ACK 200 (nao retentavel), nunca propagado como 500', async () => {
+    const client = makeFakeClient({
+      accounts: [RESOLVED_ACCOUNT],
+      rpcImpl: statusRpcImpl({ 'wamid.MISMATCH1': { outcome: 'ACCOUNT_MISMATCH', message_id: null } }),
+    });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(statusPayload([{ id: 'wamid.MISMATCH1', status: 'delivered', timestamp: '1700000100' }]));
+    const res = await handleWhatsappWebhookRequest(req, deps);
+    expect(res.status).toBe(200);
+  });
+
+  test('assinatura invalida -> 401, zero client, mesmo com payload de status valido', async () => {
+    const client = makeFakeClient({ accounts: [RESOLVED_ACCOUNT] });
+    const deps = makeDeps({}, client);
+    const rawBody = JSON.stringify(statusPayload([{ id: 'wamid.X', status: 'sent', timestamp: '1700000100' }]));
+    const req: WebhookHttpRequest = { method: 'POST', rawBody, signatureHeader: 'sha256=0000000000000000000000000000000000000000000000000000000000000000' };
+    const res = await handleWhatsappWebhookRequest(req, deps);
+    expect(res.status).toBe(401);
+    expect(deps.getServiceClient).not.toHaveBeenCalled();
+  });
+
+  test('payload malformado (status sem id em UM dos eventos) -> o evento malformado nunca chega a RPC, os demais sao processados normalmente', async () => {
+    const client = makeFakeClient({
+      accounts: [RESOLVED_ACCOUNT],
+      rpcImpl: statusRpcImpl({ 'wamid.BOM1': { outcome: 'APPLIED', message_id: 'msg-1' } }),
+    });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(statusPayload([
+      { id: 'wamid.BOM1', status: 'delivered', timestamp: '1700000100' },
+      { status: 'read', timestamp: '1700000200' }, // sem id -- descartado pelo parser
+    ]));
+    const res = await handleWhatsappWebhookRequest(req, deps);
+    expect(res.status).toBe(200);
+    expect(client._rpcCalls).toHaveLength(1);
+  });
+
+  test('falha de entrega com codigo de erro -> errorCode repassado para a RPC como p_error_code', async () => {
+    const client = makeFakeClient({
+      accounts: [RESOLVED_ACCOUNT],
+      rpcImpl: statusRpcImpl({ 'wamid.FAIL1': { outcome: 'APPLIED', message_id: 'msg-1' } }),
+    });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(statusPayload([
+      { id: 'wamid.FAIL1', status: 'failed', timestamp: '1700000100', errors: [{ code: 131026, title: 'Undeliverable' }] },
+    ]));
+    const res = await handleWhatsappWebhookRequest(req, deps);
+    expect(res.status).toBe(200);
+    expect(client._rpcCalls[0].params.p_error_code).toBe('131026');
+  });
+
+  test('erro de transporte na RPC (REPOSITORY_ERROR) -> 500, permite redelivery segura', async () => {
+    const client = makeFakeClient({
+      accounts: [RESOLVED_ACCOUNT],
+      rpcImpl: async () => ({ data: null, error: new Error('transport down') }),
+    });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(statusPayload([{ id: 'wamid.ERR1', status: 'delivered', timestamp: '1700000100' }]));
+    const res = await handleWhatsappWebhookRequest(req, deps);
+    expect(res.status).toBe(500);
+  });
+
+  test('mensagem (inbound) e status (outbound) no mesmo payload -> ambos processados, uma falha no status nunca bloqueia a mensagem', async () => {
+    const client = makeFakeClient({
+      accounts: [RESOLVED_ACCOUNT],
+      rpcImpl: async (fn: string, params: Record<string, unknown>, c?: ReturnType<typeof makeFakeClient>) => {
+        if (fn === 'process_inbound_whatsapp_event') return rpcSuccess()(fn, params, c);
+        if (fn === 'apply_whatsapp_outbound_status_event') return { data: [{ outcome: 'APPLIED', message_id: 'msg-1' }], error: null };
+        return { data: null, error: new Error(`rpc inesperada: ${fn}`) };
+      },
+    });
+    const deps = makeDeps({}, client);
+    const payload = textMessagePayload({ statuses: [{ id: 'wamid.MIXED1', status: 'sent', timestamp: '1700000100' }] });
+    const req = await postRequest(payload);
+    const res = await handleWhatsappWebhookRequest(req, deps);
+    expect(res.status).toBe(200);
+    expect(client._rpcCalls.map((c) => c.fn).sort()).toEqual(['apply_whatsapp_outbound_status_event', 'process_inbound_whatsapp_event']);
+  });
+
+  test('integration_account_id NUNCA vem do payload -- so e passado para a RPC apos resolucao propria via phone_number_id', async () => {
+    const client = makeFakeClient({
+      accounts: [RESOLVED_ACCOUNT],
+      rpcImpl: statusRpcImpl({ 'wamid.RES1': { outcome: 'APPLIED', message_id: 'msg-1' } }),
+    });
+    const deps = makeDeps({}, client);
+    const req = await postRequest(statusPayload([{ id: 'wamid.RES1', status: 'delivered', timestamp: '1700000100' }]));
+    await handleWhatsappWebhookRequest(req, deps);
+    expect(client._rpcCalls[0].params.p_integration_account_id).toBe(RESOLVED_ACCOUNT.id);
   });
 });

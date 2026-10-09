@@ -29,3 +29,22 @@
 
 [functions.whatsapp-webhook]
 verify_jwt = false
+
+# Fase 3.5.2.2 — Confirmação versionada (auditoria adversarial, item
+# "Verificar a configuração de JWT efetivamente utilizada pela Edge
+# Function") de que whatsapp-send usa o COMPORTAMENTO DEFAULT do
+# Supabase (verify_jwt=true), explicitado aqui para nunca depender de
+# uma omissão silenciosa.
+#
+# Diferente de whatsapp-webhook (a Meta nunca envia um JWT Supabase),
+# whatsapp-send É chamada por um usuário autenticado do próprio
+# frontend — o gateway do Supabase deve recusar (401) qualquer
+# requisição cujo Authorization não seja um JWT estruturalmente válido
+# ANTES mesmo de alcançar o código, exatamente o comportamento
+# desejado aqui. Isso é COMPLEMENTAR, nunca um substituto, da
+# verificação própria da função via auth.getUser(jwt)
+# (supabase/functions/_shared/whatsappSendAuth.ts) — o gateway só
+# confirma a assinatura/forma do token; auth.getUser confirma que a
+# sessão ainda é válida no servidor de Auth (não expirada/revogada).
+[functions.whatsapp-send]
+verify_jwt = true
