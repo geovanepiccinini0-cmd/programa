@@ -7,6 +7,8 @@ import {
   conversationOperationalStateFromRow,
   conversationNeedsAttention,
   buildConversationOperationalStatesMap,
+  applyConversationStateRealtimeEvent,
+  shouldForceConversationStatesResync,
 } from './conversationOperationalState.js';
 
 describe('CONVERSATION_OPERATIONAL_STATES', () => {
@@ -127,5 +129,93 @@ describe('buildConversationOperationalStatesMap (Fase 3.6.4 — fetch em lote)',
     buildConversationOperationalStatesMap(['lead-1'], states);
     expect(state).toEqual({ leadId: 'lead-1', status: 'concluido', userId: 'u', updatedAt: 't', lastReadAt: null });
     expect(state.hasRow).toBeUndefined();
+  });
+});
+
+describe('applyConversationStateRealtimeEvent (Fase 3.6.4, correção pós-revisão do PR #71 — achado 3: "alteração de estado em outra aba")', () => {
+  const baseMap = {
+    'lead-1': { leadId: 'lead-1', userId: 'user-1', status: 'pendente_resposta', updatedAt: 't0', lastReadAt: null, hasRow: false },
+  };
+
+  test('UPDATE de um lead já carregado -> mapa atualizado com hasRow true e o novo status', () => {
+    const payload = {
+      eventType: 'UPDATE',
+      new: { lead_id: 'lead-1', user_id: 'user-1', status: 'em_atendimento', updated_at: 't1', last_read_at: null },
+      old: { lead_id: 'lead-1' },
+    };
+    const result = applyConversationStateRealtimeEvent(baseMap, payload, 'user-1');
+    expect(result['lead-1']).toEqual({
+      leadId: 'lead-1', userId: 'user-1', status: 'em_atendimento', updatedAt: 't1', lastReadAt: null, hasRow: true,
+    });
+  });
+
+  test('INSERT de um lead já carregado (primeira linha real) -> mesmo efeito de UPDATE', () => {
+    const payload = {
+      eventType: 'INSERT',
+      new: { lead_id: 'lead-1', user_id: 'user-1', status: 'concluido', updated_at: 't2', last_read_at: 't3' },
+    };
+    const result = applyConversationStateRealtimeEvent(baseMap, payload, 'user-1');
+    expect(result['lead-1'].status).toBe('concluido');
+    expect(result['lead-1'].hasRow).toBe(true);
+  });
+
+  test('DELETE -> volta ao default (hasRow false), nunca remove a chave do mapa', () => {
+    const payload = { eventType: 'DELETE', new: null, old: { lead_id: 'lead-1', user_id: 'user-1' } };
+    const result = applyConversationStateRealtimeEvent(baseMap, payload, 'user-1');
+    expect(result['lead-1']).toEqual({
+      leadId: 'lead-1', userId: null, status: 'pendente_resposta', updatedAt: null, lastReadAt: null, hasRow: false,
+    });
+  });
+
+  test('lead_id que NÃO está no mapa carregado -> ignorado, nunca adiciona (mesma referência de retorno)', () => {
+    const payload = { eventType: 'INSERT', new: { lead_id: 'lead-desconhecido', user_id: 'user-1', status: 'concluido' } };
+    const result = applyConversationStateRealtimeEvent(baseMap, payload, 'user-1');
+    expect(result).toBe(baseMap);
+  });
+
+  test('row de OUTRO usuário -> ignorado, mesma referência (defesa em profundidade)', () => {
+    const payload = { eventType: 'UPDATE', new: { lead_id: 'lead-1', user_id: 'user-2', status: 'concluido' } };
+    const result = applyConversationStateRealtimeEvent(baseMap, payload, 'user-1');
+    expect(result).toBe(baseMap);
+  });
+
+  test('payload sem lead_id, mapa nulo, ou userId ausente -> nunca lança, nunca corrompe o mapa', () => {
+    expect(applyConversationStateRealtimeEvent(baseMap, { new: {} }, 'user-1')).toBe(baseMap);
+    expect(applyConversationStateRealtimeEvent(null, { new: { lead_id: 'lead-1' } }, 'user-1')).toBeNull();
+    expect(applyConversationStateRealtimeEvent(baseMap, null, 'user-1')).toBe(baseMap);
+    // userId do chamador ausente (ex. corrida de desmontagem) -> o
+    // guard de posse por user_id exige os DOIS lados presentes para
+    // bloquear; sem o userId do chamador, o evento é aplicado
+    // normalmente para um lead_id já conhecido (nunca lança, nunca
+    // expande o mapa para um lead novo).
+    const payload = { eventType: 'UPDATE', new: { lead_id: 'lead-1', user_id: 'user-1', status: 'concluido', updated_at: 't', last_read_at: null } };
+    const result = applyConversationStateRealtimeEvent(baseMap, payload, undefined);
+    expect(result['lead-1'].status).toBe('concluido');
+  });
+
+  test('nunca muta o mapa de entrada', () => {
+    const payload = { eventType: 'UPDATE', new: { lead_id: 'lead-1', user_id: 'user-1', status: 'concluido', updated_at: 't', last_read_at: null } };
+    const original = { ...baseMap };
+    applyConversationStateRealtimeEvent(baseMap, payload, 'user-1');
+    expect(baseMap).toEqual(original);
+  });
+});
+
+describe('shouldForceConversationStatesResync (Fase 3.6.4, correção pós-revisão do PR #71 — achado 2: "assinatura indisponível")', () => {
+  test('CHANNEL_ERROR / TIMED_OUT / CLOSED -> true (forçar ressincronização)', () => {
+    expect(shouldForceConversationStatesResync('CHANNEL_ERROR')).toBe(true);
+    expect(shouldForceConversationStatesResync('TIMED_OUT')).toBe(true);
+    expect(shouldForceConversationStatesResync('CLOSED')).toBe(true);
+  });
+
+  test('SUBSCRIBED (canal saudável) -> false, nunca força resync sem motivo', () => {
+    expect(shouldForceConversationStatesResync('SUBSCRIBED')).toBe(false);
+  });
+
+  test('status desconhecido/ausente -> false, nunca lança', () => {
+    expect(shouldForceConversationStatesResync(undefined)).toBe(false);
+    expect(shouldForceConversationStatesResync(null)).toBe(false);
+    expect(shouldForceConversationStatesResync('')).toBe(false);
+    expect(shouldForceConversationStatesResync('algo_novo_da_lib')).toBe(false);
   });
 });

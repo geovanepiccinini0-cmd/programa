@@ -35,7 +35,11 @@ import {
   clearUnreadCountForLead,
   isConversationActivelyOpen,
 } from '../lib/whatsappUnreadTracking.js';
-import { buildConversationOperationalStatesMap } from '../lib/conversationOperationalState.js';
+import {
+  buildConversationOperationalStatesMap,
+  applyConversationStateRealtimeEvent,
+  shouldForceConversationStatesResync,
+} from '../lib/conversationOperationalState.js';
 
 // Fase 3.5.1 — Caixa de entrada WhatsApp, SOMENTE LEITURA.
 // Fase 3.5.1 (correção pós-auditoria) — ver comentários inline para
@@ -256,17 +260,17 @@ export function useWhatsAppInbox(userId) {
     setConversationStatesRetryToken((n) => n + 1);
   }, []);
 
-  // Fase 3.6.4 — Realtime NÃO filtrado para whatsapp_conversation_state
+  // Fase 3.6.4 (correção pós-revisão do PR #71, achados CONFIRMED 2 e
+  // 3) — Realtime NÃO filtrado para whatsapp_conversation_state
   // (canal próprio, nunca reaproveita o canal por-lead da 3.6.2 nem o
   // canal principal de mensagens/leads). Guard de posse por
   // `user_id` (mesmo princípio já usado para `leads` em
-  // shouldApplyLeadRealtimeChange) é defesa em profundidade — a RLS
-  // da 024 já deveria impedir o Realtime de entregar linhas de outro
-  // usuário, mas nunca confiamos só nisso. Só atualiza leadIds que já
-  // fazem parte do mapa carregado (nunca expande o conjunto definido
-  // pelo fetch em lote acima) — uma conversa nova aparece aqui
-  // naturalmente no próximo fetch, quando `conversationLeadIdsKey`
-  // mudar.
+  // shouldApplyLeadRealtimeChange) é defesa em profundidade. Só
+  // atualiza leadIds que já fazem parte do mapa carregado (nunca
+  // expande o conjunto definido pelo fetch em lote) —
+  // applyConversationStateRealtimeEvent (conversationOperationalState.js,
+  // puro e testado) garante isso. Cobre diretamente o cenário
+  // "alteração de estado em outra aba/dispositivo".
   //
   // DEPENDÊNCIA DE CONFIGURAÇÃO EM PRODUÇÃO (documentar, nunca
   // alterar sem autorização explícita): este canal só recebe eventos
@@ -279,34 +283,58 @@ export function useWhatsAppInbox(userId) {
   // que essas tabelas foram habilitadas manualmente pelo painel do
   // Supabase em algum momento anterior a este código. Esta fase NÃO
   // executa nenhum ALTER PUBLICATION (proibido pelas restrições desta
-  // fase) — se a tabela não estiver habilitada em produção, este
-  // canal simplesmente nunca dispara (sem erro visível), e a lista só
-  // reflete mudanças de estado operacional no próximo fetch em lote
-  // (nova seleção de conversa, refetchConversations, ou
-  // retryConversationStates) — nunca quebra, só fica "menos ao vivo".
+  // fase).
+  //
+  // RECUPERAÇÃO SEM DEPENDER DE SELEÇÃO MANUAL DE CONVERSA (correção
+  // do achado 2) — dois mecanismos independentes, cobrindo os dois
+  // jeitos de "Realtime indisponível":
+  // 1. `status` do próprio `subscribe()` — `CHANNEL_ERROR`/
+  //    `TIMED_OUT`/`CLOSED` são falhas de CONEXÃO detectáveis; ao
+  //    ocorrerem, força uma ressincronização IMEDIATA via fetch em
+  //    lote (shouldForceConversationStatesResync, puro e testado) —
+  //    nunca espera o atendente selecionar outra conversa.
+  // 2. POLLING periódico (abaixo) — mitigação para o caso que o
+  //    status NUNCA detecta: a tabela simplesmente não está na
+  //    publication (o `subscribe()` reporta `SUBSCRIBED` normalmente,
+  //    mas nenhum evento desta tabela jamais chega). Sem o polling,
+  //    esse cenário deixaria os estados parados indefinidamente até
+  //    uma ação manual (selecionar conversa, ou o botão "Tentar
+  //    novamente" do aviso de erro) — o polling garante que os dados
+  //    nunca ficam "presos", mesmo que o Realtime esteja
+  //    completamente fora do ar para esta tabela em produção.
   useEffect(() => {
     if (!userId) return undefined;
     const channel = supabase
       .channel(`crm-piccinini-conversation-states-list-${userId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'whatsapp_conversation_state' }, (payload) => {
-        const row = payload.new || payload.old;
-        if (!row || !row.lead_id) return;
-        if (row.user_id && row.user_id !== userId) return;
-        setConversationStatesByLead((prev) => {
-          if (!(row.lead_id in prev)) return prev;
-          const mapped = payload.new ? conversationStateApi.fromRow(payload.new) : null;
-          return {
-            ...prev,
-            [row.lead_id]: mapped
-              ? { ...mapped, hasRow: true }
-              : {
-                leadId: row.lead_id, userId: null, status: 'pendente_resposta', updatedAt: null, lastReadAt: null, hasRow: false,
-              },
-          };
-        });
+        setConversationStatesByLead((prev) => applyConversationStateRealtimeEvent(prev, payload, userId));
       })
-      .subscribe();
+      .subscribe((status) => {
+        if (shouldForceConversationStatesResync(status)) {
+          setConversationStatesRetryToken((n) => n + 1);
+        }
+      });
     return () => supabase.removeChannel(channel);
+  }, [userId]);
+
+  // Fase 3.6.4 (correção pós-revisão do PR #71, achado CONFIRMED 2) —
+  // polling de segurança: mitiga especificamente o cenário em que a
+  // tabela não está na publication supabase_realtime (nenhum erro de
+  // canal detectável, só silêncio permanente). Intervalo longo (60s,
+  // nunca mais agressivo que isso — esta é uma rede de segurança,
+  // não o caminho principal de atualização) e só dispara com a aba
+  // em primeiro plano (mesmo princípio de isConversationActivelyOpen,
+  // whatsappUnreadTracking.js — nunca gasta rede com o CRM em
+  // segundo plano). Reaproveita o MESMO retry token do botão manual
+  // "Tentar novamente" — nenhum caminho de dados novo, só mais uma
+  // forma de disparar o fetch em lote já existente.
+  useEffect(() => {
+    if (!userId) return undefined;
+    const intervalId = setInterval(() => {
+      const documentVisible = typeof document === 'undefined' || document.visibilityState === 'visible';
+      if (documentVisible) setConversationStatesRetryToken((n) => n + 1);
+    }, 60000);
+    return () => clearInterval(intervalId);
   }, [userId]);
 
   const filteredConversations = useMemo(

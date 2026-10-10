@@ -5,6 +5,7 @@ import {
   buildLeadsById,
   filterConversations,
 } from './whatsappConversationFilters.js';
+import { applyConversationStateRealtimeEvent } from './conversationOperationalState.js';
 
 function conversation(overrides = {}) {
   return {
@@ -199,10 +200,57 @@ describe('filterConversations — estado operacional (Fase 3.6.4)', () => {
     expect(result).toEqual([]);
   });
 
+  test('Fase 3.6.4 (correção pós-revisão do PR #71, achado 1) — mapa existe mas NÃO tem a chave deste leadId (carregamento parcial/em andamento) -> exclui, nunca cai no fallback default', () => {
+    // Antes da correção, uma chave ausente caía no fallback
+    // DEFAULT_CONVERSATION_OPERATIONAL_STATUS e podia corresponder
+    // erradamente a um filtro por "Pendente de resposta" mesmo sem o
+    // servidor ter confirmado nada para este lead.
+    const list = [conversation({ leadId: 'a' })];
+    const conversationStatesByLead = {}; // mapa truthy, mas vazio (fetch em lote ainda em andamento)
+    const result = filterConversations(list, {}, { ...EMPTY_CONVERSATION_FILTERS, status: 'pendente_resposta' }, { conversationStatesByLead });
+    expect(result).toEqual([]);
+  });
+
+  test('Fase 3.6.4 — carregamento parcial: lead resolvido casa, lead NÃO resolvido (ainda) nunca casa, mesmo com o mesmo status-alvo', () => {
+    const list = [conversation({ leadId: 'a' }), conversation({ leadId: 'b' })];
+    const conversationStatesByLead = {
+      a: { leadId: 'a', status: 'pendente_resposta', hasRow: true }, // resolvido
+      // 'b' ausente -> ainda não resolvido
+    };
+    const result = filterConversations(list, {}, { ...EMPTY_CONVERSATION_FILTERS, status: 'pendente_resposta' }, { conversationStatesByLead });
+    expect(result.map((c) => c.leadId)).toEqual(['a']);
+  });
+
   test('status null (nenhum filtro) -> nao filtra, comportamento igual a antes da 3.6.4', () => {
     const list = [conversation({ leadId: 'a' }), conversation({ leadId: 'b' })];
     const result = filterConversations(list, {}, EMPTY_CONVERSATION_FILTERS);
     expect(result.map((c) => c.leadId)).toEqual(['a', 'b']);
+  });
+
+  test('Fase 3.6.4 (correção pós-revisão do PR #71, achado 3) — filtro de status ativo DURANTE uma atualização Realtime: a conversa some/aparece do resultado filtrado, sem nunca reordenar a lista', () => {
+    const list = [
+      conversation({ leadId: 'a', lastMessageAt: '2026-01-03T00:00:00.000Z' }),
+      conversation({ leadId: 'b', lastMessageAt: '2026-01-02T00:00:00.000Z' }),
+      conversation({ leadId: 'c', lastMessageAt: '2026-01-01T00:00:00.000Z' }),
+    ];
+    let conversationStatesByLead = {
+      a: { leadId: 'a', status: 'pendente_resposta', hasRow: true },
+      b: { leadId: 'b', status: 'em_atendimento', hasRow: true },
+      c: { leadId: 'c', status: 'pendente_resposta', hasRow: true },
+    };
+    const filters = { ...EMPTY_CONVERSATION_FILTERS, status: 'pendente_resposta' };
+
+    // Antes da atualização: a e c batem (b não).
+    let result = filterConversations(list, {}, filters, { conversationStatesByLead });
+    expect(result.map((c) => c.leadId)).toEqual(['a', 'c']);
+
+    // Chega um evento Realtime (outra aba mudou o estado de 'b' para pendente_resposta).
+    const payload = { eventType: 'UPDATE', new: { lead_id: 'b', user_id: 'u1', status: 'pendente_resposta', updated_at: 't', last_read_at: null } };
+    conversationStatesByLead = applyConversationStateRealtimeEvent(conversationStatesByLead, payload, 'u1');
+
+    // Depois da atualização: b passa a bater também, mas a ORDEM original (a, b, c) é preservada -- nunca re-sortado por status.
+    result = filterConversations(list, {}, filters, { conversationStatesByLead });
+    expect(result.map((c) => c.leadId)).toEqual(['a', 'b', 'c']);
   });
 });
 

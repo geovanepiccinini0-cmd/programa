@@ -25,7 +25,6 @@
 
 import { normalizeText } from '../utils.js';
 import { unreadCountForLead } from './whatsappUnreadTracking.js';
-import { DEFAULT_CONVERSATION_OPERATIONAL_STATUS } from './conversationOperationalState.js';
 
 export const EMPTY_CONVERSATION_FILTERS = {
   searchText: '',
@@ -110,20 +109,32 @@ function matchesUnread(conversation, unreadOnly, unreadCounts) {
   return unreadCountForLead(unreadCounts, conversation.leadId) > 0;
 }
 
-// Fase 3.6.4 — filtro por estado OPERACIONAL (Fase 3.6.2) — nunca o
-// status de entrega da Meta. `conversationStatesByLead` vem de
+// Fase 3.6.4 (correção pós-revisão do PR #71, achado CONFIRMED) —
+// filtro por estado OPERACIONAL (Fase 3.6.2) — nunca o status de
+// entrega da Meta. `conversationStatesByLead` vem de
 // buildConversationOperationalStatesMap (conversationOperationalState.js),
-// que SEMPRE tem uma entrada por leadId carregado (real ou default) —
-// mas se o mapa inteiro ainda não chegou (ainda carregando, ou a
-// consulta em lote falhou), uma conversa NUNCA finge corresponder a
-// um filtro de estado ativo: fica de fora até o mapa real chegar,
-// nunca mostrada/escondida por engano com dados que não existem.
+// que SEMPRE tem uma entrada por leadId pedido QUANDO O FETCH EM LOTE
+// JÁ RESOLVEU para aquele leadId — mas nem o mapa inteiro, nem uma
+// entrada específica dele, podem ser tratados como "resolvido" só
+// porque existem: uma chave AUSENTE (`conversation.leadId` ainda não
+// é chave do mapa) significa "ainda não sabemos" (primeiro
+// carregamento em andamento, falha que preservou um mapa de um
+// conjunto de leads menor, ou uma conversa nova que apareceu antes do
+// próximo fetch em lote) — nunca equivalente a "sabemos que não tem
+// linha" (que é hasRow:false, uma resposta REAL do servidor). Por
+// isso NUNCA cai no fallback DEFAULT_CONVERSATION_OPERATIONAL_STATUS
+// quando a chave está ausente — só quando ela EXISTE com
+// hasRow:false. Uma conversa cujo estado ainda não foi determinado
+// NUNCA finge corresponder a um filtro de estado ativo: fica de fora
+// até o mapa real chegar (a UI usa conversationStatesLoading/
+// conversationStatesError para explicar esse "fora" ao usuário, nunca
+// este módulo, que é puramente lógico).
 function matchesStatus(conversation, status, conversationStatesByLead) {
   if (!status) return true;
   if (!conversationStatesByLead) return false;
   const state = conversationStatesByLead[conversation.leadId];
-  const effectiveStatus = (state && state.status) || DEFAULT_CONVERSATION_OPERATIONAL_STATUS;
-  return effectiveStatus === status;
+  if (!state) return false;
+  return state.status === status;
 }
 
 // Filtra `conversations` (lista de resumos já ordenada) combinando

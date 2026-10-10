@@ -110,6 +110,24 @@ export default function WhatsAppConversationList({
     )
     : null;
 
+  // Fase 3.6.4 (correção pós-revisão do PR #71, achado CONFIRMED 1) —
+  // quando o filtro por estado está ATIVO, uma lista vazia pode
+  // significar três coisas bem diferentes, e cada uma precisa de uma
+  // mensagem própria: (a) o fetch em lote ainda não resolveu
+  // (`conversationStatesLoading`) — "carregando", nunca "nenhuma
+  // conversa"; (b) o fetch falhou (`conversationStatesError`) —
+  // aviso de erro com retry, nunca "nenhuma conversa"; (c) o fetch
+  // terminou com sucesso e realmente não há conversas nesse estado —
+  // só este caso usa a mensagem padrão "nenhuma conversa corresponde
+  // aos filtros". `matchesStatus` (whatsappConversationFilters.js)
+  // já garante que uma conversa cujo estado ainda não foi resolvido
+  // nunca aparece como correspondente por engano — esta UI só decide
+  // COMO explicar um resultado vazio quando o filtro depende desses
+  // dados.
+  const statusFilterActive = Boolean(filters.status);
+  const statusDataStillLoading = statusFilterActive && conversationStatesLoading;
+  const statusDataFailed = statusFilterActive && !conversationStatesLoading && Boolean(conversationStatesError);
+
   if (loading) {
     return (
       <div className="wa-conversation-list-pane-inner">
@@ -146,12 +164,25 @@ export default function WhatsAppConversationList({
       {conversationStatesNotice}
 
       {conversations.length === 0 ? (
-        <div className="empty-state">
-          Nenhuma conversa corresponde aos filtros aplicados.
-          <div style={{ marginTop: 8 }}>
-            <button type="button" className="btn-ghost" onClick={onClearFilters}>Limpar filtros</button>
+        statusDataStillLoading ? (
+          <div className="empty-state" role="status">
+            Carregando estados operacionais das conversas...
           </div>
-        </div>
+        ) : statusDataFailed ? (
+          <div className="empty-state" style={{ borderColor: 'var(--red)', color: 'var(--red)' }} role="status">
+            Não foi possível carregar os estados operacionais — o resultado deste filtro pode estar incompleto.
+            <div style={{ marginTop: 8 }}>
+              <button type="button" className="btn-ghost" onClick={onRetryConversationStates}>Tentar novamente</button>
+            </div>
+          </div>
+        ) : (
+          <div className="empty-state">
+            Nenhuma conversa corresponde aos filtros aplicados.
+            <div style={{ marginTop: 8 }}>
+              <button type="button" className="btn-ghost" onClick={onClearFilters}>Limpar filtros</button>
+            </div>
+          </div>
+        )
       ) : (
         <div className="wa-conversation-list">
           {conversations.map((c) => {
