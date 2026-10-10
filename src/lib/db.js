@@ -369,24 +369,23 @@ export const conversationStateApi = {
     return conversationOperationalStateFromRow(data);
   },
 
-  // Fase 3.6.3 — marca a conversa como lida pelo ATENDENTE agora
-  // (last_read_at = instante local, mesmo padrão de setStatus —
-  // nunca uma RPC). Upsert pelo mesmo motivo de setStatus: a
-  // conversa pode ainda não ter nenhuma linha (nenhum evento
-  // automático chegou a criar uma). NUNCA toca `status` — este
-  // upsert só envia `last_read_at`, preservando qualquer status já
-  // existente (coluna omitida do payload nunca é sobrescrita pelo
-  // Postgres num UPDATE real; no caminho de INSERT puro, `status`
-  // assume seu default `pendente_resposta`, igual a qualquer linha
-  // nova).
+  // Fase 3.6.3 (correção pós-revisão do PR #70, achado CONFIRMED) —
+  // marca a conversa como lida AGORA usando o relógio do SERVIDOR,
+  // nunca o do navegador (um relógio de cliente divergente, uma
+  // mensagem/requisição atrasada em voo, ou duas abas do mesmo
+  // atendente poderiam gravar um timestamp errado ou retroceder uma
+  // leitura mais recente). Via RPC mark_whatsapp_conversation_read
+  // (migration 025, seção C) — nunca mais um upsert direto com
+  // timestamp local. A função já garante no servidor que
+  // last_read_at nunca regride (guarda no ON CONFLICT). 0 linhas
+  // devolvidas é o resultado ESPERADO de uma chamada atrasada que
+  // perdeu a corrida para uma leitura mais recente — nunca tratado
+  // como erro aqui (o chamador não precisa reconciliar nada: o
+  // servidor já está com um valor igual ou mais novo).
   markRead: async (leadId) => {
-    const { data, error } = await supabase
-      .from('whatsapp_conversation_state')
-      .upsert({ lead_id: leadId, last_read_at: new Date().toISOString() }, { onConflict: 'lead_id' })
-      .select()
-      .maybeSingle();
+    const { data, error } = await supabase.rpc('mark_whatsapp_conversation_read', { p_lead_id: leadId });
     if (error) throw error;
-    return conversationOperationalStateFromRow(data);
+    return data; // timestamp (string) do servidor, ou null se a chamada perdeu a corrida.
   },
 
   // Fase 3.6.3 — contagem agregada de não lidas por conversa, para

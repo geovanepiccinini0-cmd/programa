@@ -34,15 +34,25 @@ end $$;
 -- escrita pela RPC automática (apply_whatsapp_conversation_operational_event,
 -- seção D da 024) — aquela função só define status/last_event_at no
 -- seu INSERT/SET; last_read_at nunca aparece nela, permanecendo
--- intocada em qualquer evento automático. Escrita exclusivamente
--- pelo cliente autenticado (UPDATE direto via RLS, mesmo padrão já
--- usado para alteração manual de status — nunca uma RPC nova aqui).
+-- intocada em qualquer evento automático.
+--
+-- Correção pós-revisão do PR #70 (achado CONFIRMED: `last_read_at`
+-- nunca deve ser definido pelo relógio do NAVEGADOR — divergência de
+-- horário do cliente, mensagens/respostas atrasadas em voo e duas
+-- abas/dispositivos do mesmo atendente concorrendo poderiam gravar um
+-- timestamp incorreto ou, pior, um valor mais ANTIGO sobrescrevendo
+-- uma leitura mais recente já persistida). Escrita exclusivamente via
+-- `mark_whatsapp_conversation_read()` (seção C abaixo), que usa
+-- SEMPRE `now()` do SERVIDOR — nunca um timestamp vindo do cliente —
+-- e nunca regride `last_read_at` (guarda WHERE no ON CONFLICT, mesmo
+-- princípio já usado para `last_event_at` na 024). Nenhum caminho do
+-- cliente escreve esta coluna por UPDATE/upsert direto.
 -------------------------------------------------------------------
 alter table public.whatsapp_conversation_state
   add column if not exists last_read_at timestamptz;
 
 comment on column public.whatsapp_conversation_state.last_read_at is
-  'Fase 3.6.3 — timestamp em que o ATENDENTE efetivamente visualizou esta conversa (nunca a Meta). Mensagens inbound com occurred_at > last_read_at (ou last_read_at IS NULL) contam como não lidas, ver whatsapp_unread_counts(). Escrita só por UPDATE direto do cliente autenticado (RLS da 024, nunca por RPC). Nunca confundir com whatsapp_messages.read_at (leitura da Meta sobre mensagem outbound) nem com whatsapp_conversation_state.status (estado operacional da Fase 3.6.2) — eixos independentes.';
+  'Fase 3.6.3 — timestamp em que o ATENDENTE efetivamente visualizou esta conversa (nunca a Meta). Mensagens inbound com occurred_at > last_read_at (ou last_read_at IS NULL) contam como não lidas, ver whatsapp_unread_counts(). Escrita exclusivamente via mark_whatsapp_conversation_read() (seção C), sempre com now() do SERVIDOR — nunca por UPDATE direto do cliente, nunca com timestamp vindo do navegador. Nunca confundir com whatsapp_messages.read_at (leitura da Meta sobre mensagem outbound) nem com whatsapp_conversation_state.status (estado operacional da Fase 3.6.2) — eixos independentes.';
 
 -- Rollback deste bloco: "alter table public.whatsapp_conversation_state drop column if exists last_read_at;" (aditivo, sem dado histórico dependente fora desta própria coluna).
 
@@ -100,3 +110,47 @@ revoke all on function public.whatsapp_unread_counts() from anon;
 grant execute on function public.whatsapp_unread_counts() to authenticated;
 
 -- Rollback deste bloco: "drop function if exists public.whatsapp_unread_counts();"
+
+-------------------------------------------------------------------
+-- C) mark_whatsapp_conversation_read() — único caminho de escrita de
+-- `last_read_at`. Correção pós-revisão do PR #70 (achado CONFIRMED):
+-- usa SEMPRE now() do SERVIDOR (nunca um timestamp recebido do
+-- cliente/navegador, que pode estar com o relógio divergente). A
+-- cláusula WHERE do ON CONFLICT é a mesma guarda já usada para
+-- `last_event_at` na 024: uma chamada ATRASADA (ex. duas abas do
+-- mesmo atendente, ou uma requisição que ficou em voo por retry de
+-- rede) nunca REGRIDE `last_read_at` — só avança. Quando a guarda
+-- impede a atualização (porque um `last_read_at` mais recente já foi
+-- persistido por outra chamada), o INSERT...ON CONFLICT DO UPDATE não
+-- afeta nenhuma linha e portanto não há linha para o RETURNING — a
+-- função devolve 0 linhas (nunca um erro), e o cliente trata isso
+-- como "nada a fazer, o servidor já está mais atualizado" (ver
+-- db.js:markRead), nunca como falha.
+--
+-- SEGURANÇA: security invoker — roda com os privilégios de quem
+-- chama; o INSERT/UPDATE em si só é aceito pela RLS da 024 (dono do
+-- lead). Mesma proteção de sempre: RLS das tabelas subjacentes é a
+-- fronteira real, nunca esta função.
+-------------------------------------------------------------------
+create or replace function public.mark_whatsapp_conversation_read(p_lead_id uuid)
+returns timestamptz
+language sql
+security invoker
+set search_path = public, pg_temp
+as $$
+  insert into public.whatsapp_conversation_state as wcs (lead_id, last_read_at)
+  values (p_lead_id, now())
+  on conflict (lead_id) do update
+    set last_read_at = excluded.last_read_at
+  where wcs.last_read_at is null or excluded.last_read_at >= wcs.last_read_at
+  returning wcs.last_read_at;
+$$;
+
+comment on function public.mark_whatsapp_conversation_read(uuid) is
+  'Fase 3.6.3 — marca a conversa do lead informado como lida AGORA (now() do servidor, nunca do cliente). Nunca regride last_read_at (guarda no ON CONFLICT, mesmo princípio de last_event_at na 024) — uma chamada atrasada que perdeu a corrida para uma leitura mais recente simplesmente não afeta nenhuma linha (0 linhas devolvidas, nunca um erro). Nunca toca status/last_event_at (coluna fora do INSERT/SET desta função). security invoker — RLS da 024 decide quem pode inserir/atualizar.';
+
+revoke all on function public.mark_whatsapp_conversation_read(uuid) from public;
+revoke all on function public.mark_whatsapp_conversation_read(uuid) from anon;
+grant execute on function public.mark_whatsapp_conversation_read(uuid) to authenticated;
+
+-- Rollback deste bloco: "drop function if exists public.mark_whatsapp_conversation_read(uuid);"

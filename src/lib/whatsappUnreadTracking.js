@@ -65,3 +65,24 @@ export function clearUnreadCountForLead(unreadCounts, leadId) {
   next[leadId] = 0;
   return next;
 }
+
+// Fase 3.6.3 (correção pós-revisão do PR #70, achado CONFIRMED) — uma
+// mensagem inbound só pode ser considerada "lida ao vivo" pelo
+// atendente quando a conversa está REALMENTE visível, nunca apenas
+// porque `leadId` está selecionado em memória. Três condições, todas
+// necessárias:
+//   1. a conversa selecionada é exatamente esta (`selectedLeadId === leadId`);
+//   2. a thread já carregou (`threadLoading === false`) — enquanto
+//      está carregando (ex. troca de conversa em andamento), o
+//      atendente ainda não viu o conteúdo;
+//   3. o documento está visível (`documentVisible !== false`) — uma
+//      aba em segundo plano nunca conta como "vista", mesmo com a
+//      conversa certa selecionada e já carregada.
+// Pura (recebe documentVisible como parâmetro, nunca lê `document`
+// diretamente) — testável sem jsdom/mocks de Page Visibility API.
+export function isConversationActivelyOpen(selectedLeadId, leadId, { threadLoading, documentVisible } = {}) {
+  if (!selectedLeadId || !leadId || selectedLeadId !== leadId) return false;
+  if (threadLoading) return false;
+  if (documentVisible === false) return false;
+  return true;
+}

@@ -29,7 +29,7 @@ export default function WhatsAppInboxView({ userId }) {
     sendMessage, composerSending, composerNotice, sendGate,
     conversationFilters, setConversationFilters, clearConversationFilters, totalConversationsCount,
     conversationState, setConversationStatus,
-    unreadCounts,
+    unreadCounts, unreadSyncNotice,
   } = useWhatsAppInbox(userId);
 
   const [editingLead, setEditingLead] = useState(null);
@@ -49,6 +49,14 @@ export default function WhatsAppInboxView({ userId }) {
     <section className="view active">
       <div className={`wa-inbox${selectedLeadId ? ' has-selection' : ''}`}>
         <div className="wa-inbox-list-pane">
+          {/* Fase 3.6.3 (correção pós-revisão do PR #70, achado 1) —
+              aviso visível quando a leitura não pôde ser confirmada
+              no servidor (nunca falha silenciosa: o atendente precisa
+              saber que o contador pode estar temporariamente
+              desatualizado, até a ressincronização automática). */}
+          {unreadSyncNotice && (
+            <div className="wa-unread-sync-notice" role="status">{unreadSyncNotice}</div>
+          )}
           <WhatsAppConversationList
             conversations={conversations}
             selectedLeadId={selectedLeadId}

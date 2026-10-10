@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient.js';
 import { leadsApi, whatsappMessagesApi, conversationStateApi } from '../lib/db.js';
 import { applyRealtimeChange } from './useAppState.js';
@@ -33,6 +33,7 @@ import {
   buildUnreadCountsMap,
   applyIncomingMessageToUnreadCounts,
   clearUnreadCountForLead,
+  isConversationActivelyOpen,
 } from '../lib/whatsappUnreadTracking.js';
 
 // Fase 3.5.1 — Caixa de entrada WhatsApp, SOMENTE LEITURA.
@@ -83,6 +84,17 @@ export function useWhatsAppInbox(userId) {
   const [selectedLeadId, setSelectedLeadId] = useState(null);
   const [threadMessages, setThreadMessages] = useState([]);
   const [threadLoading, setThreadLoading] = useState(false);
+  // Fase 3.6.3 (correção pós-revisão do PR #70, achado CONFIRMED) —
+  // espelho em ref de `threadLoading`, lido pelo handler Realtime
+  // (onMessageChange) para decidir se a conversa está REALMENTE
+  // visível antes de marcar uma mensagem como lida automaticamente.
+  // Um ref (nunca o próprio `threadLoading` na dependência do efeito
+  // de subscrição) evita recriar o canal Realtime a cada
+  // carregamento/descarregamento de thread — só o VALOR mais recente
+  // importa no momento em que uma mensagem chega, nunca a
+  // re-subscrição em si.
+  const threadLoadingRef = useRef(threadLoading);
+  useEffect(() => { threadLoadingRef.current = threadLoading; }, [threadLoading]);
   const [threadError, setThreadError] = useState(null);
   const [threadRetryToken, setThreadRetryToken] = useState(0);
   const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState(false);
@@ -226,19 +238,46 @@ export function useWhatsAppInbox(userId) {
     return () => { cancelled = true; };
   }, []);
 
-  // Fase 3.6.3 — abrir uma conversa é o momento em que o atendente a
-  // "lê": zera o contador local OTIMISTICAMENTE (nunca deixa o badge
-  // antigo visível até a resposta do servidor) e persiste via
-  // markRead (upsert que só toca last_read_at — nunca o `status`
-  // operacional da Fase 3.6.2, ver db.js). Falha de persistência é
-  // apenas logada: a próxima leitura (reload ou nova seleção) ainda
-  // corrige o estado a partir do servidor.
+  // Fase 3.6.3 (correção pós-revisão do PR #70, achado CONFIRMED) —
+  // feedback de sincronização de leitura: quando a persistência de
+  // `markRead` falha depois do contador já ter sido zerado
+  // OTIMISTICAMENTE, o badge local pode estar mentindo (mostrando
+  // "lida" quando o servidor nunca recebeu isso). Nunca confiamos no
+  // zerado local nesse caso — ressincronizamos a contagem real do
+  // servidor (fonte de verdade, ver whatsapp_unread_counts()) e
+  // expomos um aviso textual para a UI, limpo automaticamente quando
+  // a ressincronização é bem-sucedida.
+  const [unreadSyncNotice, setUnreadSyncNotice] = useState(null);
+
+  const recoverUnreadCountsAfterFailure = useCallback(() => {
+    setUnreadSyncNotice('Não foi possível confirmar a leitura desta conversa no servidor. Recarregando contadores...');
+    conversationStateApi.fetchUnreadCounts()
+      .then((rows) => {
+        setUnreadCounts(buildUnreadCountsMap(rows));
+        setUnreadSyncNotice(null);
+      })
+      .catch(() => {
+        setUnreadSyncNotice('Não foi possível confirmar a leitura desta conversa. Os contadores podem estar desatualizados.');
+      });
+  }, []);
+
+  // Abrir uma conversa é o momento em que o atendente a "lê": zera o
+  // contador local OTIMISTICAMENTE (nunca deixa o badge antigo
+  // visível até a resposta do servidor) e persiste via markRead
+  // (RPC mark_whatsapp_conversation_read, migration 025 — nunca mais
+  // um timestamp do navegador, nunca toca `status` operacional da
+  // Fase 3.6.2). Se a persistência falhar, o zerado otimista pode
+  // estar ERRADO (mensagem ainda não lida no servidor) — nunca
+  // ignoramos esse erro: ressincronizamos a contagem real do
+  // servidor em vez de confiar no estado local.
   const selectConversation = useCallback((leadId) => {
     setSelectedLeadId(leadId);
     if (!leadId) return;
     setUnreadCounts((prev) => clearUnreadCountForLead(prev, leadId));
-    conversationStateApi.markRead(leadId).catch(() => {});
-  }, []);
+    conversationStateApi.markRead(leadId).catch(() => {
+      recoverUnreadCountsAfterFailure();
+    });
+  }, [recoverUnreadCountsAfterFailure]);
 
   // Fase 3.6.2 — estado OPERACIONAL de atendimento (nunca confundido
   // com status de entrega da Meta, ver conversationOperationalState.js).
@@ -472,14 +511,41 @@ export function useWhatsAppInbox(userId) {
         // entrega da Meta, que também dispara este mesmo evento).
         if (payload.eventType === 'INSERT' && payload.new && payload.new.direction === 'inbound') {
           const incoming = { leadId: payload.new.lead_id, direction: payload.new.direction };
-          if (incoming.leadId === selectedLeadId) {
-            // Conversa já aberta: a mensagem chega e é "lida ao vivo"
-            // pelo atendente — nunca incrementa, e avança
-            // last_read_at no servidor para que ela não reapareça
-            // como não lida num reload imediatamente após.
-            conversationStateApi.markRead(incoming.leadId).catch(() => {});
+          // Correção pós-revisão do PR #70 (achado CONFIRMED): nunca
+          // basta `incoming.leadId === selectedLeadId` — isso só diz
+          // que o lead está selecionado EM MEMÓRIA, não que o
+          // atendente está de fato vendo a conversa agora (aba em
+          // segundo plano, troca de conversa com a thread ainda
+          // carregando). isConversationActivelyOpen checa as três
+          // condições reais antes de considerar a mensagem "lida ao
+          // vivo" (ver whatsappUnreadTracking.js).
+          const documentVisible = typeof document === 'undefined' ? true : document.visibilityState === 'visible';
+          const activelyOpen = isConversationActivelyOpen(selectedLeadId, incoming.leadId, {
+            threadLoading: threadLoadingRef.current,
+            documentVisible,
+          });
+          if (activelyOpen) {
+            // Conversa REALMENTE visível agora: a mensagem chega e é
+            // "lida ao vivo" pelo atendente — nunca incrementa, e
+            // avança last_read_at no servidor (now() do SERVIDOR via
+            // RPC, nunca o relógio do navegador) para que ela não
+            // reapareça como não lida num reload imediatamente após.
+            // Falha de persistência aqui NUNCA é ignorada: como esta
+            // mensagem nunca foi contada localmente (nem incrementada
+            // nem exibida como não lida), uma falha silenciosa
+            // deixaria o servidor com um estado "não lido" que o
+            // cliente nunca mostra — ressincronizamos para garantir
+            // que o contador real volte a aparecer se a escrita
+            // falhou.
+            conversationStateApi.markRead(incoming.leadId).catch(() => {
+              recoverUnreadCountsAfterFailure();
+            });
           } else {
-            setUnreadCounts((prev) => applyIncomingMessageToUnreadCounts(prev, incoming, selectedLeadId));
+            // Não está realmente visível (outra conversa, aba em
+            // segundo plano, ou thread ainda carregando) — sempre
+            // incrementa, mesmo que o lead esteja selecionado em
+            // memória.
+            setUnreadCounts((prev) => applyIncomingMessageToUnreadCounts(prev, incoming, null));
           }
         }
       },
@@ -497,7 +563,7 @@ export function useWhatsAppInbox(userId) {
       },
     });
     return unsubscribe;
-  }, [userId, selectedLeadId]);
+  }, [userId, selectedLeadId, recoverUnreadCountsAfterFailure]);
 
   return {
     conversations: filteredConversations,
@@ -519,6 +585,7 @@ export function useWhatsAppInbox(userId) {
 
     // Fase 3.6.3 — contadores de não lidas (ver bloco acima).
     unreadCounts,
+    unreadSyncNotice,
 
     // Fase 3.6.2 — estado operacional (ver bloco acima).
     conversationState,

@@ -4,6 +4,7 @@ import {
   unreadCountForLead,
   applyIncomingMessageToUnreadCounts,
   clearUnreadCountForLead,
+  isConversationActivelyOpen,
 } from './whatsappUnreadTracking.js';
 
 function message(overrides = {}) {
@@ -112,5 +113,39 @@ describe('clearUnreadCountForLead', () => {
     const result = clearUnreadCountForLead(original, 'a');
     expect(original).toEqual({ a: 3 });
     expect(result).not.toBe(original);
+  });
+});
+
+describe('isConversationActivelyOpen (correção pós-revisão PR #70 — achado 3)', () => {
+  test('conversa selecionada, thread carregada, documento visível -> true', () => {
+    expect(isConversationActivelyOpen('lead-1', 'lead-1', { threadLoading: false, documentVisible: true })).toBe(true);
+  });
+
+  test('conversa NAO selecionada (outro lead) -> false, mesmo com thread carregada e documento visível', () => {
+    expect(isConversationActivelyOpen('lead-1', 'lead-2', { threadLoading: false, documentVisible: true })).toBe(false);
+  });
+
+  test('nenhuma conversa selecionada (selectedLeadId null) -> false', () => {
+    expect(isConversationActivelyOpen(null, 'lead-1', { threadLoading: false, documentVisible: true })).toBe(false);
+  });
+
+  test('thread ainda carregando (troca de conversa em andamento) -> false, mesmo com lead certo selecionado', () => {
+    expect(isConversationActivelyOpen('lead-1', 'lead-1', { threadLoading: true, documentVisible: true })).toBe(false);
+  });
+
+  test('aba em segundo plano (documentVisible false) -> false, mesmo com lead certo e thread carregada', () => {
+    expect(isConversationActivelyOpen('lead-1', 'lead-1', { threadLoading: false, documentVisible: false })).toBe(false);
+  });
+
+  test('documentVisible ausente (undefined) -> tratado como visível (nunca bloqueia por omissão)', () => {
+    expect(isConversationActivelyOpen('lead-1', 'lead-1', { threadLoading: false })).toBe(true);
+  });
+
+  test('leadId da mensagem ausente/nulo -> false, nunca lança', () => {
+    expect(isConversationActivelyOpen('lead-1', null, { threadLoading: false, documentVisible: true })).toBe(false);
+  });
+
+  test('opcoes ausentes -> nunca lança (threadLoading/documentVisible undefined tratados como "não bloqueiam")', () => {
+    expect(isConversationActivelyOpen('lead-1', 'lead-1')).toBe(true);
   });
 });
