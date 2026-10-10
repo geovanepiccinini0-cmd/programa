@@ -127,30 +127,93 @@ grant execute on function public.whatsapp_unread_counts() to authenticated;
 -- como "nada a fazer, o servidor já está mais atualizado" (ver
 -- db.js:markRead), nunca como falha.
 --
--- SEGURANÇA: security invoker — roda com os privilégios de quem
--- chama; o INSERT/UPDATE em si só é aceito pela RLS da 024 (dono do
--- lead). Mesma proteção de sempre: RLS das tabelas subjacentes é a
--- fronteira real, nunca esta função.
+-- SEGURANÇA (correção pós-revisão do PR #70, 2ª rodada — achado
+-- CONFIRMED: um usuário autenticado conseguia alterar `last_read_at`
+-- diretamente por PostgREST/UPDATE, enviando qualquer timestamp
+-- arbitrário, porque a 024 concede UPDATE de TODAS as colunas da
+-- tabela para `authenticated`, e RLS só decide a LINHA, nunca a
+-- coluna). Esta função passa a ser `security definer` (nunca mais
+-- `invoker`) exatamente para poder escrever `last_read_at` mesmo
+-- depois do GRANT de coluna ser restringido na seção D (abaixo) —
+-- mas `security definer` roda com os privilégios do DONO da função
+-- (nunca `authenticated`), e por padrão o dono de uma tabela ignora a
+-- própria RLS dela. Por isso a verificação de propriedade do lead é
+-- feita EXPLICITAMENTE aqui dentro (auth.uid() = leads.user_id),
+-- nunca delegada à RLS (que o definer bypassaria) — mesmo padrão já
+-- aprovado e em produção em whatsapp_conversation_state_consistency_check
+-- (024): "security definer só para poder ler leads.user_id... nunca
+-- expande o que o chamador pode LER de leads, nunca expande o que
+-- pode ESCREVER". Um usuário que não é dono do lead nunca consegue
+-- marcar leitura para ele (exceção, 0 linhas afetadas por qualquer
+-- outro motivo).
 -------------------------------------------------------------------
 create or replace function public.mark_whatsapp_conversation_read(p_lead_id uuid)
 returns timestamptz
-language sql
-security invoker
+language plpgsql
+security definer
 set search_path = public, pg_temp
 as $$
+declare
+  v_result timestamptz;
+begin
+  if not exists (
+    select 1 from public.leads l where l.id = p_lead_id and l.user_id = auth.uid()
+  ) then
+    raise exception 'mark_whatsapp_conversation_read: lead % nao pertence ao usuario autenticado', p_lead_id;
+  end if;
+
   insert into public.whatsapp_conversation_state as wcs (lead_id, last_read_at)
   values (p_lead_id, now())
   on conflict (lead_id) do update
     set last_read_at = excluded.last_read_at
   where wcs.last_read_at is null or excluded.last_read_at >= wcs.last_read_at
-  returning wcs.last_read_at;
+  returning wcs.last_read_at into v_result;
+
+  return v_result;
+end;
 $$;
 
 comment on function public.mark_whatsapp_conversation_read(uuid) is
-  'Fase 3.6.3 — marca a conversa do lead informado como lida AGORA (now() do servidor, nunca do cliente). Nunca regride last_read_at (guarda no ON CONFLICT, mesmo princípio de last_event_at na 024) — uma chamada atrasada que perdeu a corrida para uma leitura mais recente simplesmente não afeta nenhuma linha (0 linhas devolvidas, nunca um erro). Nunca toca status/last_event_at (coluna fora do INSERT/SET desta função). security invoker — RLS da 024 decide quem pode inserir/atualizar.';
+  'Fase 3.6.3 — marca a conversa do lead informado como lida AGORA (now() do servidor, nunca do cliente). Nunca regride last_read_at (guarda no ON CONFLICT, mesmo princípio de last_event_at na 024) — uma chamada atrasada que perdeu a corrida para uma leitura mais recente simplesmente não afeta nenhuma linha (0 linhas devolvidas, nunca um erro). Nunca toca status/last_event_at (coluna fora do INSERT/SET desta função). security DEFINER com verificação EXPLÍCITA de dono do lead (auth.uid() = leads.user_id) — nunca relies em RLS, que o definer bypassaria. Único caminho de escrita de last_read_at (GRANT de coluna para authenticated foi revogado, ver secao D).';
 
 revoke all on function public.mark_whatsapp_conversation_read(uuid) from public;
 revoke all on function public.mark_whatsapp_conversation_read(uuid) from anon;
 grant execute on function public.mark_whatsapp_conversation_read(uuid) to authenticated;
 
 -- Rollback deste bloco: "drop function if exists public.mark_whatsapp_conversation_read(uuid);"
+
+-------------------------------------------------------------------
+-- D) Correção pós-revisão do PR #70, 2ª rodada (achado CONFIRMED) —
+-- fecha o gap de privilégio deixado pela 024: `grant select, insert,
+-- update to authenticated` (024) concede INSERT/UPDATE de TODAS as
+-- colunas, incluindo `last_read_at`. RLS decide a LINHA (dono do
+-- lead), nunca a COLUNA — então um usuário dono do próprio lead podia
+-- enviar um PATCH/POST do PostgREST incluindo `last_read_at` com
+-- qualquer timestamp arbitrário, contornando totalmente a função da
+-- seção C (now() do servidor, guarda de não-regressão). Isso vale
+-- tanto para UPDATE de uma linha já existente quanto para INSERT de
+-- uma linha nova (upsert do cliente quando a conversa ainda não tem
+-- nenhum estado registrado) — os dois caminhos precisam ser
+-- restringidos, não só o UPDATE.
+--
+-- Estratégia: GRANT de coluna (nunca revogar a tabela inteira, que
+-- quebraria a edição manual de `status` da Fase 3.6.2 — requisito
+-- explícito desta correção: "preservando a edição manual dos estados
+-- operacionais"). `authenticated` passa a poder INSERT/UPDATE
+-- diretamente só em `lead_id`/`status` — nunca `last_read_at`
+-- (permanece gravável somente pela função security definer da seção
+-- C, que não depende deste GRANT porque roda com os privilégios do
+-- dono da função, nunca de `authenticated`). Nenhum escalonamento de
+-- privilégio: a função não ganha MAIS do que já fazia (continua só
+-- conseguindo afetar o lead_id que ela mesma verifica como sendo do
+-- usuário chamador); é `authenticated` que perde a capacidade de
+-- escrever a coluna diretamente.
+-------------------------------------------------------------------
+revoke insert, update on public.whatsapp_conversation_state from authenticated;
+grant insert (lead_id, status) on public.whatsapp_conversation_state to authenticated;
+grant update (status) on public.whatsapp_conversation_state to authenticated;
+
+comment on column public.whatsapp_conversation_state.last_read_at is
+  'Fase 3.6.3 — timestamp em que o ATENDENTE efetivamente visualizou esta conversa (nunca a Meta). Mensagens inbound com occurred_at > last_read_at (ou last_read_at IS NULL) contam como não lidas, ver whatsapp_unread_counts(). Escrita exclusivamente via mark_whatsapp_conversation_read() (seção C, security definer com verificação explícita de dono) — NUNCA por INSERT/UPDATE direto do cliente: o GRANT de coluna para authenticated foi deliberadamente restringido a lead_id/status (seção D), last_read_at não está incluído em nenhum GRANT de authenticated. Nunca confundir com whatsapp_messages.read_at (leitura da Meta sobre mensagem outbound) nem com whatsapp_conversation_state.status (estado operacional da Fase 3.6.2) — eixos independentes.';
+
+-- Rollback deste bloco: "grant insert, update on public.whatsapp_conversation_state to authenticated;" (restaura o GRANT de tabela inteira da 024 — nunca necessário junto do rollback das seções A/B/C, que já tornam last_read_at/mark_whatsapp_conversation_read inexistentes).
