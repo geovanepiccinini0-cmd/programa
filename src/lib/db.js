@@ -368,6 +368,36 @@ export const conversationStateApi = {
     if (error) throw error;
     return conversationOperationalStateFromRow(data);
   },
+
+  // Fase 3.6.3 — marca a conversa como lida pelo ATENDENTE agora
+  // (last_read_at = instante local, mesmo padrão de setStatus —
+  // nunca uma RPC). Upsert pelo mesmo motivo de setStatus: a
+  // conversa pode ainda não ter nenhuma linha (nenhum evento
+  // automático chegou a criar uma). NUNCA toca `status` — este
+  // upsert só envia `last_read_at`, preservando qualquer status já
+  // existente (coluna omitida do payload nunca é sobrescrita pelo
+  // Postgres num UPDATE real; no caminho de INSERT puro, `status`
+  // assume seu default `pendente_resposta`, igual a qualquer linha
+  // nova).
+  markRead: async (leadId) => {
+    const { data, error } = await supabase
+      .from('whatsapp_conversation_state')
+      .upsert({ lead_id: leadId, last_read_at: new Date().toISOString() }, { onConflict: 'lead_id' })
+      .select()
+      .maybeSingle();
+    if (error) throw error;
+    return conversationOperationalStateFromRow(data);
+  },
+
+  // Fase 3.6.3 — contagem agregada de não lidas por conversa, para
+  // todas as conversas do usuário autenticado (whatsapp_unread_counts(),
+  // migration 025) — uma única chamada, nunca N consultas por
+  // conversa.
+  fetchUnreadCounts: async () => {
+    const { data, error } = await supabase.rpc('whatsapp_unread_counts');
+    if (error) throw error;
+    return (data || []).map((r) => ({ leadId: r.lead_id, unreadCount: r.unread_count }));
+  },
 };
 
 export const profilesApi = {

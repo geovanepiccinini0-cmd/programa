@@ -29,6 +29,7 @@ export default function WhatsAppInboxView({ userId }) {
     sendMessage, composerSending, composerNotice, sendGate,
     conversationFilters, setConversationFilters, clearConversationFilters, totalConversationsCount,
     conversationState, setConversationStatus,
+    unreadCounts,
   } = useWhatsAppInbox(userId);
 
   const [editingLead, setEditingLead] = useState(null);
@@ -61,6 +62,7 @@ export default function WhatsAppInboxView({ userId }) {
             onFiltersChange={setConversationFilters}
             onClearFilters={clearConversationFilters}
             totalCount={totalConversationsCount}
+            unreadCounts={unreadCounts}
           />
         </div>
         <div className="wa-inbox-thread-pane">

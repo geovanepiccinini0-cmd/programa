@@ -35,5 +35,9 @@ export function conversationOperationalStateFromRow(r) {
     userId: r.user_id,
     status: r.status,
     updatedAt: r.updated_at,
+    // Fase 3.6.3 — timestamp de leitura HUMANA (atendente), nunca
+    // whatsapp_messages.read_at (leitura da Meta). null = conversa
+    // ainda nunca aberta pelo atendente.
+    lastReadAt: r.last_read_at ?? null,
   };
 }

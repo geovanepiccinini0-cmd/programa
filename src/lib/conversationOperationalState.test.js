@@ -36,13 +36,20 @@ describe('conversationOperationalStateLabel', () => {
 });
 
 describe('conversationOperationalStateFromRow', () => {
-  test('mapeia colunas reais da migration 024 para camelCase', () => {
+  test('mapeia colunas reais da migration 024 + last_read_at (025) para camelCase', () => {
     const mapped = conversationOperationalStateFromRow({
-      lead_id: 'lead-1', user_id: 'user-1', status: 'em_atendimento', updated_at: '2026-01-01T00:00:00.000Z',
+      lead_id: 'lead-1', user_id: 'user-1', status: 'em_atendimento', updated_at: '2026-01-01T00:00:00.000Z', last_read_at: '2026-01-01T00:05:00.000Z',
     });
     expect(mapped).toEqual({
-      leadId: 'lead-1', userId: 'user-1', status: 'em_atendimento', updatedAt: '2026-01-01T00:00:00.000Z',
+      leadId: 'lead-1', userId: 'user-1', status: 'em_atendimento', updatedAt: '2026-01-01T00:00:00.000Z', lastReadAt: '2026-01-01T00:05:00.000Z',
     });
+  });
+
+  test('last_read_at ausente/nulo -> lastReadAt null (conversa nunca aberta pelo atendente)', () => {
+    const mapped = conversationOperationalStateFromRow({
+      lead_id: 'lead-1', user_id: 'user-1', status: 'pendente_resposta', updated_at: '2026-01-01T00:00:00.000Z', last_read_at: null,
+    });
+    expect(mapped.lastReadAt).toBeNull();
   });
 
   test('linha nula/ausente -> null, nunca lança (conversa ainda sem estado criado)', () => {

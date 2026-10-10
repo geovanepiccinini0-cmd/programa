@@ -29,6 +29,11 @@ import {
   buildLeadsById,
   filterConversations,
 } from '../lib/whatsappConversationFilters.js';
+import {
+  buildUnreadCountsMap,
+  applyIncomingMessageToUnreadCounts,
+  clearUnreadCountForLead,
+} from '../lib/whatsappUnreadTracking.js';
 
 // Fase 3.5.1 — Caixa de entrada WhatsApp, SOMENTE LEITURA.
 // Fase 3.5.1 (correção pós-auditoria) — ver comentários inline para
@@ -64,6 +69,11 @@ import {
 export function useWhatsAppInbox(userId) {
   const [leads, setLeads] = useState([]);
   const [recentMessages, setRecentMessages] = useState([]);
+  // Fase 3.6.3 — contadores de não lidas (leitura humana), ver
+  // whatsappUnreadTracking.js. Mapa leadId -> unreadCount, sempre
+  // recalculado do servidor no login/reload e ajustado localmente via
+  // Realtime (nunca a fonte de verdade — ver comentário do módulo).
+  const [unreadCounts, setUnreadCounts] = useState({});
   const [recentWindowSize, setRecentWindowSize] = useState(RECENT_WINDOW_SIZE);
   const [conversationsLoading, setConversationsLoading] = useState(true);
   const [conversationsError, setConversationsError] = useState(null);
@@ -124,6 +134,20 @@ export function useWhatsAppInbox(userId) {
       });
     return () => { cancelled = true; };
   }, [userId, recentWindowSize, conversationsRetryToken]);
+
+  // Fase 3.6.3 — contagem inicial de não lidas, uma única chamada
+  // agregada (whatsapp_unread_counts()) por login/troca de usuário —
+  // nunca N consultas por conversa. Recalculada do zero aqui a cada
+  // montagem/reload, autocorrigindo qualquer ajuste local feito via
+  // Realtime na sessão anterior.
+  useEffect(() => {
+    if (!userId) { setUnreadCounts({}); return undefined; }
+    let cancelled = false;
+    conversationStateApi.fetchUnreadCounts()
+      .then((rows) => { if (!cancelled) setUnreadCounts(buildUnreadCountsMap(rows)); })
+      .catch(() => { if (!cancelled) setUnreadCounts({}); });
+    return () => { cancelled = true; };
+  }, [userId, conversationsRetryToken]);
 
   const refetchConversations = useCallback(() => {
     setConversationsRetryToken((n) => n + 1);
@@ -202,8 +226,18 @@ export function useWhatsAppInbox(userId) {
     return () => { cancelled = true; };
   }, []);
 
+  // Fase 3.6.3 — abrir uma conversa é o momento em que o atendente a
+  // "lê": zera o contador local OTIMISTICAMENTE (nunca deixa o badge
+  // antigo visível até a resposta do servidor) e persiste via
+  // markRead (upsert que só toca last_read_at — nunca o `status`
+  // operacional da Fase 3.6.2, ver db.js). Falha de persistência é
+  // apenas logada: a próxima leitura (reload ou nova seleção) ainda
+  // corrige o estado a partir do servidor.
   const selectConversation = useCallback((leadId) => {
     setSelectedLeadId(leadId);
+    if (!leadId) return;
+    setUnreadCounts((prev) => clearUnreadCountForLead(prev, leadId));
+    conversationStateApi.markRead(leadId).catch(() => {});
   }, []);
 
   // Fase 3.6.2 — estado OPERACIONAL de atendimento (nunca confundido
@@ -433,6 +467,21 @@ export function useWhatsAppInbox(userId) {
         if (changedLeadId && changedLeadId === selectedLeadId) {
           setThreadMessages((prev) => sortMessagesChronologically(mergeRealtimeMessage(prev, payload)));
         }
+        // Fase 3.6.3 — só INSERT de mensagem INBOUND nova interessa
+        // ao contador de não lidas (nunca UPDATE de status de
+        // entrega da Meta, que também dispara este mesmo evento).
+        if (payload.eventType === 'INSERT' && payload.new && payload.new.direction === 'inbound') {
+          const incoming = { leadId: payload.new.lead_id, direction: payload.new.direction };
+          if (incoming.leadId === selectedLeadId) {
+            // Conversa já aberta: a mensagem chega e é "lida ao vivo"
+            // pelo atendente — nunca incrementa, e avança
+            // last_read_at no servidor para que ela não reapareça
+            // como não lida num reload imediatamente após.
+            conversationStateApi.markRead(incoming.leadId).catch(() => {});
+          } else {
+            setUnreadCounts((prev) => applyIncomingMessageToUnreadCounts(prev, incoming, selectedLeadId));
+          }
+        }
       },
       // Correção do finding MEDIUM da auditoria final: ignora
       // eventos cujo row.user_id não corresponda ao usuário logado —
@@ -467,6 +516,9 @@ export function useWhatsAppInbox(userId) {
     selectedLeadId,
     selectedLead,
     selectConversation,
+
+    // Fase 3.6.3 — contadores de não lidas (ver bloco acima).
+    unreadCounts,
 
     // Fase 3.6.2 — estado operacional (ver bloco acima).
     conversationState,

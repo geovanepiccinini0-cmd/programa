@@ -1,6 +1,7 @@
 import { formatRelativeTime } from '../utils.js';
 import { STAGES, TAGS_LEAD } from '../constants.js';
 import { hasActiveConversationFilters } from '../lib/whatsappConversationFilters.js';
+import { unreadCountForLead } from '../lib/whatsappUnreadTracking.js';
 
 // Fase 3.5.1 (lista) + 3.6.0 (busca/filtros) — lista de conversas
 // (lead + prévia da última mensagem), ordenada pela mensagem mais
@@ -10,7 +11,7 @@ import { hasActiveConversationFilters } from '../lib/whatsappConversationFilters
 // carregado (ver whatsappConversationFilters.js).
 export default function WhatsAppConversationList({
   conversations, selectedLeadId, onSelect, loading, error, onRetry, hasMore, onLoadMore,
-  filters, onFiltersChange, onClearFilters, totalCount,
+  filters, onFiltersChange, onClearFilters, totalCount, unreadCounts,
 }) {
   const filtersActive = hasActiveConversationFilters(filters);
 
@@ -102,20 +103,33 @@ export default function WhatsAppConversationList({
         </div>
       ) : (
         <div className="wa-conversation-list">
-          {conversations.map((c) => (
-            <button
-              type="button"
-              key={c.leadId}
-              className={`wa-conversation-item${c.leadId === selectedLeadId ? ' active' : ''}`}
-              onClick={() => onSelect(c.leadId)}
-            >
-              <div className="wa-conversation-top">
-                <span className="wa-conversation-nome">{c.leadNome}</span>
-                <span className="wa-conversation-time">{formatRelativeTime(c.lastMessageAt)}</span>
-              </div>
-              <div className="wa-conversation-preview">{c.preview}</div>
-            </button>
-          ))}
+          {conversations.map((c) => {
+            // Fase 3.6.3 — contador de não lidas (leitura humana,
+            // nunca status de entrega da Meta). Fonte: unreadCounts
+            // (useWhatsAppInbox), derivado do servidor.
+            const unread = unreadCountForLead(unreadCounts, c.leadId);
+            return (
+              <button
+                type="button"
+                key={c.leadId}
+                className={`wa-conversation-item${c.leadId === selectedLeadId ? ' active' : ''}${unread > 0 ? ' wa-conversation-unread' : ''}`}
+                onClick={() => onSelect(c.leadId)}
+              >
+                <div className="wa-conversation-top">
+                  <span className="wa-conversation-nome">{c.leadNome}</span>
+                  <span className="wa-conversation-time">{formatRelativeTime(c.lastMessageAt)}</span>
+                </div>
+                <div className="wa-conversation-preview-row">
+                  <span className="wa-conversation-preview">{c.preview}</span>
+                  {unread > 0 && (
+                    <span className="wa-conversation-unread-badge" aria-label={`${unread} mensagens não lidas`}>
+                      {unread > 99 ? '99+' : unread}
+                    </span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
           {hasMore && (
             <button type="button" className="btn-ghost" style={{ width: '100%', marginTop: 8 }} onClick={onLoadMore}>
               Carregar conversas mais antigas
