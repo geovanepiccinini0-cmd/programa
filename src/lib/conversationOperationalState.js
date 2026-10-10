@@ -41,3 +41,20 @@ export function conversationOperationalStateFromRow(r) {
     lastReadAt: r.last_read_at ?? null,
   };
 }
+
+// HOTFIX pós-incidente em produção (alteração manual de status
+// falhando com HTTP 403 / SQLSTATE 42501) — classifica o erro do
+// PASSO 2 (INSERT) do novo fluxo de duas etapas de
+// conversationStateApi.setStatus (db.js): '23505' é o SQLSTATE de
+// unique_violation — significa que outra inserção (quase sempre a
+// RPC automática apply_whatsapp_conversation_operational_event,
+// service_role, migration 024) criou a linha para este lead_id
+// exatamente entre o UPDATE (passo 1, que não encontrou nenhuma
+// linha) e o INSERT (passo 2) — nunca um erro real a propagar, só o
+// sinal para repetir o UPDATE uma vez (a linha concorrente já
+// existe). Extraído como função pura só para documentar
+// explicitamente esse contrato de erro e ser testável sem mockar o
+// cliente Supabase.
+export function isConversationStateUniqueViolation(error) {
+  return Boolean(error) && error.code === '23505';
+}
