@@ -354,6 +354,31 @@ export const conversationStateApi = {
     return conversationOperationalStateFromRow(data);
   },
 
+  // Fase 3.6.4 — fetch EM LOTE para a lista inteira de conversas
+  // (filtro/priorização por estado operacional). Uma única consulta
+  // `.in('lead_id', ...)`, nunca N chamadas por conversa — mesmo
+  // princípio de fetchUnreadCounts. Escopo é SEMPRE o conjunto de
+  // leadIds que o chamador já tem carregado (useWhatsAppInbox deriva
+  // de `conversations`, já limitado pela paginação/janela da 3.5.1) —
+  // nunca uma varredura solta de toda a tabela. Segurança continua
+  // sendo a RLS da 024 ("dono pode ler") — este método nunca decide
+  // autorização, só devolve o que a RLS já deixa passar para os ids
+  // pedidos. Devolve só as linhas que EXISTEM — leadIds sem nenhuma
+  // linha simplesmente não aparecem no array; é responsabilidade do
+  // chamador (buildConversationOperationalStatesMap,
+  // conversationOperationalState.js) decidir o valor default para
+  // esses, nunca deste método, que nunca inventa dados.
+  fetchForLeads: async (leadIds) => {
+    const ids = Array.from(new Set((leadIds || []).filter(Boolean)));
+    if (ids.length === 0) return [];
+    const { data, error } = await supabase
+      .from('whatsapp_conversation_state')
+      .select('*')
+      .in('lead_id', ids);
+    if (error) throw error;
+    return (data || []).map(conversationOperationalStateFromRow);
+  },
+
   // Upsert manual — cobre tanto o caso "conversa ainda sem nenhum
   // evento automático registrado" (nenhuma linha existe ainda) quanto
   // a alteração normal de uma linha já existente. `user_id` nunca é

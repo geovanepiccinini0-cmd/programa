@@ -21,8 +21,27 @@ export const CONVERSATION_OPERATIONAL_STATE_LABELS = CONVERSATION_OPERATIONAL_ST
   {},
 );
 
+// Fase 3.6.4 — valor padrão para uma conversa que ainda não tem
+// NENHUMA linha em whatsapp_conversation_state (nenhum evento
+// automático/manual chegou a criar uma) — mesmo fallback que
+// conversationOperationalStateLabel já aplicava implicitamente.
+// Centralizado aqui para nunca duplicar a string literal em
+// whatsappConversationFilters.js/useWhatsAppInbox.js.
+export const DEFAULT_CONVERSATION_OPERATIONAL_STATUS = 'pendente_resposta';
+
 export function conversationOperationalStateLabel(status) {
-  return CONVERSATION_OPERATIONAL_STATE_LABELS[status] || 'Pendente de resposta';
+  return CONVERSATION_OPERATIONAL_STATE_LABELS[status] || CONVERSATION_OPERATIONAL_STATE_LABELS[DEFAULT_CONVERSATION_OPERATIONAL_STATUS];
+}
+
+// Fase 3.6.4 — "aguardando resposta" (requisito 4 do escopo da fase):
+// é o estado em que o CLIENTE enviou e o CRM ainda não respondeu —
+// exatamente `pendente_resposta` (ver comentário da 024 em
+// CONVERSATION_OPERATIONAL_STATES). Usado só para PRIORIZAÇÃO
+// VISUAL (badge/destaque) — nunca para reordenar a lista, que
+// continua exclusivamente por última atividade real
+// (sortConversationsByRecency, whatsappMessages.js).
+export function conversationNeedsAttention(status) {
+  return (status || DEFAULT_CONVERSATION_OPERATIONAL_STATUS) === 'pendente_resposta';
 }
 
 // Mapeia a linha de public.whatsapp_conversation_state (migration
@@ -40,4 +59,49 @@ export function conversationOperationalStateFromRow(r) {
     // ainda nunca aberta pelo atendente.
     lastReadAt: r.last_read_at ?? null,
   };
+}
+
+// Fase 3.6.4 — agregação em LOTE para a lista inteira de conversas
+// (filtro/priorização por estado operacional, requisito 3: "carregue
+// estados operacionais em lote, respeitando... o conjunto de
+// conversas carregadas"). Pura — recebe os `leadIds` já carregados
+// (de `conversations`, nunca uma varredura solta da tabela) e os
+// `states` já buscados (um fetch em lote, ver
+// conversationStateApi.fetchForLeads em db.js) e devolve um mapa
+// `leadId -> estado`, SEMPRE com uma entrada para cada leadId pedido
+// — nunca omite um lead só porque ele não tem linha ainda.
+//
+// DISTINÇÃO EXPLÍCITA (requisito 4 do escopo desta fase): `hasRow`
+// diferencia "conversa sem nenhum evento ainda" (hasRow: false,
+// status default) de um estado real já persistido (hasRow: true) —
+// os dois têm o MESMO `status` aparente quando a linha real também
+// está em pendente_resposta, mas só `hasRow` permite ao chamador
+// nunca confundir "nunca houve evento" com "sabemos que há um
+// evento e é esse". Uma FALHA de carregamento (o fetch em lote
+// rejeitou) nunca passa por esta função — o chamador (useWhatsAppInbox)
+// preserva o último mapa bom conhecido e expõe o erro em um estado
+// SEPARADO (`conversationStatesError`), nunca aqui dentro: esta
+// função só conhece "pedido vs. encontrado", nunca "a consulta
+// falhou".
+export function buildConversationOperationalStatesMap(leadIds, states) {
+  const byLeadId = {};
+  for (const state of states || []) {
+    if (state && state.leadId) byLeadId[state.leadId] = state;
+  }
+  const map = {};
+  for (const leadId of leadIds || []) {
+    if (!leadId) continue;
+    const found = byLeadId[leadId];
+    map[leadId] = found
+      ? { ...found, hasRow: true }
+      : {
+        leadId,
+        userId: null,
+        status: DEFAULT_CONVERSATION_OPERATIONAL_STATUS,
+        updatedAt: null,
+        lastReadAt: null,
+        hasRow: false,
+      };
+  }
+  return map;
 }

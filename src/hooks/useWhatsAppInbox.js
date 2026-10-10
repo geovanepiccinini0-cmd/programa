@@ -35,6 +35,7 @@ import {
   clearUnreadCountForLead,
   isConversationActivelyOpen,
 } from '../lib/whatsappUnreadTracking.js';
+import { buildConversationOperationalStatesMap } from '../lib/conversationOperationalState.js';
 
 // Fase 3.5.1 — Caixa de entrada WhatsApp, SOMENTE LEITURA.
 // Fase 3.5.1 (correção pós-auditoria) — ver comentários inline para
@@ -180,20 +181,137 @@ export function useWhatsAppInbox(userId) {
     [recentMessages, leadNomeById],
   );
 
-  // Fase 3.6.0 — busca/filtros da lista de conversas. Opera
-  // exclusivamente sobre `conversations` (já carregado, já ordenado
-  // por recência) e `leads` (já em memória) — nunca dispara uma nova
-  // consulta ao Supabase, nunca abrange conversas ainda não trazidas
-  // pela paginação (`hasMoreConversationHistory`). Nunca usa
-  // read_at/delivered_at/sent_at (status de entrega da Meta) como
-  // critério — só nome, etapa e tags do LEAD.
+  // Fase 3.6.0 (busca/etapa/tags) + 3.6.4 (não lidas/estado
+  // operacional/telefone) — busca/filtros da lista de conversas.
+  // Opera exclusivamente sobre `conversations` (já carregado, já
+  // ordenado por recência), `leads`, `unreadCounts` e
+  // `conversationStatesByLead` (todos já em memória) — nunca dispara
+  // uma nova consulta ao Supabase a partir do próprio filtro, nunca
+  // abrange conversas ainda não trazidas pela paginação
+  // (`hasMoreConversationHistory`). Nunca usa read_at/delivered_at/
+  // sent_at (status de entrega da Meta) como critério.
   const [conversationFilters, setConversationFilters] = useState(EMPTY_CONVERSATION_FILTERS);
 
   const leadsById = useMemo(() => buildLeadsById(leads), [leads]);
 
+  // Fase 3.6.4 — conjunto de leadIds efetivamente CARREGADOS na lista
+  // (nunca toda a base) — é esse conjunto, e só ele, que é usado para
+  // o fetch em lote de estados operacionais abaixo (requisito
+  // explícito: "respeitando... o conjunto de conversas carregadas").
+  // `Key` é uma assinatura estável (ids ordenados) usada só como
+  // dependência de efeito — evita refetch quando o CONJUNTO de ids é
+  // o mesmo mas a ordem mudou (ex. reordenação por nova mensagem).
+  const conversationLeadIds = useMemo(() => conversations.map((c) => c.leadId), [conversations]);
+  const conversationLeadIdsKey = useMemo(
+    () => [...conversationLeadIds].sort().join(','),
+    [conversationLeadIds],
+  );
+
+  // Fase 3.6.4 — estados operacionais de TODAS as conversas
+  // carregadas (nunca só da selecionada, ao contrário do bloco já
+  // existente da 3.6.2 mais abaixo, que continua INTOCADO — este é
+  // um mapa ADICIONAL, só para filtro/priorização visual da lista).
+  //
+  // Requisito explícito (correção obrigatória do diagnóstico): uma
+  // FALHA de carregamento NUNCA é tratada como "todos os estados
+  // ausentes" — `conversationStatesError` é um estado SEPARADO de
+  // `conversationStatesByLead`; em caso de erro, o último mapa bom
+  // conhecido é PRESERVADO (nunca zerado), e a UI decide o que
+  // mostrar com base no erro explícito, nunca inferindo ausência a
+  // partir de um mapa vazio por falha.
+  const [conversationStatesByLead, setConversationStatesByLead] = useState({});
+  const [conversationStatesLoading, setConversationStatesLoading] = useState(false);
+  const [conversationStatesError, setConversationStatesError] = useState(null);
+  const [conversationStatesRetryToken, setConversationStatesRetryToken] = useState(0);
+
+  useEffect(() => {
+    if (!userId || conversationLeadIds.length === 0) {
+      setConversationStatesByLead({});
+      setConversationStatesError(null);
+      setConversationStatesLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setConversationStatesLoading(true);
+    conversationStateApi.fetchForLeads(conversationLeadIds)
+      .then((states) => {
+        if (cancelled) return;
+        setConversationStatesByLead(buildConversationOperationalStatesMap(conversationLeadIds, states));
+        setConversationStatesError(null);
+        setConversationStatesLoading(false);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        // Nunca substitui o mapa atual por {} — preserva o último
+        // conhecido (pode estar desatualizado, mas nunca inventa
+        // "todas ausentes" por causa de uma falha de rede/RLS).
+        setConversationStatesError(e);
+        setConversationStatesLoading(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- conversationLeadIdsKey já representa conversationLeadIds de forma estável; incluir o array também causaria refetch por troca de referência sem troca de conteúdo.
+  }, [userId, conversationLeadIdsKey, conversationStatesRetryToken]);
+
+  const retryConversationStates = useCallback(() => {
+    setConversationStatesRetryToken((n) => n + 1);
+  }, []);
+
+  // Fase 3.6.4 — Realtime NÃO filtrado para whatsapp_conversation_state
+  // (canal próprio, nunca reaproveita o canal por-lead da 3.6.2 nem o
+  // canal principal de mensagens/leads). Guard de posse por
+  // `user_id` (mesmo princípio já usado para `leads` em
+  // shouldApplyLeadRealtimeChange) é defesa em profundidade — a RLS
+  // da 024 já deveria impedir o Realtime de entregar linhas de outro
+  // usuário, mas nunca confiamos só nisso. Só atualiza leadIds que já
+  // fazem parte do mapa carregado (nunca expande o conjunto definido
+  // pelo fetch em lote acima) — uma conversa nova aparece aqui
+  // naturalmente no próximo fetch, quando `conversationLeadIdsKey`
+  // mudar.
+  //
+  // DEPENDÊNCIA DE CONFIGURAÇÃO EM PRODUÇÃO (documentar, nunca
+  // alterar sem autorização explícita): este canal só recebe eventos
+  // se a tabela public.whatsapp_conversation_state estiver incluída
+  // na publication `supabase_realtime` do Supabase. As migrations
+  // 018 e 007 fazem isso explicitamente via
+  // "alter publication supabase_realtime add table ...", mas NENHUMA
+  // migration faz isso para whatsapp_conversation_state (024) nem
+  // para leads — o canal principal de leads já em produção sugere
+  // que essas tabelas foram habilitadas manualmente pelo painel do
+  // Supabase em algum momento anterior a este código. Esta fase NÃO
+  // executa nenhum ALTER PUBLICATION (proibido pelas restrições desta
+  // fase) — se a tabela não estiver habilitada em produção, este
+  // canal simplesmente nunca dispara (sem erro visível), e a lista só
+  // reflete mudanças de estado operacional no próximo fetch em lote
+  // (nova seleção de conversa, refetchConversations, ou
+  // retryConversationStates) — nunca quebra, só fica "menos ao vivo".
+  useEffect(() => {
+    if (!userId) return undefined;
+    const channel = supabase
+      .channel(`crm-piccinini-conversation-states-list-${userId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'whatsapp_conversation_state' }, (payload) => {
+        const row = payload.new || payload.old;
+        if (!row || !row.lead_id) return;
+        if (row.user_id && row.user_id !== userId) return;
+        setConversationStatesByLead((prev) => {
+          if (!(row.lead_id in prev)) return prev;
+          const mapped = payload.new ? conversationStateApi.fromRow(payload.new) : null;
+          return {
+            ...prev,
+            [row.lead_id]: mapped
+              ? { ...mapped, hasRow: true }
+              : {
+                leadId: row.lead_id, userId: null, status: 'pendente_resposta', updatedAt: null, lastReadAt: null, hasRow: false,
+              },
+          };
+        });
+      })
+      .subscribe();
+    return () => supabase.removeChannel(channel);
+  }, [userId]);
+
   const filteredConversations = useMemo(
-    () => filterConversations(conversations, leadsById, conversationFilters),
-    [conversations, leadsById, conversationFilters],
+    () => filterConversations(conversations, leadsById, conversationFilters, { unreadCounts, conversationStatesByLead }),
+    [conversations, leadsById, conversationFilters, unreadCounts, conversationStatesByLead],
   );
 
   const clearConversationFilters = useCallback(() => {
@@ -590,6 +708,13 @@ export function useWhatsAppInbox(userId) {
     // Fase 3.6.2 — estado operacional (ver bloco acima).
     conversationState,
     setConversationStatus,
+
+    // Fase 3.6.4 — estados operacionais EM LOTE (filtro/priorização
+    // visual da lista) + diagnóstico de falha separado de ausência.
+    conversationStatesByLead,
+    conversationStatesLoading,
+    conversationStatesError,
+    retryConversationStates,
 
     threadMessages: threadMessagesWithPending,
     threadLoading,

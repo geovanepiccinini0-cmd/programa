@@ -2,8 +2,11 @@ import { describe, expect, test } from 'vitest';
 import {
   CONVERSATION_OPERATIONAL_STATES,
   CONVERSATION_OPERATIONAL_STATE_LABELS,
+  DEFAULT_CONVERSATION_OPERATIONAL_STATUS,
   conversationOperationalStateLabel,
   conversationOperationalStateFromRow,
+  conversationNeedsAttention,
+  buildConversationOperationalStatesMap,
 } from './conversationOperationalState.js';
 
 describe('CONVERSATION_OPERATIONAL_STATES', () => {
@@ -55,5 +58,74 @@ describe('conversationOperationalStateFromRow', () => {
   test('linha nula/ausente -> null, nunca lança (conversa ainda sem estado criado)', () => {
     expect(conversationOperationalStateFromRow(null)).toBeNull();
     expect(conversationOperationalStateFromRow(undefined)).toBeNull();
+  });
+});
+
+describe('conversationNeedsAttention (Fase 3.6.4 — priorização visual)', () => {
+  test('pendente_resposta -> true (cliente enviou, aguardando o CRM)', () => {
+    expect(conversationNeedsAttention('pendente_resposta')).toBe(true);
+  });
+
+  test('demais estados -> false', () => {
+    expect(conversationNeedsAttention('em_atendimento')).toBe(false);
+    expect(conversationNeedsAttention('aguardando_cliente')).toBe(false);
+    expect(conversationNeedsAttention('concluido')).toBe(false);
+  });
+
+  test('status ausente/nulo -> trata como default (pendente_resposta) -> true', () => {
+    expect(conversationNeedsAttention(null)).toBe(true);
+    expect(conversationNeedsAttention(undefined)).toBe(true);
+    expect(DEFAULT_CONVERSATION_OPERATIONAL_STATUS).toBe('pendente_resposta');
+  });
+});
+
+describe('buildConversationOperationalStatesMap (Fase 3.6.4 — fetch em lote)', () => {
+  test('lead com estado real encontrado -> hasRow true, dados do estado preservados', () => {
+    const states = [{ leadId: 'lead-1', userId: 'user-1', status: 'em_atendimento', updatedAt: 't1', lastReadAt: 't2' }];
+    const map = buildConversationOperationalStatesMap(['lead-1'], states);
+    expect(map).toEqual({
+      'lead-1': { leadId: 'lead-1', userId: 'user-1', status: 'em_atendimento', updatedAt: 't1', lastReadAt: 't2', hasRow: true },
+    });
+  });
+
+  test('lead SEM estado (nunca houve evento) -> hasRow false, status default, nunca omitido do mapa', () => {
+    const map = buildConversationOperationalStatesMap(['lead-2'], []);
+    expect(map).toEqual({
+      'lead-2': { leadId: 'lead-2', userId: null, status: 'pendente_resposta', updatedAt: null, lastReadAt: null, hasRow: false },
+    });
+  });
+
+  test('mistura: alguns leads com estado, outros sem -> cada um corretamente classificado, nenhum omitido', () => {
+    const states = [{ leadId: 'lead-1', userId: 'user-1', status: 'concluido', updatedAt: 't1', lastReadAt: null }];
+    const map = buildConversationOperationalStatesMap(['lead-1', 'lead-2'], states);
+    expect(map['lead-1'].hasRow).toBe(true);
+    expect(map['lead-1'].status).toBe('concluido');
+    expect(map['lead-2'].hasRow).toBe(false);
+    expect(map['lead-2'].status).toBe('pendente_resposta');
+  });
+
+  test('leadIds vazio/nulo -> mapa vazio, nunca lança', () => {
+    expect(buildConversationOperationalStatesMap([], [])).toEqual({});
+    expect(buildConversationOperationalStatesMap(null, null)).toEqual({});
+    expect(buildConversationOperationalStatesMap(undefined, undefined)).toEqual({});
+  });
+
+  test('leadId nulo/vazio dentro da lista -> ignorado, nunca lança', () => {
+    const map = buildConversationOperationalStatesMap(['lead-1', null, ''], []);
+    expect(Object.keys(map).sort()).toEqual(['lead-1']);
+  });
+
+  test('states com leadId ausente -> ignorado na indexação, nunca quebra os demais', () => {
+    const states = [{ leadId: null, status: 'concluido' }, { leadId: 'lead-1', status: 'em_atendimento', userId: 'u', updatedAt: 't', lastReadAt: null }];
+    const map = buildConversationOperationalStatesMap(['lead-1'], states);
+    expect(map['lead-1'].status).toBe('em_atendimento');
+  });
+
+  test('nunca muta o array de states nem os objetos de entrada', () => {
+    const state = { leadId: 'lead-1', status: 'concluido', userId: 'u', updatedAt: 't', lastReadAt: null };
+    const states = [state];
+    buildConversationOperationalStatesMap(['lead-1'], states);
+    expect(state).toEqual({ leadId: 'lead-1', status: 'concluido', userId: 'u', updatedAt: 't', lastReadAt: null });
+    expect(state.hasRow).toBeUndefined();
   });
 });

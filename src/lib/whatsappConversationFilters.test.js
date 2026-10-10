@@ -52,6 +52,14 @@ describe('EMPTY_CONVERSATION_FILTERS / hasActiveConversationFilters', () => {
   test('tags preenchidas -> ativo', () => {
     expect(hasActiveConversationFilters({ ...EMPTY_CONVERSATION_FILTERS, tags: ['PRIORIDADE'] })).toBe(true);
   });
+
+  test('unreadOnly true -> ativo (Fase 3.6.4)', () => {
+    expect(hasActiveConversationFilters({ ...EMPTY_CONVERSATION_FILTERS, unreadOnly: true })).toBe(true);
+  });
+
+  test('status preenchido -> ativo (Fase 3.6.4)', () => {
+    expect(hasActiveConversationFilters({ ...EMPTY_CONVERSATION_FILTERS, status: 'em_atendimento' })).toBe(true);
+  });
 });
 
 describe('buildLeadsById', () => {
@@ -94,6 +102,107 @@ describe('filterConversations — busca por nome', () => {
   test('nome que nao bate -> excluido', () => {
     const list = [conversation({ leadNome: 'Ana' })];
     expect(filterConversations(list, {}, { ...EMPTY_CONVERSATION_FILTERS, searchText: 'bruno' })).toHaveLength(0);
+  });
+});
+
+describe('filterConversations — busca por telefone (Fase 3.6.4)', () => {
+  test('busca com dígitos bate no telefone do lead, mesmo com formatação diferente', () => {
+    const leadsById = buildLeadsById([lead({ id: 'a', telefone: '(51) 99232-2166' })]);
+    const list = [conversation({ leadId: 'a' })];
+    const result = filterConversations(list, leadsById, { ...EMPTY_CONVERSATION_FILTERS, searchText: '992322166' });
+    expect(result).toHaveLength(1);
+  });
+
+  test('busca por telefone formatada igual ao texto digitado pelo usuário', () => {
+    const leadsById = buildLeadsById([lead({ id: 'a', telefone: '51992322166' })]);
+    const list = [conversation({ leadId: 'a' })];
+    const result = filterConversations(list, leadsById, { ...EMPTY_CONVERSATION_FILTERS, searchText: '(51) 99232-2166' });
+    expect(result).toHaveLength(1);
+  });
+
+  test('telefone que nao bate -> excluido', () => {
+    const leadsById = buildLeadsById([lead({ id: 'a', telefone: '51999999999' })]);
+    const list = [conversation({ leadId: 'a' })];
+    const result = filterConversations(list, leadsById, { ...EMPTY_CONVERSATION_FILTERS, searchText: '000000' });
+    expect(result).toHaveLength(0);
+  });
+
+  test('busca puramente textual (sem digitos) continua funcionando só por nome, nunca tenta telefone', () => {
+    const leadsById = buildLeadsById([lead({ id: 'a', telefone: '51999999999', nome: 'Maria' })]);
+    const list = [conversation({ leadId: 'a', leadNome: 'Maria' })];
+    const result = filterConversations(list, leadsById, { ...EMPTY_CONVERSATION_FILTERS, searchText: 'maria' });
+    expect(result).toHaveLength(1);
+  });
+
+  test('lead sem telefone -> busca por digitos nunca lanca, apenas nao casa', () => {
+    const leadsById = buildLeadsById([lead({ id: 'a', telefone: '' })]);
+    const list = [conversation({ leadId: 'a' })];
+    const result = filterConversations(list, leadsById, { ...EMPTY_CONVERSATION_FILTERS, searchText: '12345' });
+    expect(result).toHaveLength(0);
+  });
+});
+
+describe('filterConversations — não lidas (Fase 3.6.4)', () => {
+  test('unreadOnly filtra só conversas com unreadCount > 0', () => {
+    const list = [conversation({ leadId: 'a' }), conversation({ leadId: 'b' })];
+    const unreadCounts = { a: 2, b: 0 };
+    const result = filterConversations(list, {}, { ...EMPTY_CONVERSATION_FILTERS, unreadOnly: true }, { unreadCounts });
+    expect(result.map((c) => c.leadId)).toEqual(['a']);
+  });
+
+  test('unreadOnly false -> nao filtra por não lidas, comportamento igual a antes da 3.6.4', () => {
+    const list = [conversation({ leadId: 'a' }), conversation({ leadId: 'b' })];
+    const unreadCounts = { a: 2, b: 0 };
+    const result = filterConversations(list, {}, EMPTY_CONVERSATION_FILTERS, { unreadCounts });
+    expect(result.map((c) => c.leadId)).toEqual(['a', 'b']);
+  });
+
+  test('unreadOnly sem unreadCounts (ainda carregando) -> trata como 0, nunca lanca, exclui tudo', () => {
+    const list = [conversation({ leadId: 'a' })];
+    const result = filterConversations(list, {}, { ...EMPTY_CONVERSATION_FILTERS, unreadOnly: true });
+    expect(result).toEqual([]);
+  });
+
+  test('nunca usa whatsapp_messages.read_at — critério é inteiramente derivado de unreadCounts (leitura humana)', () => {
+    // Garantia estrutural: este módulo não importa nada de
+    // whatsappMessages.js que exponha read_at/delivered_at/sent_at —
+    // só unreadCountForLead (whatsappUnreadTracking.js).
+    const list = [conversation({ leadId: 'a' })];
+    const result = filterConversations(list, {}, { ...EMPTY_CONVERSATION_FILTERS, unreadOnly: true }, { unreadCounts: { a: 1 } });
+    expect(result).toHaveLength(1);
+  });
+});
+
+describe('filterConversations — estado operacional (Fase 3.6.4)', () => {
+  test('filtra pelo status exato da conversa', () => {
+    const list = [conversation({ leadId: 'a' }), conversation({ leadId: 'b' })];
+    const conversationStatesByLead = {
+      a: { leadId: 'a', status: 'em_atendimento', hasRow: true },
+      b: { leadId: 'b', status: 'concluido', hasRow: true },
+    };
+    const result = filterConversations(list, {}, { ...EMPTY_CONVERSATION_FILTERS, status: 'em_atendimento' }, { conversationStatesByLead });
+    expect(result.map((c) => c.leadId)).toEqual(['a']);
+  });
+
+  test('conversa sem linha (hasRow false) usa o status default (pendente_resposta) para fins de filtro', () => {
+    const list = [conversation({ leadId: 'a' })];
+    const conversationStatesByLead = {
+      a: { leadId: 'a', status: 'pendente_resposta', hasRow: false },
+    };
+    const result = filterConversations(list, {}, { ...EMPTY_CONVERSATION_FILTERS, status: 'pendente_resposta' }, { conversationStatesByLead });
+    expect(result).toHaveLength(1);
+  });
+
+  test('mapa de estados ainda nao carregado (undefined) + filtro de status ativo -> nunca finge corresponder, exclui tudo', () => {
+    const list = [conversation({ leadId: 'a' })];
+    const result = filterConversations(list, {}, { ...EMPTY_CONVERSATION_FILTERS, status: 'em_atendimento' });
+    expect(result).toEqual([]);
+  });
+
+  test('status null (nenhum filtro) -> nao filtra, comportamento igual a antes da 3.6.4', () => {
+    const list = [conversation({ leadId: 'a' }), conversation({ leadId: 'b' })];
+    const result = filterConversations(list, {}, EMPTY_CONVERSATION_FILTERS);
+    expect(result.map((c) => c.leadId)).toEqual(['a', 'b']);
   });
 });
 
@@ -151,6 +260,25 @@ describe('filterConversations — combinação de filtros (requisito 4)', () => 
     const result = filterConversations(list, leadsById, { searchText: '', etapa: 'Perdido', tags: ['PRIORIDADE'] });
     expect(result).toEqual([]);
   });
+
+  test('Fase 3.6.4 — todos os 5 criterios combinados com AND (nome+telefone, etapa, tags, não lidas, estado)', () => {
+    const leadsById = buildLeadsById([
+      lead({ id: 'a', nome: 'Maria', telefone: '51999990001', etapa: 'Proposta', tags: ['PRIORIDADE'] }),
+      lead({ id: 'b', nome: 'Maria', telefone: '51999990002', etapa: 'Proposta', tags: ['PRIORIDADE'] }),
+    ]);
+    const list = [conversation({ leadId: 'a', leadNome: 'Maria' }), conversation({ leadId: 'b', leadNome: 'Maria' })];
+    const unreadCounts = { a: 1, b: 1 };
+    const conversationStatesByLead = {
+      a: { leadId: 'a', status: 'pendente_resposta', hasRow: true },
+      b: { leadId: 'b', status: 'concluido', hasRow: true },
+    };
+    const result = filterConversations(
+      list, leadsById,
+      { searchText: 'maria', etapa: 'Proposta', tags: ['PRIORIDADE'], unreadOnly: true, status: 'pendente_resposta' },
+      { unreadCounts, conversationStatesByLead },
+    );
+    expect(result.map((c) => c.leadId)).toEqual(['a']);
+  });
 });
 
 describe('filterConversations — preservação de ordem e dados de entrada (requisito 6 e 8 da restrição de paginação)', () => {
@@ -160,6 +288,17 @@ describe('filterConversations — preservação de ordem e dados de entrada (req
     const result = filterConversations(list, {}, EMPTY_CONVERSATION_FILTERS);
     expect(result.map((c) => c.leadId)).toEqual(['z', 'a']); // ordem de entrada preservada, nunca re-sortada
     expect(list).toEqual(snapshot); // input original intacto
+  });
+
+  test('Fase 3.6.4 — filtros novos (não lidas/estado) também nunca reordenam, só removem itens', () => {
+    const list = [
+      conversation({ leadId: 'z', lastMessageAt: '2026-01-03T00:00:00.000Z' }),
+      conversation({ leadId: 'y', lastMessageAt: '2026-01-02T00:00:00.000Z' }),
+      conversation({ leadId: 'a', lastMessageAt: '2026-01-01T00:00:00.000Z' }),
+    ];
+    const unreadCounts = { z: 1, y: 0, a: 1 };
+    const result = filterConversations(list, {}, { ...EMPTY_CONVERSATION_FILTERS, unreadOnly: true }, { unreadCounts });
+    expect(result.map((c) => c.leadId)).toEqual(['z', 'a']); // ordem de entrada preservada (z antes de a), nunca re-sortada
   });
 
   test('opera só sobre o array recebido — nunca busca mais dados (funções puras, zero I/O)', () => {
