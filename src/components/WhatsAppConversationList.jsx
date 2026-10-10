@@ -2,16 +2,23 @@ import { formatRelativeTime } from '../utils.js';
 import { STAGES, TAGS_LEAD } from '../constants.js';
 import { hasActiveConversationFilters } from '../lib/whatsappConversationFilters.js';
 import { unreadCountForLead } from '../lib/whatsappUnreadTracking.js';
+import {
+  CONVERSATION_OPERATIONAL_STATES,
+  conversationNeedsAttention,
+} from '../lib/conversationOperationalState.js';
 
-// Fase 3.5.1 (lista) + 3.6.0 (busca/filtros) — lista de conversas
-// (lead + prévia da última mensagem), ordenada pela mensagem mais
-// recente (já feito por quem chama, via sortConversationsByRecency +
-// filterConversations em src/lib/). Puramente apresentacional —
-// nenhum fetch aqui; os filtros operam só sobre o que já foi
-// carregado (ver whatsappConversationFilters.js).
+// Fase 3.5.1 (lista) + 3.6.0 (busca/filtros) + 3.6.4 (não lidas/
+// estado operacional/telefone/priorização visual) — lista de
+// conversas (lead + prévia da última mensagem), ordenada pela
+// mensagem mais recente (já feito por quem chama, via
+// sortConversationsByRecency + filterConversations em src/lib/) —
+// este componente NUNCA reordena, só exibe/filtra. Puramente
+// apresentacional — nenhum fetch aqui; os filtros operam só sobre o
+// que já foi carregado (ver whatsappConversationFilters.js).
 export default function WhatsAppConversationList({
   conversations, selectedLeadId, onSelect, loading, error, onRetry, hasMore, onLoadMore,
   filters, onFiltersChange, onClearFilters, totalCount, unreadCounts,
+  conversationStatesByLead, conversationStatesLoading, conversationStatesError, onRetryConversationStates,
 }) {
   const filtersActive = hasActiveConversationFilters(filters);
 
@@ -52,6 +59,29 @@ export default function WhatsAppConversationList({
           </button>
         ))}
       </div>
+      {/* Fase 3.6.4 — filtro por estado operacional (Fase 3.6.2),
+          nunca o status de entrega da Meta. "Todos os estados" não
+          filtra (equivalente a status: null). */}
+      <select
+        className="wa-filter-status"
+        value={filters.status || ''}
+        onChange={(e) => onFiltersChange({ ...filters, status: e.target.value || null })}
+      >
+        <option value="">Todos os estados</option>
+        {CONVERSATION_OPERATIONAL_STATES.map((s) => (
+          <option key={s.value} value={s.value}>{s.label}</option>
+        ))}
+      </select>
+      {/* Fase 3.6.4 — filtro "só não lidas" (leitura HUMANA, Fase
+          3.6.3 — nunca read_at da Meta). */}
+      <label className="wa-filter-unread-only">
+        <input
+          type="checkbox"
+          checked={Boolean(filters.unreadOnly)}
+          onChange={(e) => onFiltersChange({ ...filters, unreadOnly: e.target.checked })}
+        />
+        Só não lidas
+      </label>
       {filtersActive && (
         <button type="button" className="btn-ghost wa-filter-clear" onClick={onClearFilters}>
           Limpar filtros
@@ -59,6 +89,44 @@ export default function WhatsAppConversationList({
       )}
     </div>
   );
+
+  // Fase 3.6.4 (requisito 4 do escopo obrigatório) — falha de
+  // carregamento dos estados operacionais em lote NUNCA é tratada
+  // silenciosamente como "nenhuma conversa tem estado": mostra um
+  // aviso explícito com ação de retry, distinto de "ainda
+  // carregando" (conversationStatesLoading) e distinto de "carregou
+  // e nenhuma tem estado real" (que não gera aviso nenhum — é um
+  // resultado legítimo, ver hasRow em buildConversationOperationalStatesMap).
+  const conversationStatesNotice = conversationStatesError
+    ? (
+      <div className="wa-states-error-notice" role="status">
+        Não foi possível carregar os estados operacionais das conversas. Filtro por estado e destaque de prioridade podem estar incompletos.
+        {onRetryConversationStates && (
+          <button type="button" className="btn-ghost" style={{ marginLeft: 8 }} onClick={onRetryConversationStates}>
+            Tentar novamente
+          </button>
+        )}
+      </div>
+    )
+    : null;
+
+  // Fase 3.6.4 (correção pós-revisão do PR #71, achado CONFIRMED 1) —
+  // quando o filtro por estado está ATIVO, uma lista vazia pode
+  // significar três coisas bem diferentes, e cada uma precisa de uma
+  // mensagem própria: (a) o fetch em lote ainda não resolveu
+  // (`conversationStatesLoading`) — "carregando", nunca "nenhuma
+  // conversa"; (b) o fetch falhou (`conversationStatesError`) —
+  // aviso de erro com retry, nunca "nenhuma conversa"; (c) o fetch
+  // terminou com sucesso e realmente não há conversas nesse estado —
+  // só este caso usa a mensagem padrão "nenhuma conversa corresponde
+  // aos filtros". `matchesStatus` (whatsappConversationFilters.js)
+  // já garante que uma conversa cujo estado ainda não foi resolvido
+  // nunca aparece como correspondente por engano — esta UI só decide
+  // COMO explicar um resultado vazio quando o filtro depende desses
+  // dados.
+  const statusFilterActive = Boolean(filters.status);
+  const statusDataStillLoading = statusFilterActive && conversationStatesLoading;
+  const statusDataFailed = statusFilterActive && !conversationStatesLoading && Boolean(conversationStatesError);
 
   if (loading) {
     return (
@@ -93,14 +161,28 @@ export default function WhatsAppConversationList({
   return (
     <div className="wa-conversation-list-pane-inner">
       {filterBar}
+      {conversationStatesNotice}
 
       {conversations.length === 0 ? (
-        <div className="empty-state">
-          Nenhuma conversa corresponde aos filtros aplicados.
-          <div style={{ marginTop: 8 }}>
-            <button type="button" className="btn-ghost" onClick={onClearFilters}>Limpar filtros</button>
+        statusDataStillLoading ? (
+          <div className="empty-state" role="status">
+            Carregando estados operacionais das conversas...
           </div>
-        </div>
+        ) : statusDataFailed ? (
+          <div className="empty-state" style={{ borderColor: 'var(--red)', color: 'var(--red)' }} role="status">
+            Não foi possível carregar os estados operacionais — o resultado deste filtro pode estar incompleto.
+            <div style={{ marginTop: 8 }}>
+              <button type="button" className="btn-ghost" onClick={onRetryConversationStates}>Tentar novamente</button>
+            </div>
+          </div>
+        ) : (
+          <div className="empty-state">
+            Nenhuma conversa corresponde aos filtros aplicados.
+            <div style={{ marginTop: 8 }}>
+              <button type="button" className="btn-ghost" onClick={onClearFilters}>Limpar filtros</button>
+            </div>
+          </div>
+        )
       ) : (
         <div className="wa-conversation-list">
           {conversations.map((c) => {
@@ -108,15 +190,34 @@ export default function WhatsAppConversationList({
             // nunca status de entrega da Meta). Fonte: unreadCounts
             // (useWhatsAppInbox), derivado do servidor.
             const unread = unreadCountForLead(unreadCounts, c.leadId);
+            // Fase 3.6.4 — priorização VISUAL (nunca reordenação, ver
+            // comentário do topo do arquivo): "aguardando resposta" é
+            // status === pendente_resposta (conversationNeedsAttention,
+            // conversationOperationalState.js). Estado ainda não
+            // carregado (conversationStatesByLead vazio/sem entrada
+            // para este lead) nunca é tratado como "precisa atenção"
+            // por engano — só destaca quando o estado real (ou seu
+            // default conhecido, hasRow:false) confirma isso.
+            const state = conversationStatesByLead ? conversationStatesByLead[c.leadId] : undefined;
+            const needsAttention = Boolean(state) && conversationNeedsAttention(state.status);
+            const itemClassName = [
+              'wa-conversation-item',
+              c.leadId === selectedLeadId ? 'active' : '',
+              unread > 0 ? 'wa-conversation-unread' : '',
+              needsAttention ? 'wa-conversation-priority' : '',
+            ].filter(Boolean).join(' ');
             return (
               <button
                 type="button"
                 key={c.leadId}
-                className={`wa-conversation-item${c.leadId === selectedLeadId ? ' active' : ''}${unread > 0 ? ' wa-conversation-unread' : ''}`}
+                className={itemClassName}
                 onClick={() => onSelect(c.leadId)}
               >
                 <div className="wa-conversation-top">
-                  <span className="wa-conversation-nome">{c.leadNome}</span>
+                  <span className="wa-conversation-nome">
+                    {needsAttention && <span className="wa-conversation-priority-dot" aria-hidden="true" />}
+                    {c.leadNome}
+                  </span>
                   <span className="wa-conversation-time">{formatRelativeTime(c.lastMessageAt)}</span>
                 </div>
                 <div className="wa-conversation-preview-row">
