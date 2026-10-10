@@ -368,6 +368,35 @@ export const conversationStateApi = {
     if (error) throw error;
     return conversationOperationalStateFromRow(data);
   },
+
+  // Fase 3.6.3 (correção pós-revisão do PR #70, achado CONFIRMED) —
+  // marca a conversa como lida AGORA usando o relógio do SERVIDOR,
+  // nunca o do navegador (um relógio de cliente divergente, uma
+  // mensagem/requisição atrasada em voo, ou duas abas do mesmo
+  // atendente poderiam gravar um timestamp errado ou retroceder uma
+  // leitura mais recente). Via RPC mark_whatsapp_conversation_read
+  // (migration 025, seção C) — nunca mais um upsert direto com
+  // timestamp local. A função já garante no servidor que
+  // last_read_at nunca regride (guarda no ON CONFLICT). 0 linhas
+  // devolvidas é o resultado ESPERADO de uma chamada atrasada que
+  // perdeu a corrida para uma leitura mais recente — nunca tratado
+  // como erro aqui (o chamador não precisa reconciliar nada: o
+  // servidor já está com um valor igual ou mais novo).
+  markRead: async (leadId) => {
+    const { data, error } = await supabase.rpc('mark_whatsapp_conversation_read', { p_lead_id: leadId });
+    if (error) throw error;
+    return data; // timestamp (string) do servidor, ou null se a chamada perdeu a corrida.
+  },
+
+  // Fase 3.6.3 — contagem agregada de não lidas por conversa, para
+  // todas as conversas do usuário autenticado (whatsapp_unread_counts(),
+  // migration 025) — uma única chamada, nunca N consultas por
+  // conversa.
+  fetchUnreadCounts: async () => {
+    const { data, error } = await supabase.rpc('whatsapp_unread_counts');
+    if (error) throw error;
+    return (data || []).map((r) => ({ leadId: r.lead_id, unreadCount: r.unread_count }));
+  },
 };
 
 export const profilesApi = {
