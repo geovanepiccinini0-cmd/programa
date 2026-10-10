@@ -1,7 +1,7 @@
 import { supabase } from './supabaseClient.js';
 import { normalizePhoneIdentity } from './phoneIdentity.js';
 import { whatsappMessageFromRow } from './whatsappMessages.js';
-import { conversationOperationalStateFromRow } from './conversationOperationalState.js';
+import { conversationOperationalStateFromRow, isConversationStateUniqueViolation } from './conversationOperationalState.js';
 
 function leadFromRow(r) {
   return {
@@ -379,19 +379,67 @@ export const conversationStateApi = {
     return (data || []).map(conversationOperationalStateFromRow);
   },
 
-  // Upsert manual — cobre tanto o caso "conversa ainda sem nenhum
-  // evento automático registrado" (nenhuma linha existe ainda) quanto
-  // a alteração normal de uma linha já existente. `user_id` nunca é
-  // enviado aqui — o trigger da migration 024 sempre o deriva de
-  // leads.user_id, nunca confia no client.
+  // HOTFIX pós-incidente em produção — cobre tanto o caso "conversa
+  // ainda sem nenhum evento automático registrado" (nenhuma linha
+  // existe ainda) quanto a alteração normal de uma linha já
+  // existente. `user_id` nunca é enviado aqui — o trigger da
+  // migration 024 sempre o deriva de leads.user_id, nunca confia no
+  // client.
+  //
+  // NUNCA MAIS UM .upsert(...): o upsert anterior gerava, via
+  // PostgREST, um `INSERT ... ON CONFLICT (lead_id) DO UPDATE SET
+  // lead_id = excluded.lead_id, status = excluded.status` —
+  // resolution=merge-duplicates inclui a PRÓPRIA coluna de conflito
+  // (`lead_id`) no SET, não só `status`. A migration 025 (seção D)
+  // só concede `UPDATE(status)` a `authenticated` — nunca
+  // `UPDATE(lead_id)` (deliberado, para impedir escrita direta de
+  // last_read_at por esse mesmo caminho) — então QUALQUER chamada
+  // cujo upsert caísse no ramo ON CONFLICT (ou seja, toda conversa
+  // que já tivesse uma linha — a imensa maioria, já que a RPC
+  // automática cria uma linha a cada mensagem) falhava com 42501
+  // "permission denied for table whatsapp_conversation_state".
+  // Reproduzido empiricamente em Postgres local com os GRANTs exatos
+  // da 025 antes desta correção.
+  //
+  // Correção: dois passos, cada um uma operação SQL simples (sem ON
+  // CONFLICT) que cabe inteiramente nos GRANTs de coluna já
+  // concedidos (`insert(lead_id, status)` / `update(status)`,
+  // migration 025 seção D) — SEM nenhuma migration nova, sem
+  // alterar RLS, sem conceder nenhum privilégio adicional:
+  //   1. tenta UPDATE (cobre o caso comum — a linha já existe).
+  //   2. 0 linhas afetadas (conversa ainda sem nenhuma linha) ->
+  //      tenta INSERT.
+  //   3. corrida rara entre os passos 1 e 2 (ex. a RPC automática do
+  //      service_role cria a linha nesse intervalo exato) -> o
+  //      INSERT falha com unique_violation (23505, PK de lead_id) —
+  //      nunca propagado como erro: repete o UPDATE uma única vez
+  //      (a linha concorrente já existe agora).
   setStatus: async (leadId, status) => {
-    const { data, error } = await supabase
+    const { data: updated, error: updateError } = await supabase
       .from('whatsapp_conversation_state')
-      .upsert({ lead_id: leadId, status }, { onConflict: 'lead_id' })
+      .update({ status })
+      .eq('lead_id', leadId)
       .select()
       .maybeSingle();
-    if (error) throw error;
-    return conversationOperationalStateFromRow(data);
+    if (updateError) throw updateError;
+    if (updated) return conversationOperationalStateFromRow(updated);
+
+    const { data: inserted, error: insertError } = await supabase
+      .from('whatsapp_conversation_state')
+      .insert({ lead_id: leadId, status })
+      .select()
+      .maybeSingle();
+    if (!insertError) return conversationOperationalStateFromRow(inserted);
+    if (!isConversationStateUniqueViolation(insertError)) throw insertError;
+
+    const { data: retried, error: retryError } = await supabase
+      .from('whatsapp_conversation_state')
+      .update({ status })
+      .eq('lead_id', leadId)
+      .select()
+      .maybeSingle();
+    if (retryError) throw retryError;
+    return conversationOperationalStateFromRow(retried);
   },
 
   // Fase 3.6.3 (correção pós-revisão do PR #70, achado CONFIRMED) —

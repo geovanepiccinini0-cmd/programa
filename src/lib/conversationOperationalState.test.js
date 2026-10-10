@@ -9,6 +9,7 @@ import {
   buildConversationOperationalStatesMap,
   applyConversationStateRealtimeEvent,
   shouldForceConversationStatesResync,
+  isConversationStateUniqueViolation,
 } from './conversationOperationalState.js';
 
 describe('CONVERSATION_OPERATIONAL_STATES', () => {
@@ -217,5 +218,22 @@ describe('shouldForceConversationStatesResync (Fase 3.6.4, correção pós-revis
     expect(shouldForceConversationStatesResync(null)).toBe(false);
     expect(shouldForceConversationStatesResync('')).toBe(false);
     expect(shouldForceConversationStatesResync('algo_novo_da_lib')).toBe(false);
+  });
+});
+
+describe('isConversationStateUniqueViolation (HOTFIX — fallback de corrida no setStatus de duas etapas)', () => {
+  test('erro com code 23505 (unique_violation) -> true', () => {
+    expect(isConversationStateUniqueViolation({ code: '23505', message: 'duplicate key value violates unique constraint' })).toBe(true);
+  });
+
+  test('erro com outro code -> false (nunca trata outros erros como corrida esperada)', () => {
+    expect(isConversationStateUniqueViolation({ code: '42501', message: 'permission denied' })).toBe(false);
+    expect(isConversationStateUniqueViolation({ code: '23503', message: 'foreign key violation' })).toBe(false);
+  });
+
+  test('erro nulo/ausente/sem code -> false, nunca lança', () => {
+    expect(isConversationStateUniqueViolation(null)).toBe(false);
+    expect(isConversationStateUniqueViolation(undefined)).toBe(false);
+    expect(isConversationStateUniqueViolation({})).toBe(false);
   });
 });
