@@ -121,40 +121,6 @@ const RESPONSE_METHOD_NOT_ALLOWED = respond(405, 'method not allowed');
 const RESPONSE_INTERNAL_ERROR = respond(500, 'internal error');
 
 // ===========================================================================
-// DIAGNÓSTICO TEMPORÁRIO — 401 persistente após deploy com
-// --no-verify-jwt (execution_id/execution_time_ms confirmam que a
-// função RODA; o único caminho de 401 com a função em execução é a
-// assinatura inválida, ver handlePost). Instrumentação MÍNIMA,
-// ativada SOMENTE quando a assinatura falha — nunca loga o valor do
-// secret, da assinatura, do cabeçalho completo, do corpo da mensagem
-// ou qualquer dado de cliente/telefone. Só os 4 indicadores
-// booleanos abaixo, suficientes para distinguir assinatura ausente,
-// assinatura malformada, secret ausente em runtime e HMAC
-// divergente (secret incorreto ou corpo diferente do assinado).
-//
-// Remover esta função e sua única chamada (handlePost) assim que a
-// causa raiz for confirmada — ver plano de remoção no PR.
-// ===========================================================================
-const SHA256_SIGNATURE_PREFIX = 'sha256=';
-const SHA256_SIGNATURE_HEADER_LENGTH = SHA256_SIGNATURE_PREFIX.length + 64; // "sha256=" + 64 hex chars
-
-function logWhatsappWebhookSignatureFailure(signatureHeader: unknown, appSecret: unknown): void {
-  const hasSignatureHeader = typeof signatureHeader === 'string' && signatureHeader.length > 0;
-  const signatureHeaderWellFormed = hasSignatureHeader
-    && (signatureHeader as string).startsWith(SHA256_SIGNATURE_PREFIX)
-    && (signatureHeader as string).length === SHA256_SIGNATURE_HEADER_LENGTH;
-  const appSecretConfigured = typeof appSecret === 'string' && appSecret.trim().length > 0;
-
-  console.log(JSON.stringify({
-    event: 'whatsapp_webhook_signature_invalid',
-    hasSignatureHeader,
-    signatureHeaderWellFormed,
-    appSecretConfigured,
-    signatureValid: false,
-  }));
-}
-
-// ===========================================================================
 // GET — META WEBHOOK VERIFICATION
 // ===========================================================================
 
@@ -519,7 +485,6 @@ async function handlePost(request: WebhookHttpRequest, deps: WhatsappWebhookHand
   }
 
   if (!signatureResult.valid) {
-    logWhatsappWebhookSignatureFailure(request.signatureHeader, deps.appSecret);
     return RESPONSE_UNAUTHORIZED;
   }
 
