@@ -186,28 +186,36 @@ export function classifyLeadPriority(lead) {
 
 // Etapa A — alertas de leads sem movimentação. ÚNICA fonte de verdade:
 // classifyLeadPriority (nunca reimplementa o limiar STALE_DAYS aqui).
-// "Parado" é deliberadamente independente de follow-up vencido — um
-// lead pode estar com follow-up 'due' (atividade comercial recente,
-// cadência esgotada) sem nunca ter ficado sem atualização por
-// STALE_DAYS, e vice-versa (lead inativo sem nenhuma interação
-// registrada ainda). Nunca filtra por isso aqui — ver
+// "Parado" mede só a última edição do CADASTRO do lead
+// (ultimaAtualizacao, com fallback para criadoEm) — nunca o histórico
+// de interações comerciais (lead_interactions/followUpEngine.js). É
+// por isso que este critério é deliberadamente independente de
+// follow-up vencido: os dois podem discordar em qualquer direção,
+// porque medem coisas diferentes (edição de cadastro vs. atividade
+// comercial registrada) — nunca filtra por isso aqui, ver
 // StaleLeadsAlert.jsx para a apresentação, que também nunca cruza com
 // followUpEngine.js.
 export function getStaleLeads(leads) {
   return (leads || []).filter((lead) => lead && classifyLeadPriority(lead).includes('PARADO'));
 }
 
-// Rótulo humano "Sem contato há Nd" — mesmo cálculo (diasDesde) já
-// usado por LeadCardInfo.jsx/classifyLeadPriority, nunca uma segunda
-// fórmula de dias. `null` só quando o lead não tem nenhuma data-base
-// (ultimaAtualizacao/criadoEm ausentes) — nunca deveria ocorrer para
-// um lead que passou por getStaleLeads (que exige PARADO, e PARADO só
-// é marcado quando diasDesde devolveu um número), mas devolvido aqui
-// de forma defensiva, nunca lançando.
+// Rótulo humano "Sem atualização de cadastro há Nd" — correção
+// pós-revisão do PR #73 (achado CONFIRMED): o texto anterior ("Sem
+// contato há Nd") sugeria medir a última conversa/contato comercial,
+// mas a fonte real é SÓ ultimaAtualizacao/criadoEm (campos de
+// cadastro do lead, nunca lead_interactions) — por isso o rótulo
+// precisa dizer exatamente isso, nunca insinuar histórico de contato.
+// Mesmo cálculo (diasDesde) já usado por LeadCardInfo.jsx/
+// classifyLeadPriority, nunca uma segunda fórmula de dias. `null` só
+// quando o lead não tem nenhuma data-base (ultimaAtualizacao/
+// criadoEm ausentes) — nunca deveria ocorrer para um lead que passou
+// por getStaleLeads (que exige PARADO, e PARADO só é marcado quando
+// diasDesde devolveu um número), mas devolvido aqui de forma
+// defensiva, nunca lançando.
 export function formatStaleDaysLabel(lead) {
   const dias = diasDesde(lead.ultimaAtualizacao || lead.criadoEm);
   if (dias === null) return null;
-  return `Sem contato há ${dias}d`;
+  return `Sem atualização de cadastro há ${dias}d`;
 }
 
 export function leadValor(l) {

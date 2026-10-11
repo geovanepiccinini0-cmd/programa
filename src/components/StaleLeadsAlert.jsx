@@ -8,14 +8,20 @@ import { getStaleLeads, formatStaleDaysLabel } from '../utils.js';
 // o MESMO fluxo já usado em toda a aplicação (onEditLead -> LeadModal
 // via App.jsx), nenhuma rota nova.
 //
-// DISTINÇÃO EXPLÍCITA (requisito 6 da autorização): "parado" (sem
-// atualização há STALE_DAYS) é um eixo independente de follow-up
-// 'due' (followUpEngine.js) — um lead pode estar parado sem ter
-// nenhum follow-up vencido (ex. nunca houve nenhuma interação
-// registrada) e vice-versa. Por isso este bloco nunca lê
-// evaluateFollowUpEligibility/buildFollowUpQueue, tem título e cor
-// próprios (nunca o mesmo texto "Sugestão"/"Precisa de ação" da fila
-// de follow-up), e nunca gera nenhuma tarefa — é somente leitura.
+// DISTINÇÃO EXPLÍCITA (requisito 6 da autorização, revisada após
+// comentário técnico do PR #73): "parado" é calculado SÓ a partir de
+// leads.ultima_atualizacao (ou criado_em, se a primeira estiver
+// vazia) — nunca a partir de lead_interactions/histórico comercial.
+// Por isso é um eixo independente de follow-up 'due'
+// (followUpEngine.js, que sim lê o histórico de interações): os dois
+// podem discordar em qualquer direção — um lead pode estar parado
+// (cadastro sem edição há STALE_DAYS) mesmo tendo tido uma ligação
+// ontem que não gerou nenhuma edição de cadastro, e pode ter um
+// follow-up vencido mesmo com o cadastro editado recentemente. Este
+// bloco nunca lê evaluateFollowUpEligibility/buildFollowUpQueue nem
+// lead_interactions, tem título e cor próprios (nunca o mesmo texto
+// "Sugestão"/"Precisa de ação" da fila de follow-up), e nunca gera
+// nenhuma tarefa — é somente leitura.
 export default function StaleLeadsAlert({ leads, onEditLead }) {
   const staleLeads = getStaleLeads(leads);
 

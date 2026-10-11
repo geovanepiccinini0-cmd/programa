@@ -200,9 +200,9 @@ describe('getStaleLeads / formatStaleDaysLabel (Etapa A)', () => {
     expect(getStaleLeads([null, lead, undefined])).toEqual([lead]);
   });
 
-  it('formatStaleDaysLabel devolve "Sem contato há Nd" usando o mesmo cálculo de dias', () => {
+  it('formatStaleDaysLabel devolve "Sem atualização de cadastro há Nd" (correção pós-revisão do PR #73 — a fonte é ultimaAtualizacao, nunca o histórico de contato comercial)', () => {
     const lead = { ...activeBase, ultimaAtualizacao: daysAgoStr(20) };
-    expect(formatStaleDaysLabel(lead)).toBe('Sem contato há 20d');
+    expect(formatStaleDaysLabel(lead)).toBe('Sem atualização de cadastro há 20d');
   });
 
   it('formatStaleDaysLabel devolve null quando não há nenhuma data-base, nunca lança', () => {
