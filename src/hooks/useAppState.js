@@ -5,6 +5,7 @@ import { leadsApi, tasksApi, templatesApi, interactionsApi, auditLogApi, followU
 import { supabase } from '../lib/supabaseClient.js';
 import { buildStagePolicyOverridesMap, shouldApplyStagePolicyResult } from '../lib/followUpPolicyConfig.js';
 import { buildSnoozeMap, shouldApplySnoozeResult, computeSnoozeUntil } from '../lib/followUpSnooze.js';
+import { buildAutoStageTaskAction } from '../lib/autoStageTasks.js';
 
 // Infraestrutura RESERVADA para um futuro motor de automações comerciais
 // (lead sem resposta, pós-proposta, reativação etc.) — ver decisão em
@@ -286,6 +287,36 @@ export async function logStageChange(prevLead, updatedLead, userId, setInteracti
     });
   } catch (e) {
     console.warn('Não foi possível registrar o histórico de mudança de etapa (migrations 007/011 já foram rodadas no Supabase?):', e);
+  }
+}
+
+// Etapa D — único ponto de chamada para a criação de tarefas
+// automáticas por etapa, reutilizado IDENTICAMENTE por saveLead
+// (formulário), moveStage (Kanban) e setLeadStage (seleção direta) —
+// nunca reimplementado três vezes. Toda a DECISÃO (se deve criar, com
+// quais dados) vive em autoStageTasks.js (puro, testado isoladamente);
+// esta função só decide COMO persistir: 1ª linha de defesa client-side
+// (buildAutoStageTaskAction já verifica `tasks` local), e a 2ª linha —
+// a real — é o índice único parcial da migration 028, que
+// tasksApi.insertAutoStage traduz de "23505" para "devolve null, nunca
+// lança" (corrida entre abas: a outra aba já criou, nada a fazer aqui).
+//
+// Mesmo padrão defensivo de logStageChange acima: um erro aqui (ex.
+// migration 028 ainda não aplicada, coluna/índice inexistentes) NUNCA
+// pode derrubar a mudança de etapa em si (já persistida em `leads`
+// antes desta chamada) — só é avisado no console. Requisito 11 (nunca
+// envia WhatsApp/SMS/e-mail/contato automático): esta função nunca
+// chama nenhuma API de mensageria, só tasksApi — mesma garantia
+// estrutural de computeAutoStageTaskData (autoStageTasks.js), que
+// nunca importa nenhum módulo de envio.
+export async function maybeCreateAutoStageTask(prevLead, updatedLead, tasks, setTasks, now = new Date()) {
+  const action = buildAutoStageTaskAction({ prevEtapa: prevLead && prevLead.etapa, updatedLead, tasks, now });
+  if (!action) return;
+  try {
+    const inserted = await tasksApi.insertAutoStage(action);
+    if (inserted) setTasks((prev) => [...prev, inserted]);
+  } catch (e) {
+    console.warn('Não foi possível criar a tarefa automática desta etapa (migration 028 já foi rodada no Supabase?):', e);
   }
 }
 
@@ -713,7 +744,14 @@ export function useAppState(userId) {
       ? await leadsApi.update(id, { ...data, ...stageFields, ultimaAtualizacao: todayStr() })
       : await leadsApi.insert({ ...data, criadoEm: todayStr(), ultimaAtualizacao: todayStr() });
     setLeads((prev) => (id ? prev.map((l) => (l.id === id ? saved : l)) : [...prev, saved]));
-    if (etapaChanged) await logStageChange(prevLead, saved, userId, setInteractions);
+    if (etapaChanged) {
+      await logStageChange(prevLead, saved, userId, setInteractions);
+      // Etapa D — só quando a mudança veio de um lead JÁ EXISTENTE
+      // (`id` presente): salvar um lead NOVO que já nasce numa etapa
+      // avançada nunca é uma "mudança efetiva de etapa" (requisito 3,
+      // mesmo princípio de computeStageChangeInteration/shouldGenerateAutoStageTask).
+      await maybeCreateAutoStageTask(prevLead, saved, tasks, setTasks);
+    }
     // proximoContato é um AGENDAMENTO: gera/reconcilia só a tarefa
     // "Contato" (lead-agenda). NÃO dispara pendingAutoTasksForLeads
     // (Follow-up/origem 'auto') — isso ficou reservado para uma automação
@@ -746,6 +784,7 @@ export function useAppState(userId) {
     setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
     await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
     await logStageChange(lead, updated, userId, setInteractions);
+    await maybeCreateAutoStageTask(lead, updated, tasks, setTasks);
   }, [leads, tasks, userId]);
 
   const setLeadStage = useCallback(async (id, etapa) => {
@@ -756,6 +795,7 @@ export function useAppState(userId) {
     setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
     await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
     await logStageChange(lead, updated, userId, setInteractions);
+    await maybeCreateAutoStageTask(lead, updated, tasks, setTasks);
   }, [leads, tasks, userId]);
 
   const addInteractionNote = useCallback((leadId, content) => (

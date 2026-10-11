@@ -6,7 +6,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 // mocka-se só esse módulo; as demais funções testadas neste arquivo são
 // puras e nunca tocam db.js.
 vi.mock('../lib/db.js', () => ({
-  leadsApi: {}, tasksApi: {}, templatesApi: {},
+  leadsApi: {}, tasksApi: { insertAutoStage: vi.fn() }, templatesApi: {},
   interactionsApi: { insert: vi.fn(), fetchAllForUser: vi.fn() },
   auditLogApi: { insert: vi.fn() },
 }));
@@ -21,8 +21,9 @@ import {
   shouldOfferResultCapture, runCompleteTaskWithResult,
   logStageChange, insertInteractionAndTrack, fetchInteractionsForUser,
   applySnoozeRealtimeChange, shouldSkipSnoozeRealtimeEvent,
+  maybeCreateAutoStageTask,
 } from './useAppState.js';
-import { interactionsApi, auditLogApi } from '../lib/db.js';
+import { interactionsApi, auditLogApi, tasksApi } from '../lib/db.js';
 import { todayStr } from '../utils.js';
 import { DIAS_SEMANA } from '../constants.js';
 
@@ -966,5 +967,100 @@ describe('applySnoozeRealtimeChange — aplica eventos de follow_up_snoozes por 
     applySnoozeRealtimeChange(setState, fakeFromRow, payload);
 
     expect(state).toEqual([{ leadId: 'lead-1', snoozedUntil: '2026-06-02T00:00:00.000Z' }]);
+  });
+});
+
+// Etapa D — maybeCreateAutoStageTask é o único ponto de chamada
+// reutilizado por saveLead/moveStage/setLeadStage (useAppState.js).
+// Testado aqui exatamente como logStageChange acima: tasksApi mockado
+// (nunca Supabase real), decisão PURA (buildAutoStageTaskAction,
+// autoStageTasks.js) já cobre a matriz completa de regras — este
+// bloco cobre só a ORQUESTRAÇÃO (quando chama tasksApi.insertAutoStage,
+// como atualiza o state local, como se comporta em cada desfecho).
+describe('Etapa D — maybeCreateAutoStageTask (orquestração; ver autoStageTasks.test.js para a lógica pura)', () => {
+  const NOW = new Date('2026-10-12T09:00:00.000Z');
+
+  function makeLead(overrides = {}) {
+    return { id: 'lead-1', nome: 'Lilliane', etapa: 'Proposta', deletedAt: null, ...overrides };
+  }
+
+  beforeEach(() => {
+    tasksApi.insertAutoStage.mockReset();
+  });
+
+  it('transição real para etapa configurada, sem duplicata -> chama tasksApi.insertAutoStage e adiciona a tarefa ao state', async () => {
+    const inserted = { id: 'task-1', titulo: 'Preparar e enviar proposta: Lilliane', categoria: 'Follow-up', data: '2026-10-13', horario: '', concluida: false, leadId: 'lead-1', origem: 'auto_stage', templateId: null, etapaGatilho: 'Proposta' };
+    tasksApi.insertAutoStage.mockResolvedValueOnce(inserted);
+    let state = [];
+    const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+
+    await maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), [], setTasks, NOW);
+
+    expect(tasksApi.insertAutoStage).toHaveBeenCalledTimes(1);
+    expect(tasksApi.insertAutoStage).toHaveBeenCalledWith(expect.objectContaining({ leadId: 'lead-1', origem: 'auto_stage', etapaGatilho: 'Proposta' }));
+    expect(state).toEqual([inserted]);
+  });
+
+  it('sem mudança efetiva de etapa -> nunca chama tasksApi.insertAutoStage (requisito 3)', async () => {
+    let state = [];
+    const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+
+    await maybeCreateAutoStageTask(makeLead({ etapa: 'Proposta' }), makeLead({ etapa: 'Proposta' }), [], setTasks, NOW);
+
+    expect(tasksApi.insertAutoStage).not.toHaveBeenCalled();
+    expect(state).toEqual([]);
+  });
+
+  it('etapa sem modelo configurado -> nunca chama tasksApi.insertAutoStage', async () => {
+    let state = [];
+    const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+
+    await maybeCreateAutoStageTask(makeLead({ etapa: 'Proposta' }), makeLead({ etapa: 'Ligação' }), [], setTasks, NOW);
+
+    expect(tasksApi.insertAutoStage).not.toHaveBeenCalled();
+  });
+
+  it('já existe uma tarefa auto_stage pendente para o mesmo lead+etapa -> nunca chama tasksApi.insertAutoStage (requisito 6, 1ª linha de defesa)', async () => {
+    const tasks = [{ leadId: 'lead-1', origem: 'auto_stage', etapaGatilho: 'Proposta', concluida: false }];
+    let state = tasks.slice();
+    const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+
+    await maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), tasks, setTasks, NOW);
+
+    expect(tasksApi.insertAutoStage).not.toHaveBeenCalled();
+    expect(state).toEqual(tasks); // nunca duplicada
+  });
+
+  it('corrida entre abas: tasksApi.insertAutoStage devolve null (23505) -> nunca adiciona nada ao state, nunca lança', async () => {
+    tasksApi.insertAutoStage.mockResolvedValueOnce(null);
+    let state = [];
+    const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+
+    await expect(maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), [], setTasks, NOW)).resolves.toBeUndefined();
+
+    expect(state).toEqual([]);
+  });
+
+  it('falha real (ex. migration 028 não aplicada, RLS) -> nunca lança, nunca derruba a mudança de etapa (mesmo princípio de logStageChange)', async () => {
+    tasksApi.insertAutoStage.mockRejectedValueOnce(new Error('column "etapa_gatilho" does not exist'));
+    let state = [];
+    const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+
+    await expect(maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), [], setTasks, NOW)).resolves.toBeUndefined();
+
+    expect(state).toEqual([]);
+  });
+
+  it('requisito 11 — nunca chama nada além de tasksApi: sem efeito colateral de mensageria', async () => {
+    interactionsApi.insert.mockClear();
+    auditLogApi.insert.mockClear();
+    tasksApi.insertAutoStage.mockResolvedValueOnce({ id: 'task-1', leadId: 'lead-1', origem: 'auto_stage', etapaGatilho: 'Proposta' });
+    let state = [];
+    const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+
+    await maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), [], setTasks, NOW);
+
+    expect(interactionsApi.insert).not.toHaveBeenCalled();
+    expect(auditLogApi.insert).not.toHaveBeenCalled();
   });
 });

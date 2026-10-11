@@ -108,6 +108,11 @@ function taskFromRow(r) {
     leadId: r.lead_id,
     origem: r.origem,
     templateId: r.template_id,
+    // Etapa D — presente só nas tarefas origem='auto_stage' (migration
+    // 028). `r.etapa_gatilho` vem `undefined` se a migration ainda não
+    // foi aplicada no banco (coluna não existe na linha) — `|| null`
+    // normaliza os dois casos para o mesmo valor, nunca lança.
+    etapaGatilho: r.etapa_gatilho || null,
   };
 }
 
@@ -121,6 +126,16 @@ function taskToRow(data) {
     lead_id: data.leadId || null,
     origem: data.origem,
     template_id: data.templateId || null,
+    // Etapa D — mesmo padrão já usado para won_at/lost_at (leadToRow):
+    // guard de PRESENÇA (`!== undefined`), não de truthiness. Nenhum
+    // outro call site deste arquivo (addTask/toggleTask/reconcileLeadAgenda/
+    // pendingRotinaTasks) jamais passa `etapaGatilho`, então o payload
+    // deles continua SEM esta chave — compatível com o banco mesmo
+    // ANTES da migration 028 ser aplicada (a coluna não existe ainda,
+    // e enviá-la para qualquer UPDATE/INSERT quebraria TODA escrita em
+    // `tasks`, não só as desta fase). Só tasksApi.insertAutoStage
+    // (abaixo) passa `etapaGatilho` de propósito.
+    ...(data.etapaGatilho !== undefined ? { etapa_gatilho: data.etapaGatilho || null } : {}),
   };
 }
 
@@ -225,6 +240,28 @@ export const tasksApi = {
   update: (id, data) => updateRow('tasks', taskToRow, taskFromRow, id, data),
   remove: (id) => deleteRow('tasks', id),
   fromRow: taskFromRow,
+
+  // Etapa D — requisito 7: idempotência garantida pelo ÍNDICE ÚNICO
+  // PARCIAL do banco (migration 028: `unique (lead_id, etapa_gatilho)
+  // where origem='auto_stage' and concluida=false`), nunca só por uma
+  // verificação do lado do React (hasPendingAutoStageTask,
+  // autoStageTasks.js, é só a 1ª linha de defesa — duas abas/operações
+  // concorrentes podem passar por ela nos dois lados ANTES de qualquer
+  // uma escrever). `23505` (unique_violation) aqui significa
+  // exatamente "outra aba/operação já criou esta tarefa entre a
+  // checagem e a escrita" — NUNCA um erro real: devolve `null` (nada
+  // para o chamador adicionar ao state local, a tarefa já existe e
+  // será recebida pelo Realtime/próximo fetch), nunca lança. Qualquer
+  // outro código de erro (RLS, coluna inexistente se a migration 028
+  // ainda não foi aplicada, rede) propaga normalmente — o chamador
+  // (useAppState.js) decide o que fazer, mas nunca deixa a criação da
+  // tarefa quebrar a mudança de etapa em si.
+  insertAutoStage: async (data) => {
+    const { data: row, error } = await supabase.from('tasks').insert(taskToRow(data)).select().single();
+    if (!error) return taskFromRow(row);
+    if (error.code === '23505') return null;
+    throw error;
+  },
 };
 
 export const templatesApi = {
