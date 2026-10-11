@@ -257,6 +257,93 @@ export const auditLogApi = {
   },
 };
 
+// Etapa B — follow-up configurável por etapa (migration 026, NÃO
+// aplicada em produção ainda — ver PR). Mapeia as colunas flat da
+// tabela para a MESMA forma aninhada de FOLLOW_UP_POLICY
+// (followUpEngine.js), já consumida por
+// sanitizeStagePolicyOverride/resolveFollowUpPolicyForStage
+// (followUpPolicyConfig.js) sem nenhuma conversão adicional. Campo
+// ausente/null na linha = sub-objeto ausente no resultado (nunca
+// `{ hoursUntilDue: null }`) — sanitizeStagePolicyOverride já trata
+// isso como "sem override para este campo".
+function followUpStagePolicyFromRow(r) {
+  const result = { id: r.id, etapa: r.etapa };
+  if (r.attempt_hours_until_due != null) result.attempt = { hoursUntilDue: r.attempt_hours_until_due };
+  if (r.proposal_hours_until_due != null) result.proposal = { hoursUntilDue: r.proposal_hours_until_due };
+  if (r.no_new_attempt_hours_until_due != null) result.noNewAttemptSinceEngagement = { hoursUntilDue: r.no_new_attempt_hours_until_due };
+  if (r.max_attempts != null) result.maxAttempts = r.max_attempts;
+  if (r.reactivation_days_until_due != null) result.reactivationAfterMaxAttempts = { daysUntilDue: r.reactivation_days_until_due };
+  return result;
+}
+
+// Etapa B — API de leitura/escrita da configuração por etapa.
+// `user_id` NUNCA é enviado pelo cliente — o trigger da migration 026
+// sempre o deriva de auth.uid(), nunca confia no client (mesmo
+// princípio de todas as outras tabelas deste projeto).
+export const followUpStagePoliciesApi = {
+  fromRow: followUpStagePolicyFromRow,
+
+  fetchAll: async (userId) => {
+    let query = supabase.from('follow_up_stage_policies').select('*');
+    if (userId) query = query.eq('user_id', userId);
+    const { data, error } = await query;
+    if (error) throw error;
+    return (data || []).map(followUpStagePolicyFromRow);
+  },
+
+  // HOTFIX do PR #72 aplicado aqui por precaução (achado CONFIRMED
+  // documentado em whatsapp_conversation_state): NUNCA usar
+  // .upsert()/ON CONFLICT para esta tabela — mesmo sem nenhuma coluna
+  // restrita por GRANT aqui (ao contrário de last_read_at), o
+  // resolution=merge-duplicates do PostgREST ainda incluiria
+  // user_id/etapa (as colunas do conflito) no SET, e nada garante que
+  // uma fase futura não restrinja esses GRANTs também. Dois passos
+  // simples (UPDATE -> INSERT se 0 linhas -> retry de UPDATE em caso
+  // de corrida com outra aba, 23505) — nunca ON CONFLICT.
+  save: async (etapa, override) => {
+    const row = {
+      attempt_hours_until_due: override.attempt ? override.attempt.hoursUntilDue : null,
+      proposal_hours_until_due: override.proposal ? override.proposal.hoursUntilDue : null,
+      no_new_attempt_hours_until_due: override.noNewAttemptSinceEngagement ? override.noNewAttemptSinceEngagement.hoursUntilDue : null,
+      max_attempts: typeof override.maxAttempts === 'number' ? override.maxAttempts : null,
+      reactivation_days_until_due: override.reactivationAfterMaxAttempts ? override.reactivationAfterMaxAttempts.daysUntilDue : null,
+    };
+
+    const { data: updated, error: updateError } = await supabase
+      .from('follow_up_stage_policies')
+      .update(row)
+      .eq('etapa', etapa)
+      .select()
+      .maybeSingle();
+    if (updateError) throw updateError;
+    if (updated) return followUpStagePolicyFromRow(updated);
+
+    const { data: inserted, error: insertError } = await supabase
+      .from('follow_up_stage_policies')
+      .insert({ etapa, ...row })
+      .select()
+      .maybeSingle();
+    if (!insertError) return followUpStagePolicyFromRow(inserted);
+    if (insertError.code !== '23505') throw insertError;
+
+    const { data: retried, error: retryError } = await supabase
+      .from('follow_up_stage_policies')
+      .update(row)
+      .eq('etapa', etapa)
+      .select()
+      .maybeSingle();
+    if (retryError) throw retryError;
+    return followUpStagePolicyFromRow(retried);
+  },
+
+  // Remove a configuração da etapa (volta ao default global). Nunca
+  // falha se a linha já não existir (idempotente).
+  remove: async (etapa) => {
+    const { error } = await supabase.from('follow_up_stage_policies').delete().eq('etapa', etapa);
+    if (error) throw error;
+  },
+};
+
 // Fase 3.5.1 — Caixa de entrada WhatsApp, SOMENTE LEITURA.
 //
 // Zero INSERT/UPDATE/DELETE aqui de propósito: esta fase não implementa

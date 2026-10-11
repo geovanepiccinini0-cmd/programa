@@ -1,4 +1,5 @@
 import { evaluateFollowUpEligibility, FOLLOW_UP_STATUS, FOLLOW_UP_POLICY } from './followUpEngine.js';
+import { resolveFollowUpPolicyForStage } from './followUpPolicyConfig.js';
 import { evaluateNextBestAction } from './nextBestAction.js';
 import { presentNextBestAction } from './nextBestActionPresentation.js';
 import { buildCommercialInteractionHistory } from './commercialInteractionHistory.js';
@@ -123,7 +124,17 @@ function indexByLeadId(items) {
 // falha ao avaliar UM lead (ex. dado malformado), os demais continuam
 // avaliados normalmente — error carrega só uma mensagem curta, nunca a
 // stack trace/objeto bruto da exceção.
-export function buildFollowUpQueue({ leads, interactions, tasks, now, policy = FOLLOW_UP_POLICY }) {
+// Etapa B — `stagePolicyOverrides` é um 5º parâmetro OPCIONAL
+// (retrocompatível: omiti-lo mantém EXATAMENTE o comportamento
+// anterior a esta fase — `policy` global para todos os leads, mesma
+// referência, nenhuma mesclagem). Quando presente, cada lead recebe
+// sua PRÓPRIA política resolvida por `resolveFollowUpPolicyForStage`
+// (followUpPolicyConfig.js, puro e testado) a partir de `lead.etapa`
+// — nunca uma política global recalculada uma vez só, porque leads de
+// etapas diferentes nesta mesma chamada podem ter prazos diferentes.
+// `policy` continua sendo o "base" conservador para quem não tem
+// override (FOLLOW_UP_POLICY por padrão, igual a antes desta fase).
+export function buildFollowUpQueue({ leads, interactions, tasks, now, policy = FOLLOW_UP_POLICY, stagePolicyOverrides }) {
   const interactionsByLead = indexByLeadId(interactions);
   const tasksByLead = indexByLeadId(tasks);
 
@@ -131,7 +142,8 @@ export function buildFollowUpQueue({ leads, interactions, tasks, now, policy = F
     try {
       const leadInteractions = interactionsByLead.get(lead && lead.id) || [];
       const leadTasks = tasksByLead.get(lead && lead.id) || [];
-      const evaluation = evaluateFollowUpEligibility({ lead, interactions: leadInteractions, tasks: leadTasks, now, policy });
+      const effectivePolicy = resolveFollowUpPolicyForStage(lead && lead.etapa, stagePolicyOverrides, policy);
+      const evaluation = evaluateFollowUpEligibility({ lead, interactions: leadInteractions, tasks: leadTasks, now, policy: effectivePolicy });
       const currentNba = evaluateNextBestAction({ lead, followUpEvaluation: evaluation });
 
       // Boundary 1 (seção 28-D do plano de ativação): história + policy
@@ -201,9 +213,15 @@ export function buildFollowUpQueue({ leads, interactions, tasks, now, policy = F
         operationalPresentation = null;
       }
 
-      return { lead, evaluation, error: null, nbaPresentation: operationalPresentation, nbaShadow, operationalRecommendation };
+      // Etapa B — `policy` exposta no item (política EFETIVA já
+      // resolvida para a etapa deste lead) para a apresentação
+      // (FollowUpQueue.jsx: formatAttemptCount) nunca mostrar
+      // "X/maxAttempts" com o maxAttempts GLOBAL quando este lead tem
+      // um override — sempre o mesmo valor que de fato decidiu
+      // `evaluation` acima, nunca uma segunda leitura divergente.
+      return { lead, evaluation, error: null, nbaPresentation: operationalPresentation, nbaShadow, operationalRecommendation, policy: effectivePolicy };
     } catch (e) {
-      return { lead, evaluation: null, error: (e && e.message) || 'Falha ao avaliar este lead.', nbaPresentation: null, nbaShadow: null, operationalRecommendation: null };
+      return { lead, evaluation: null, error: (e && e.message) || 'Falha ao avaliar este lead.', nbaPresentation: null, nbaShadow: null, operationalRecommendation: null, policy };
     }
   });
 }

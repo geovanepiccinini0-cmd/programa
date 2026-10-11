@@ -83,7 +83,11 @@ function DueCard({ item, onEditLead, assistedAction, assistedRegistering, assist
   const { lead, evaluation, nbaPresentation, operationalRecommendation } = item;
   const reason = formatFollowUpReason(evaluation);
   const time = formatFollowUpTimeLabel(evaluation, item.now);
-  const attempt = shouldShowAttemptCount(evaluation) ? formatAttemptCount(evaluation, FOLLOW_UP_POLICY) : null;
+  // Etapa B — usa a política EFETIVA deste lead (item.policy, já
+  // resolvida por etapa em buildFollowUpQueue), nunca mais a
+  // constante global FOLLOW_UP_POLICY — senão "X/maxAttempts"
+  // mostraria o default global mesmo quando a etapa tem um override.
+  const attempt = shouldShowAttemptCount(evaluation) ? formatAttemptCount(evaluation, item.policy || FOLLOW_UP_POLICY) : null;
   const timeLine = [time, attempt].filter(Boolean).join(' · ');
   const etapaProduto = [lead.etapa, lead.produto].filter(Boolean).join(' · ');
 
@@ -200,7 +204,8 @@ function WaitingCard({ item, onEditLead }) {
   const { lead, evaluation } = item;
   const reason = formatFollowUpReason(evaluation);
   const time = formatFollowUpTimeLabel(evaluation, item.now);
-  const attempt = shouldShowAttemptCount(evaluation) ? formatAttemptCount(evaluation, FOLLOW_UP_POLICY) : null;
+  // Etapa B — mesma correção de DueCard: usa a política efetiva do item.
+  const attempt = shouldShowAttemptCount(evaluation) ? formatAttemptCount(evaluation, item.policy || FOLLOW_UP_POLICY) : null;
   const missingPhone = hasMissingPhoneWarning(evaluation);
   const timeLine = [time, attempt].filter(Boolean).join(' · ');
 
@@ -242,6 +247,7 @@ const EMPTY_MESSAGES = {
 export default function FollowUpQueue({
   leads, interactions, tasks, interactionsLoading, interactionsError, now,
   onEditLead, onRetryInteractions, onRegisterCommercialInteraction,
+  stagePolicyOverrides,
 }) {
   const [tab, setTab] = useState('due');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -276,8 +282,8 @@ export default function FollowUpQueue({
   useEffect(() => { setVisibleCount(PAGE_SIZE); }, [tab]);
 
   const queue = useMemo(
-    () => buildFollowUpQueue({ leads, interactions, tasks, now, policy: FOLLOW_UP_POLICY }),
-    [leads, interactions, tasks, now],
+    () => buildFollowUpQueue({ leads, interactions, tasks, now, policy: FOLLOW_UP_POLICY, stagePolicyOverrides }),
+    [leads, interactions, tasks, now, stagePolicyOverrides],
   );
 
   const dueItems = useMemo(() => sortDueFollowUps(queue), [queue]);

@@ -5,11 +5,14 @@ import TaskGroupedList from './TaskGroupedList.jsx';
 import WeekAgenda from './WeekAgenda.jsx';
 import FollowUpQueue from './FollowUpQueue.jsx';
 import StaleLeadsAlert from './StaleLeadsAlert.jsx';
+import FollowUpPolicySettings from './FollowUpPolicySettings.jsx';
 
 export default function HojeView({
   leads, tasks, onAddTask, onToggleTask, onDeleteTask, onCompleteWithResult,
   interactions, interactionsLoading, interactionsError, now, onEditLead, onRetryInteractions,
   onRegisterCommercialInteraction,
+  stagePoliciesLoading, stagePoliciesError, onRetryStagePolicies,
+  stagePolicyOverrides, onSaveStagePolicy, onRemoveStagePolicy,
 }) {
   const [title, setTitle] = useState('');
   const [cat, setCat] = useState(CATS_TASK[0]);
@@ -32,6 +35,19 @@ export default function HojeView({
 
   return (
     <section className="view active">
+      {/* Etapa B — configuração de prazos por etapa (migration 026).
+          Nunca cria task/interação por si só: só grava a configuração,
+          que o motor lê na próxima avaliação (stagePolicyOverrides,
+          já refletido em FollowUpQueue abaixo). */}
+      <FollowUpPolicySettings
+        stagePolicyOverrides={stagePolicyOverrides}
+        loading={stagePoliciesLoading}
+        error={stagePoliciesError}
+        onRetry={onRetryStagePolicies}
+        onSave={onSaveStagePolicy}
+        onRemove={onRemoveStagePolicy}
+      />
+
       <FollowUpQueue
         leads={leads}
         interactions={interactions}
@@ -42,6 +58,7 @@ export default function HojeView({
         onEditLead={onEditLead}
         onRetryInteractions={onRetryInteractions}
         onRegisterCommercialInteraction={onRegisterCommercialInteraction}
+        stagePolicyOverrides={stagePolicyOverrides}
       />
 
       {/* Etapa A — bloco independente da fila de follow-up acima:
