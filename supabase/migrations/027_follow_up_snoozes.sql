@@ -163,3 +163,75 @@ grant select, insert, update, delete on public.follow_up_snoozes to authenticate
 grant all on public.follow_up_snoozes to service_role;
 
 -- Rollback deste bloco: nenhum necessário isoladamente — já cobrto pelo "drop table" do bloco A.
+
+-------------------------------------------------------------------
+-- D) Realtime — correção pós-revisão do PR #75 (achado 5). Sem este
+-- bloco, a tabela nunca emite eventos postgres_changes mesmo com o
+-- client já escutando (useAppState.js) — "Adiar"/"Cancelar
+-- adiamento" numa aba simplesmente nunca apareceriam nas outras, sem
+-- nenhum erro visível (falha silenciosa). `leads`/`tasks`/`templates`
+-- já estão na publication `supabase_realtime` de fases anteriores
+-- deste projeto — esta tabela nova precisa do mesmo passo
+-- explicitamente, nunca fica implícito.
+--
+-- REPLICA IDENTITY FULL (em vez do padrão, que só repassa a PK no
+-- payload de DELETE): com o padrão, um DELETE só traria `lead_id` em
+-- `payload.old` — já tratado no client (applySnoozeRealtimeChange,
+-- useAppState.js, identifica a linha só por `lead_id`, nunca por
+-- `user_id`/`id`), mas FULL aqui é defesa em profundidade barata (a
+-- tabela é pequena, 1 linha por lead) e documenta explicitamente a
+-- limitação em vez de deixá-la implícita: se outro consumidor futuro
+-- do mesmo evento precisar de `snoozed_until`/`user_id` no DELETE
+-- (ex. auditoria), FULL já garante que esses dados estarão lá.
+alter table public.follow_up_snoozes replica identity full;
+
+-- Idempotente: adicionar a mesma tabela duas vezes à publication
+-- lançaria "relation already member of publication" — o bloco DO
+-- evita isso em re-execuções desta migration (mesmo padrão de
+-- idempotência do resto do arquivo, via `if not exists`/`drop ... if
+-- exists`). Precondição: a publication `supabase_realtime` é
+-- provisionada automaticamente por todo projeto Supabase — se por
+-- algum motivo não existir (ambiente não-Supabase, ex. o Postgres
+-- local descartável usado para validar esta migration), o bloco avisa
+-- e segue sem falhar a migration inteira (Realtime é um extra desta
+-- tabela, nunca uma dependência de RLS/trigger/CRUD básico, que já
+-- funcionam normalmente sem ele).
+do $$
+begin
+  if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    raise notice 'Publication supabase_realtime não encontrada (normal fora do Supabase, ex. Postgres local de teste) — pulei o passo de Realtime. Em produção, confirme manualmente que esta publication existe.';
+  elsif not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'follow_up_snoozes'
+  ) then
+    alter publication supabase_realtime add table public.follow_up_snoozes;
+  end if;
+end $$;
+
+-- Rollback deste bloco: "alter publication supabase_realtime drop table public.follow_up_snoozes;" (se a publication existir e a tabela for membro) — a REPLICA IDENTITY volta ao padrão junto com o "drop table" do bloco A.
+
+-------------------------------------------------------------------
+-- VERIFICAÇÃO MANUAL recomendada após aplicar esta migration no
+-- Supabase real (achado 5 da revisão do PR #75) — nunca executada
+-- automaticamente por este arquivo, só documentada aqui para quem
+-- aplicar a migration conferir no SQL Editor:
+--
+--   1. SECURITY DEFINER da função do trigger faz o que deveria:
+--      select prosecdef from pg_proc where proname = 'follow_up_snoozes_consistency_check';
+--      -- esperado: true. (Sem isto, o lookup de leads.user_id dentro
+--      -- do trigger ficaria sujeito à RLS de `leads` do CHAMADOR, que
+--      -- já restringe a só o próprio dono — mas um lead de OUTRO
+--      -- usuário então pareceria "não encontrado" em vez de "não seu",
+--      -- quebrando a mensagem de erro, não a segurança: a policy de
+--      -- INSERT already exige user_id = auth.uid() de qualquer forma.)
+--   2. RLS de fato habilitada:
+--      select relrowsecurity from pg_class where relname = 'follow_up_snoozes';
+--      -- esperado: true.
+--   3. As 4 policies (seção C) existem e usam auth.uid(), nunca um
+--      valor fixo:
+--      select polname, polcmd, pg_get_expr(polqual, polrelid) as using_expr
+--        from pg_policy where polrelid = 'public.follow_up_snoozes'::regclass;
+--   4. Tabela de fato na publication Realtime:
+--      select * from pg_publication_tables
+--        where pubname = 'supabase_realtime' and tablename = 'follow_up_snoozes';
+--      -- esperado: 1 linha. Se vazio, repita o bloco D manualmente.

@@ -8,7 +8,7 @@ import {
   getOperationalBlockers, formatOperationalBlocker, hasMissingPhoneWarning,
   shouldShowAttemptCount, formatAttemptCount, shouldShowBlockedFollowUp,
 } from '../lib/followUpPresentation.js';
-import { SNOOZE_PRESETS, SNOOZE_REASON } from '../lib/followUpSnooze.js';
+import { SNOOZE_PRESETS, SNOOZE_REASON, shouldStartSnoozeSave, shouldStartSnoozeRemoval } from '../lib/followUpSnooze.js';
 
 // Fase 2C.2B — UI do Shadow Mode. Só recomenda: a ação comercial sempre
 // exige confirmação explícita do vendedor.
@@ -243,7 +243,7 @@ function DueCard({
   );
 }
 
-function WaitingCard({ item, onEditLead, onRemoveSnooze }) {
+function WaitingCard({ item, onEditLead, onRemoveSnooze, removingSnoozeLeadId, removeSnoozeErrorsByLead }) {
   const { lead, evaluation } = item;
   // Etapa C — reason === SNOOZE_REASON nunca está no mapa de
   // REASON_COPY (followUpPresentation.js) de propósito (reason é
@@ -258,6 +258,8 @@ function WaitingCard({ item, onEditLead, onRemoveSnooze }) {
   const attempt = shouldShowAttemptCount(evaluation) ? formatAttemptCount(evaluation, item.policy || FOLLOW_UP_POLICY) : null;
   const missingPhone = hasMissingPhoneWarning(evaluation);
   const timeLine = [time, attempt].filter(Boolean).join(' · ');
+  const isRemoving = removingSnoozeLeadId === lead.id;
+  const removeError = removeSnoozeErrorsByLead ? removeSnoozeErrorsByLead[lead.id] : null;
 
   return (
     <div className="followup-card compact">
@@ -272,11 +274,24 @@ function WaitingCard({ item, onEditLead, onRemoveSnooze }) {
       </button>
       {/* Etapa C — requisito 6: só aparece aqui, único lugar possível
           de "Cancelar adiamento" (card deixa de ser snoozed assim que
-          o adiamento é removido — a fila recalcula sozinha). */}
+          o adiamento é removido — a fila recalcula sozinha).
+          Correção pós-revisão do PR #75 (achado 2) — antes, uma
+          falha de rede/RLS ao cancelar era engolida silenciosamente
+          (catch vazio): o usuário clicava, nada acontecia, e não
+          havia nenhuma pista do porquê. Agora o botão desabilita
+          durante a tentativa (nunca duplo clique) e, em caso de
+          falha, mostra o motivo + permite tentar de novo — o
+          adiamento continua ativo (nada muda no banco até a remoção
+          de fato ter sucesso), então "tentar de novo" é sempre seguro. */}
       {isSnoozed && (
         <div className="followup-card-actions">
-          <button type="button" className="icon-btn" onClick={() => onRemoveSnooze(lead.id)}>Cancelar adiamento</button>
+          <button type="button" className="icon-btn" disabled={isRemoving} onClick={() => onRemoveSnooze(lead.id)}>
+            {isRemoving ? 'Cancelando...' : 'Cancelar adiamento'}
+          </button>
         </div>
+      )}
+      {isSnoozed && removeError && (
+        <div className="followup-warning">{removeError}</div>
       )}
     </div>
   );
@@ -309,6 +324,7 @@ export default function FollowUpQueue({
   onEditLead, onRetryInteractions, onRegisterCommercialInteraction,
   stagePolicyOverrides,
   snoozesByLead, onSaveSnooze, onRemoveSnooze,
+  snoozesLoading, snoozesError, onRetrySnoozes,
 }) {
   const [tab, setTab] = useState('due');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -347,6 +363,15 @@ export default function FollowUpQueue({
   const [snoozingLeadId, setSnoozingLeadId] = useState(null);
   const [snoozeSaving, setSnoozeSaving] = useState(false);
   const [snoozeError, setSnoozeError] = useState(null);
+  // Correção pós-revisão do PR #75 (achado 2) — leadId atualmente em
+  // voo de remoção (nunca mais de um por vez: cada card desabilita o
+  // próprio botão enquanto `removingSnoozeLeadId === lead.id`) e um
+  // MAPA de erros por lead (não um erro único global): diferente do
+  // picker de "Adiar" (um só por vez, UI própria), "Cancelar
+  // adiamento" pode falhar em um card enquanto outro card continua
+  // normal — um erro global apagaria/confundiria o card errado.
+  const [removingSnoozeLeadId, setRemovingSnoozeLeadId] = useState(null);
+  const [removeSnoozeErrorsByLead, setRemoveSnoozeErrorsByLead] = useState({});
 
   useEffect(() => { setVisibleCount(PAGE_SIZE); }, [tab]);
 
@@ -459,22 +484,40 @@ export default function FollowUpQueue({
   // (useAppState.js: computeSnoozeUntil + 3-passos UPDATE/INSERT).
   function handleStartSnooze(leadId) {
     if (assistedAction && assistedAction.leadId === leadId) return; // só um picker por card
+    if (snoozeSaving) return; // já existe um salvamento em andamento (outro lead) — nunca abre um segundo picker por cima
     setSnoozeError(null);
     setSnoozingLeadId(leadId);
   }
 
   function handleCancelSnooze(leadId) {
     if (snoozingLeadId !== leadId) return;
+    if (snoozeSaving) return; // nunca cancela um salvamento já em voo
     setSnoozingLeadId(null);
     setSnoozeError(null);
   }
 
+  // Correção pós-revisão do PR #75 (achado 4) — `now` aqui é o
+  // timestamp fixo da prop (atualizado só a cada ~60s pelo heartbeat
+  // de App.jsx), não o instante real do clique. Usar `now` direto em
+  // `computeSnoozeUntil` faria o prazo escolhido ("1 hora") ficar até
+  // ~60s mais curto do que o vendedor esperava, sempre a favor do
+  // vencimento mais precoce — pequeno, mas incorreto e evitável:
+  // `new Date()` aqui captura o instante exato em que o vendedor
+  // confirmou o preset, nunca um snapshot potencialmente desatualizado.
+  // Correção do achado 6 (duplo clique/corrida): `snoozeSaving` guarda
+  // a MESMA operação de ponta a ponta — um segundo clique no mesmo
+  // preset (ou em outro preset, ou Cancelar) enquanto a primeira
+  // chamada ainda está em voo é ignorado, nunca dispara uma segunda
+  // escrita concorrente para o mesmo lead. O botão correspondente já
+  // fica `disabled` durante `snoozeSaving` (ver SnoozePicker), então
+  // este guard é defesa em profundidade, não a única barreira.
   async function handlePickSnooze(leadId, presetKey) {
-    if (snoozingLeadId !== leadId) return;
+    if (!shouldStartSnoozeSave({ snoozingLeadId, requestedLeadId: leadId, saving: snoozeSaving })) return;
+    const clickTime = new Date();
     setSnoozeSaving(true);
     setSnoozeError(null);
     try {
-      await onSaveSnooze(leadId, presetKey, now);
+      await onSaveSnooze(leadId, presetKey, clickTime);
       setSnoozingLeadId(null);
       // snoozesByLead já atualiza via useAppState.js -> a fila
       // recalcula sozinha (dependência do useMemo acima), sem
@@ -489,14 +532,35 @@ export default function FollowUpQueue({
   // "Cancelar adiamento" (requisito 6) — chamado a partir de
   // WaitingCard, nunca precisa de confirmação extra: é só remover a
   // própria configuração do adiamento, nunca desfaz nada do histórico.
+  //
+  // Correção pós-revisão do PR #75 (achado 2) — a versão anterior
+  // engolia silenciosamente qualquer falha (catch vazio): o vendedor
+  // clicava, nada parecia acontecer, e não havia nenhuma pista do
+  // motivo nem como tentar de novo. Agora: 1) `removingSnoozeLeadId`
+  // desabilita o botão do card correspondente enquanto a remoção está
+  // em voo (nunca um segundo clique concorrente para o MESMO lead —
+  // achado 6); 2) em caso de falha, a mensagem fica visível naquele
+  // card especificamente (mapa por leadId, nunca um erro global que
+  // confundiria outro card) e o botão volta a ficar clicável — tentar
+  // de novo é sempre seguro, porque nada no banco mudou até a remoção
+  // de fato ter sucesso; 3) em caso de sucesso, limpa qualquer erro
+  // anterior deste lead (nunca deixa uma mensagem obsoleta visível
+  // depois de um retry que funcionou).
   async function handleRemoveSnooze(leadId) {
+    if (!shouldStartSnoozeRemoval({ removingLeadId: removingSnoozeLeadId, requestedLeadId: leadId })) return;
+    setRemovingSnoozeLeadId(leadId);
     try {
       await onRemoveSnooze(leadId);
-    } catch {
-      // erro silencioso aqui é aceitável: se a remoção falhar, o
-      // adiamento continua ativo e o card continua mostrando "Cancelar
-      // adiamento" — o usuário pode tentar de novo, nenhum estado fica
-      // inconsistente.
+      setRemoveSnoozeErrorsByLead((prev) => {
+        if (!(leadId in prev)) return prev;
+        const next = { ...prev };
+        delete next[leadId];
+        return next;
+      });
+    } catch (e) {
+      setRemoveSnoozeErrorsByLead((prev) => ({ ...prev, [leadId]: (e && e.message) || 'Não foi possível cancelar este adiamento. Tente novamente.' }));
+    } finally {
+      setRemovingSnoozeLeadId((prev) => (prev === leadId ? null : prev));
     }
   }
 
@@ -518,6 +582,31 @@ export default function FollowUpQueue({
           Não foi possível carregar as sugestões de follow-up.
           <div style={{ marginTop: 8 }}>
             <button type="button" className="icon-btn" onClick={onRetryInteractions}>Tentar novamente</button>
+          </div>
+        </div>
+      )}
+
+      {/* Correção pós-revisão do PR #75 (achado 3) — antes, uma falha
+          ao carregar `follow_up_snoozes` (rede/RLS) era totalmente
+          invisível: `snoozesByLead` chegava vazio, a fila recalculava
+          normalmente e qualquer lead com um adiamento JÁ PERSISTIDO
+          no banco aparecia como "vencido" na aba due — uma fila
+          enganosa, sem nenhum aviso de que o dado podia estar
+          incompleto. Agora: enquanto carrega, avisa (sem travar a
+          aba, que já funciona com interactions/tasks independentes);
+          se falhar, mostra um aviso explícito + "Tentar novamente"
+          acima da fila, deixando claro que os adiamentos podem não
+          estar refletidos ali. Nunca bloqueia a renderização da fila
+          em si (interactions/tasks continuam a fonte principal) — é
+          um aviso adicional, não um gate. */}
+      {snoozesLoading && (
+        <div className="card-meta" style={{ marginBottom: 10 }}>Carregando adiamentos...</div>
+      )}
+      {!snoozesLoading && snoozesError && (
+        <div className="followup-warning" style={{ marginBottom: 10 }}>
+          Não foi possível carregar os adiamentos salvos — um lead adiado pode aparecer como vencido até isto ser corrigido.
+          <div style={{ marginTop: 8 }}>
+            <button type="button" className="icon-btn" onClick={onRetrySnoozes}>Tentar novamente</button>
           </div>
         </div>
       )}
@@ -564,6 +653,8 @@ export default function FollowUpQueue({
                   onPickSnooze={handlePickSnooze}
                   onCancelSnooze={handleCancelSnooze}
                   onRemoveSnooze={handleRemoveSnooze}
+                  removingSnoozeLeadId={removingSnoozeLeadId}
+                  removeSnoozeErrorsByLead={removeSnoozeErrorsByLead}
                 />
               ))}
             </div>

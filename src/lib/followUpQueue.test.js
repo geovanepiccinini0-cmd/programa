@@ -1346,6 +1346,34 @@ describe('Etapa C — buildFollowUpQueue com snoozesByLead', () => {
     expect(queue[0].evaluation.reason).not.toBe('snoozed');
   });
 
+  // Correção pós-revisão do PR #75 (achado 4/5) — prova explícita de
+  // que, com a ABA ABERTA (nenhum reload entre as duas chamadas,
+  // mesmo `snoozesByLead` sem nenhuma ação do usuário), a MESMA
+  // chamada de buildFollowUpQueue, só avançando `now` (exatamente o
+  // que o heartbeat de 60s de App.jsx faz a cada tick, re-executando
+  // o useMemo de FollowUpQueue.jsx com um `now` mais novo), devolve
+  // resultados DIFERENTES: antes do vencimento, snoozed; depois,
+  // devolve para due automaticamente — nenhuma ação adicional além
+  // do tempo passar é necessária.
+  it('o mesmo adiamento, com a aba aberta, alterna de waiting/snoozed para due só por `now` avançar (heartbeat), sem nenhuma outra mudança', () => {
+    const lead = dueLead();
+    const interactions = dueInteractions(lead.id);
+    const snoozedUntil = new Date(NOW.getTime() + 3600000).toISOString(); // vence 1h depois de NOW
+    const snoozesByLead = { [lead.id]: snoozedUntil };
+
+    const beforeExpiry = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW, snoozesByLead });
+    expect(beforeExpiry[0].evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING);
+    expect(beforeExpiry[0].evaluation.reason).toBe('snoozed');
+
+    // Heartbeat de 60s de App.jsx avançando o relógio além do
+    // vencimento — mesmos leads/interactions/snoozesByLead, só `now`
+    // mudou (exatamente a dependência que FollowUpQueue.jsx já tem no
+    // useMemo de buildFollowUpQueue).
+    const afterExpiry = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: new Date(NOW.getTime() + 3700000), snoozesByLead });
+    expect(afterExpiry[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE);
+    expect(afterExpiry[0].evaluation.reason).not.toBe('snoozed');
+  });
+
   it('cancelamento: remover o lead do mapa restaura a evaluation normal (equivalente a nunca ter adiado)', () => {
     const lead = dueLead();
     const interactions = dueInteractions(lead.id);

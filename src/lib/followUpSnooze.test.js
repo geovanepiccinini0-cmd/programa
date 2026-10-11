@@ -9,6 +9,8 @@ import {
   buildSnoozeMap,
   shouldApplySnoozeResult,
   formatSnoozedUntilLabel,
+  shouldStartSnoozeSave,
+  shouldStartSnoozeRemoval,
 } from './followUpSnooze.js';
 
 const NOW = new Date('2026-06-01T12:00:00.000Z');
@@ -139,5 +141,57 @@ describe('formatSnoozedUntilLabel', () => {
   test('ausente/inválido -> null', () => {
     expect(formatSnoozedUntilLabel(null)).toBeNull();
     expect(formatSnoozedUntilLabel('not-a-date')).toBeNull();
+  });
+});
+
+// Correção pós-revisão do PR #75 (achado 4) — computeSnoozeUntil em
+// si já era puro e correto (soma horas a `now`); o problema estava em
+// QUAL `now` o chamador passava (FollowUpQueue.jsx usava o `now` do
+// heartbeat de 60s, não o instante do clique). Aqui provamos que a
+// função reage corretamente a QUALQUER `now` passado — a garantia de
+// "instante do clique" é responsabilidade do chamador (corrigido em
+// FollowUpQueue.jsx: `new Date()` no momento do clique), não desta
+// função pura.
+describe('computeSnoozeUntil — sensibilidade ao `now` recebido (achado 4)', () => {
+  test('dois `now` diferentes (ex. heartbeat desatualizado vs. instante real do clique) produzem prazos diferentes, nunca o mesmo valor cacheado', () => {
+    const staleNow = new Date('2026-06-01T12:00:00.000Z'); // "now" do heartbeat, até 60s atrás
+    const clickNow = new Date('2026-06-01T12:00:45.000Z'); // instante real do clique, 45s depois
+    const fromStale = computeSnoozeUntil(staleNow, '1h');
+    const fromClick = computeSnoozeUntil(clickNow, '1h');
+    expect(fromStale).not.toBe(fromClick);
+    expect(new Date(fromClick).getTime() - new Date(fromStale).getTime()).toBe(45000);
+  });
+});
+
+// Correção pós-revisão do PR #75 (achado 6 — duplo clique/corrida).
+describe('shouldStartSnoozeSave — guarda contra duplo clique/corrida ao adiar', () => {
+  test('mesmo lead com picker aberto e nenhum salvamento em voo -> true', () => {
+    expect(shouldStartSnoozeSave({ snoozingLeadId: 'lead-1', requestedLeadId: 'lead-1', saving: false })).toBe(true);
+  });
+
+  test('segundo clique (mesmo preset ou outro) enquanto já está salvando -> false, nunca dispara uma segunda escrita', () => {
+    expect(shouldStartSnoozeSave({ snoozingLeadId: 'lead-1', requestedLeadId: 'lead-1', saving: true })).toBe(false);
+  });
+
+  test('preset de um lead diferente do que está com o picker aberto -> false', () => {
+    expect(shouldStartSnoozeSave({ snoozingLeadId: 'lead-1', requestedLeadId: 'lead-2', saving: false })).toBe(false);
+  });
+
+  test('nenhum picker aberto (snoozingLeadId null) -> false', () => {
+    expect(shouldStartSnoozeSave({ snoozingLeadId: null, requestedLeadId: 'lead-1', saving: false })).toBe(false);
+  });
+});
+
+describe('shouldStartSnoozeRemoval — guarda contra duplo clique/corrida ao cancelar adiamento', () => {
+  test('nenhuma remoção em voo para este lead -> true', () => {
+    expect(shouldStartSnoozeRemoval({ removingLeadId: null, requestedLeadId: 'lead-1' })).toBe(true);
+  });
+
+  test('já existe uma remoção em voo para OUTRO lead -> ainda true (remoções concorrentes de leads diferentes são permitidas)', () => {
+    expect(shouldStartSnoozeRemoval({ removingLeadId: 'lead-2', requestedLeadId: 'lead-1' })).toBe(true);
+  });
+
+  test('segundo clique no MESMO lead enquanto a remoção dele já está em voo -> false', () => {
+    expect(shouldStartSnoozeRemoval({ removingLeadId: 'lead-1', requestedLeadId: 'lead-1' })).toBe(false);
   });
 });

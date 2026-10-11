@@ -119,6 +119,32 @@ export function shouldApplySnoozeResult({ requestUserId, currentUserId, requestS
   return requestUserId === currentUserId && requestSeq === currentSeq;
 }
 
+// Correção pós-revisão do PR #75 (achado 6 — duplo clique/corrida).
+// Extraídas como funções puras (mesmo princípio de
+// shouldApplySnoozeResult acima) para serem testáveis isoladamente,
+// sem precisar renderizar FollowUpQueue.jsx (este projeto não tem
+// React Testing Library — mesma decisão já tomada nas Etapas A/B).
+//
+// `shouldStartSnoozeSave`: só prossegue com o salvamento se o preset
+// clicado pertence ao MESMO lead cujo picker está aberto E não há
+// nenhum salvamento já em voo (`saving`) — um segundo clique (no
+// mesmo preset ou em outro) enquanto a primeira chamada ainda está
+// em andamento é ignorado, nunca dispara uma segunda escrita
+// concorrente para o mesmo lead.
+export function shouldStartSnoozeSave({ snoozingLeadId, requestedLeadId, saving }) {
+  return snoozingLeadId === requestedLeadId && !saving;
+}
+
+// `shouldStartSnoozeRemoval`: só prossegue com "Cancelar adiamento"
+// se não há OUTRA remoção já em voo para o MESMO lead — remoções
+// concorrentes para leads DIFERENTES continuam permitidas (cada card
+// tem seu próprio estado de erro, ver removeSnoozeErrorsByLead em
+// FollowUpQueue.jsx), só o mesmo lead nunca pode ter duas remoções
+// simultâneas.
+export function shouldStartSnoozeRemoval({ removingLeadId, requestedLeadId }) {
+  return removingLeadId !== requestedLeadId;
+}
+
 // Rótulo humano local (horário do navegador do usuário — requisito
 // "considere horário local"): a coluna no banco é armazenada em UTC
 // (timestamptz, convertido automaticamente pelo driver/Postgres), e

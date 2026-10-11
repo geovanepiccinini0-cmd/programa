@@ -14,6 +14,7 @@ export default function HojeView({
   stagePoliciesLoading, stagePoliciesError, onRetryStagePolicies,
   stagePolicyOverrides, onSaveStagePolicy, onRemoveStagePolicy,
   snoozesByLead, onSaveSnooze, onRemoveSnooze,
+  snoozesLoading, snoozesError, onRetrySnoozes,
 }) {
   const [title, setTitle] = useState('');
   const [cat, setCat] = useState(CATS_TASK[0]);
@@ -63,6 +64,9 @@ export default function HojeView({
         snoozesByLead={snoozesByLead}
         onSaveSnooze={onSaveSnooze}
         onRemoveSnooze={onRemoveSnooze}
+        snoozesLoading={snoozesLoading}
+        snoozesError={snoozesError}
+        onRetrySnoozes={onRetrySnoozes}
       />
 
       {/* Etapa A — bloco independente da fila de follow-up acima:

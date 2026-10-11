@@ -20,6 +20,7 @@ import {
   computeCommercialInteractionData,
   shouldOfferResultCapture, runCompleteTaskWithResult,
   logStageChange, insertInteractionAndTrack, fetchInteractionsForUser,
+  applySnoozeRealtimeChange, shouldSkipSnoozeRealtimeEvent,
 } from './useAppState.js';
 import { interactionsApi, auditLogApi } from '../lib/db.js';
 import { todayStr } from '../utils.js';
@@ -885,5 +886,85 @@ describe('Fase 2C.2B — fetchInteractionsForUser (única decisão real do efeit
   it('userId presente, fetchAllForUser falha: o erro propaga (quem chama decide loading/error)', async () => {
     interactionsApi.fetchAllForUser.mockRejectedValueOnce(new Error('Falha de rede simulada'));
     await expect(fetchInteractionsForUser('user-abc')).rejects.toThrow('Falha de rede simulada');
+  });
+});
+
+// Correção pós-revisão do PR #75 (achado 1) — DELETE do Postgres
+// Changes sob RLS só traz a PK (`lead_id`) em `payload.old`, nunca
+// `user_id`. A versão original filtrava TODO evento (DELETE incluso)
+// por `row.user_id !== userId` com `row = payload.new || payload.old`
+// — em todo DELETE isso descartava o evento sempre, mesmo quando a
+// linha removida era do próprio usuário. Os testes abaixo reproduzem
+// exatamente esse payload (`old: { lead_id: ... }`, sem `user_id`,
+// como chegaria de uma segunda aba) e provam que a correção aplica o
+// DELETE corretamente.
+describe('shouldSkipSnoozeRealtimeEvent — correção do bug de DELETE (achado 1)', () => {
+  it('DELETE com payload.old só contendo lead_id (sem user_id, cenário real sob RLS) -> NUNCA pula', () => {
+    const payload = { eventType: 'DELETE', old: { lead_id: 'lead-1' }, new: null };
+    expect(shouldSkipSnoozeRealtimeEvent(payload, 'user-1')).toBe(false);
+  });
+
+  it('DELETE mesmo sem nenhum userId conhecido do lado do client -> ainda não pula (RLS já filtrou do lado do servidor)', () => {
+    const payload = { eventType: 'DELETE', old: { lead_id: 'lead-1' }, new: null };
+    expect(shouldSkipSnoozeRealtimeEvent(payload, undefined)).toBe(false);
+  });
+
+  it('INSERT/UPDATE de outro usuário -> pula (payload.new sempre traz user_id completo)', () => {
+    const payload = { eventType: 'UPDATE', new: { lead_id: 'lead-1', user_id: 'user-2' }, old: {} };
+    expect(shouldSkipSnoozeRealtimeEvent(payload, 'user-1')).toBe(true);
+  });
+
+  it('INSERT/UPDATE do próprio usuário -> não pula', () => {
+    const payload = { eventType: 'INSERT', new: { lead_id: 'lead-1', user_id: 'user-1' }, old: {} };
+    expect(shouldSkipSnoozeRealtimeEvent(payload, 'user-1')).toBe(false);
+  });
+});
+
+describe('applySnoozeRealtimeChange — aplica eventos de follow_up_snoozes por lead_id (achado 1, multi-aba)', () => {
+  function fakeFromRow(row) {
+    return { leadId: row.lead_id, snoozedUntil: row.snoozed_until };
+  }
+
+  it('DELETE com payload.old só contendo lead_id remove a linha correspondente do state local (duas abas)', () => {
+    let state = [
+      { leadId: 'lead-1', snoozedUntil: '2026-06-01T18:00:00.000Z' },
+      { leadId: 'lead-2', snoozedUntil: '2026-06-02T00:00:00.000Z' },
+    ];
+    const setState = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+    const payload = { eventType: 'DELETE', old: { lead_id: 'lead-1' }, new: null };
+
+    applySnoozeRealtimeChange(setState, fakeFromRow, payload);
+
+    expect(state).toEqual([{ leadId: 'lead-2', snoozedUntil: '2026-06-02T00:00:00.000Z' }]);
+  });
+
+  it('DELETE de um lead_id que não está no state local (ex. aba já tinha removido antes) é um no-op seguro, nunca lança', () => {
+    let state = [{ leadId: 'lead-2', snoozedUntil: '2026-06-02T00:00:00.000Z' }];
+    const setState = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+    const payload = { eventType: 'DELETE', old: { lead_id: 'lead-1' }, new: null };
+
+    applySnoozeRealtimeChange(setState, fakeFromRow, payload);
+
+    expect(state).toEqual([{ leadId: 'lead-2', snoozedUntil: '2026-06-02T00:00:00.000Z' }]);
+  });
+
+  it('INSERT adiciona uma linha nova (adiar em outra aba aparece nesta)', () => {
+    let state = [];
+    const setState = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+    const payload = { eventType: 'INSERT', new: { lead_id: 'lead-1', user_id: 'user-1', snoozed_until: '2026-06-01T18:00:00.000Z' }, old: {} };
+
+    applySnoozeRealtimeChange(setState, fakeFromRow, payload);
+
+    expect(state).toEqual([{ leadId: 'lead-1', snoozedUntil: '2026-06-01T18:00:00.000Z' }]);
+  });
+
+  it('UPDATE substitui a linha existente pelo novo snoozedUntil (prorrogar em outra aba reflete nesta)', () => {
+    let state = [{ leadId: 'lead-1', snoozedUntil: '2026-06-01T18:00:00.000Z' }];
+    const setState = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+    const payload = { eventType: 'UPDATE', new: { lead_id: 'lead-1', user_id: 'user-1', snoozed_until: '2026-06-02T00:00:00.000Z' }, old: {} };
+
+    applySnoozeRealtimeChange(setState, fakeFromRow, payload);
+
+    expect(state).toEqual([{ leadId: 'lead-1', snoozedUntil: '2026-06-02T00:00:00.000Z' }]);
   });
 });

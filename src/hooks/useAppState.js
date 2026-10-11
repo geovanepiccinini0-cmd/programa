@@ -346,6 +346,25 @@ export function applyRealtimeChange(setState, fromRow, payload) {
 // local. Função dedicada, mesmo princípio de identidade por chave
 // própria já usado para applyConversationStateRealtimeEvent (fase do
 // WhatsApp) — nunca reaproveita applyRealtimeChange como está.
+// Correção pós-revisão do PR #75 (achado 1) — extraída do handler do
+// canal Realtime (useAppState, abaixo) como função pura e testável
+// isoladamente: decide se um evento de `follow_up_snoozes` deve ser
+// IGNORADO (nunca aplicado ao state local) antes de chamar
+// `applySnoozeRealtimeChange`. Nunca filtra DELETE por `user_id` —
+// um DELETE sob RLS com REPLICA IDENTITY padrão só traz a PK
+// (`lead_id`) em `payload.old`, nunca `user_id`; filtrar por um
+// campo ausente faria TODO DELETE ser descartado (o bug original).
+// A RLS da tabela (migration 027) já garante que esta aba só recebe
+// eventos de linhas que pertencem ao próprio usuário autenticado —
+// não há nada para `user_id` validar aqui no caso de DELETE. Para
+// INSERT/UPDATE, `payload.new` sempre traz a linha completa
+// (user_id incluído) — o filtro aqui é defesa em profundidade, não a
+// única barreira.
+export function shouldSkipSnoozeRealtimeEvent(payload, userId) {
+  if (payload.eventType === 'DELETE') return false;
+  return Boolean(payload.new) && payload.new.user_id !== userId;
+}
+
 export function applySnoozeRealtimeChange(setState, fromRow, payload) {
   if (payload.eventType === 'DELETE') {
     const leadId = payload.old && payload.old.lead_id;
@@ -657,9 +676,29 @@ export function useAppState(userId) {
       // demais sem precisar recarregar. `applySnoozeRealtimeChange`
       // (não `applyRealtimeChange` — ver comentário na definição
       // dela) identifica a linha por `lead_id`, nunca por `id`.
+      //
+      // Correção pós-revisão do PR #75 (achado 1) — DIFERENTE do
+      // handler de `leads` acima: um DELETE do Postgres Changes só
+      // traz no payload antigo as colunas da REPLICA IDENTITY da
+      // tabela (por padrão, só a PK — `lead_id` aqui, ver migration
+      // 027), nunca `user_id`. A versão anterior fazia
+      // `const row = payload.new || payload.old; if (row.user_id !==
+      // userId) return;` incondicionalmente — em todo DELETE,
+      // `payload.new` é `null` e `payload.old.user_id` é
+      // `undefined`, então a condição era SEMPRE verdadeira e TODO
+      // DELETE era descartado, inclusive os do próprio usuário
+      // (cancelar adiamento numa aba nunca refletia nas outras).
+      //
+      // Por isso o filtro por user_id só se aplica a INSERT/UPDATE
+      // (onde `payload.new` sempre traz a linha completa, user_id
+      // incluído) — nunca a DELETE. Isso é seguro mesmo sem o filtro
+      // client-side: a subscription do Realtime já é filtrada pela
+      // RLS da tabela (migration 027, policy de SELECT `user_id =
+      // auth.uid()`) usando o JWT da sessão — o evento de DELETE de
+      // um lead/adiamento de OUTRO usuário nunca chega a esta aba,
+      // então não há nada para `row.user_id` precisar validar aqui.
       .on('postgres_changes', { event: '*', schema: 'public', table: 'follow_up_snoozes' }, (payload) => {
-        const row = payload.new || payload.old;
-        if (row.user_id !== userId) return; // ignora adiamentos de outros usuários
+        if (shouldSkipSnoozeRealtimeEvent(payload, userId)) return;
         applySnoozeRealtimeChange(setSnoozes, followUpSnoozesApi.fromRow, payload);
       })
       .subscribe();
