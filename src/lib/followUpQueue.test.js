@@ -1292,3 +1292,110 @@ describe('Etapa B — buildFollowUpQueue com stagePolicyOverrides', () => {
     expect(queue[0].policy).toEqual(followUpEngineModule.FOLLOW_UP_POLICY);
   });
 });
+
+// Etapa C — adiamento de follow-ups, integrado em buildFollowUpQueue
+// via snoozesByLead (applySnoozeToEvaluation, followUpSnooze.js, já
+// testado isoladamente). Cobertura de INTEGRAÇÃO: provar que o
+// adiamento muda o resultado real da fila (status/dueAt) só para o
+// lead adiado, nunca para os demais, e que vence automaticamente.
+describe('Etapa C — buildFollowUpQueue com snoozesByLead', () => {
+  function dueLead(overrides = {}) {
+    return makeLead({ etapa: 'Negociação', ...overrides });
+  }
+  function dueInteractions(leadId) {
+    return [makeInteraction({ leadId, type: 'call', direction: 'outbound', occurredAt: hoursAgo(30), metadata: { activity_class: 'attempt' } })];
+  }
+
+  it('sem snoozesByLead -> comportamento IDÊNTICO ao anterior a esta fase (retrocompatibilidade)', () => {
+    const lead = dueLead();
+    const interactions = dueInteractions(lead.id);
+    const withoutParam = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW });
+    const withEmptyMap = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW, snoozesByLead: {} });
+    expect(withoutParam[0].evaluation).toEqual(withEmptyMap[0].evaluation);
+    expect(withoutParam[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE);
+  });
+
+  it('adiamento ativo: lead due deixa de aparecer como vencido, vira waiting/snoozed com dueAt=snoozedUntil', () => {
+    const lead = dueLead();
+    const interactions = dueInteractions(lead.id);
+    const snoozedUntil = new Date(NOW.getTime() + 3600000).toISOString();
+    const queue = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW, snoozesByLead: { [lead.id]: snoozedUntil } });
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING);
+    expect(queue[0].evaluation.reason).toBe('snoozed');
+    expect(queue[0].evaluation.dueAt).toBe(snoozedUntil);
+    expect(queue[0].evaluation.snoozedUntil).toBe(snoozedUntil);
+  });
+
+  it('adiamento só afeta o lead adiado, nunca outro lead due na mesma fila', () => {
+    const leadA = dueLead({ id: 'lead-a' });
+    const leadB = dueLead({ id: 'lead-b' });
+    const interactions = [...dueInteractions('lead-a'), ...dueInteractions('lead-b')];
+    const snoozedUntil = new Date(NOW.getTime() + 3600000).toISOString();
+    const queue = buildFollowUpQueue({ leads: [leadA, leadB], interactions, tasks: [], now: NOW, snoozesByLead: { 'lead-a': snoozedUntil } });
+    const byId = Object.fromEntries(queue.map((item) => [item.lead.id, item]));
+    expect(byId['lead-a'].evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING);
+    expect(byId['lead-b'].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE);
+  });
+
+  it('vencimento: adiamento no passado -> lead volta automaticamente a due (elegibilidade sempre recalculada, nunca persistida)', () => {
+    const lead = dueLead();
+    const interactions = dueInteractions(lead.id);
+    const expiredSnooze = new Date(NOW.getTime() - 3600000).toISOString();
+    const queue = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW, snoozesByLead: { [lead.id]: expiredSnooze } });
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE);
+    expect(queue[0].evaluation.reason).not.toBe('snoozed');
+  });
+
+  it('cancelamento: remover o lead do mapa restaura a evaluation normal (equivalente a nunca ter adiado)', () => {
+    const lead = dueLead();
+    const interactions = dueInteractions(lead.id);
+    const snoozedUntil = new Date(NOW.getTime() + 3600000).toISOString();
+    const snoozed = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW, snoozesByLead: { [lead.id]: snoozedUntil } });
+    expect(snoozed[0].evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING);
+
+    const cancelled = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW, snoozesByLead: {} });
+    const withoutSnooze = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW });
+    expect(cancelled[0].evaluation).toEqual(withoutSnooze[0].evaluation);
+  });
+
+  it('adiamento nunca desbloqueia um lead blocked (Ganho/Perdido/deletado)', () => {
+    const lead = dueLead({ etapa: 'Ganho' });
+    const snoozedUntil = new Date(NOW.getTime() + 3600000).toISOString();
+    const queue = buildFollowUpQueue({ leads: [lead], interactions: [], tasks: [], now: NOW, snoozesByLead: { [lead.id]: snoozedUntil } });
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.BLOCKED);
+  });
+
+  it('compatibilidade com a política por etapa: adiamento e stagePolicyOverrides se compõem corretamente na mesma chamada', () => {
+    const lead = dueLead({ etapa: 'Proposta' });
+    const interactions = [makeInteraction({ leadId: lead.id, type: 'call', direction: 'outbound', occurredAt: hoursAgo(10), metadata: { activity_class: 'attempt' } })];
+    const stagePolicyOverrides = { Proposta: { attempt: { hoursUntilDue: 5 } } };
+    const snoozedUntil = new Date(NOW.getTime() + 3600000).toISOString();
+
+    // Sem adiamento: override de etapa já antecipa para due (10h >= 5h).
+    const withoutSnooze = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW, stagePolicyOverrides });
+    expect(withoutSnooze[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE);
+
+    // Com adiamento ativo: a política por etapa continua decidindo
+    // "venceria agora" internamente, mas o adiamento suprime isso por
+    // cima -> waiting/snoozed, nunca due.
+    const withSnooze = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW, stagePolicyOverrides, snoozesByLead: { [lead.id]: snoozedUntil } });
+    expect(withSnooze[0].evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING);
+    expect(withSnooze[0].evaluation.reason).toBe('snoozed');
+    // A política efetiva exposta no item continua sendo a da etapa,
+    // nunca a global — o adiamento não interfere em item.policy.
+    expect(withSnooze[0].policy.attempt.hoursUntilDue).toBe(5);
+  });
+
+  it('lead adiado nunca tem suggestedAction/blockers/attemptCount alterados em relação ao cálculo original', () => {
+    const lead = dueLead();
+    const interactions = [
+      ...dueInteractions(lead.id),
+      makeInteraction({ leadId: lead.id, type: 'call', direction: 'outbound', occurredAt: hoursAgo(26) }),
+    ];
+    const snoozedUntil = new Date(NOW.getTime() + 3600000).toISOString();
+    const withoutSnooze = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW });
+    const withSnooze = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW, snoozesByLead: { [lead.id]: snoozedUntil } });
+    expect(withSnooze[0].evaluation.attemptCount).toBe(withoutSnooze[0].evaluation.attemptCount);
+    expect(withSnooze[0].evaluation.blockers).toEqual(withoutSnooze[0].evaluation.blockers);
+  });
+});

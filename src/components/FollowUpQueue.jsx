@@ -8,6 +8,7 @@ import {
   getOperationalBlockers, formatOperationalBlocker, hasMissingPhoneWarning,
   shouldShowAttemptCount, formatAttemptCount, shouldShowBlockedFollowUp,
 } from '../lib/followUpPresentation.js';
+import { SNOOZE_PRESETS, SNOOZE_REASON } from '../lib/followUpSnooze.js';
 
 // Fase 2C.2B — UI do Shadow Mode. Só recomenda: a ação comercial sempre
 // exige confirmação explícita do vendedor.
@@ -79,7 +80,29 @@ function WhatsAppResultPicker({ registering, error, onResult, onCancel }) {
   );
 }
 
-function DueCard({ item, onEditLead, assistedAction, assistedRegistering, assistedError, onStartAssisted, onAssistedResult, onCancelAssisted }) {
+// Etapa C — picker de prazo pós-"Adiar" (requisito 2: 3 prazos
+// fixos). Mesmo contrato dos pickers de resultado acima (nenhum botão
+// decide nada sozinho, só dispara o callback do pai) — mas aqui não
+// há "resultado comercial" nenhum: adiar nunca registra uma interação
+// (requisito 8), só grava o prazo escolhido.
+function SnoozePicker({ saving, error, onPick, onCancel }) {
+  return (
+    <div className="followup-call-picker">
+      <div className="followup-card-actions">
+        {SNOOZE_PRESETS.map((p) => (
+          <button type="button" className="chip" key={p.key} disabled={saving} onClick={() => onPick(p.key)}>{p.label}</button>
+        ))}
+        <button type="button" className="chip" disabled={saving} onClick={onCancel}>Cancelar</button>
+      </div>
+      {error && <div className="followup-warning">{error}</div>}
+    </div>
+  );
+}
+
+function DueCard({
+  item, onEditLead, assistedAction, assistedRegistering, assistedError, onStartAssisted, onAssistedResult, onCancelAssisted,
+  isSnoozing, snoozeSaving, snoozeError, onStartSnooze, onPickSnooze, onCancelSnooze,
+}) {
   const { lead, evaluation, nbaPresentation, operationalRecommendation } = item;
   const reason = formatFollowUpReason(evaluation);
   const time = formatFollowUpTimeLabel(evaluation, item.now);
@@ -125,6 +148,10 @@ function DueCard({ item, onEditLead, assistedAction, assistedRegistering, assist
   // picker (nunca troca de tipo) se a recomendação mudar antes da
   // confirmação.
   const isAssistingThisLead = Boolean(assistedAction) && assistedAction.leadId === lead.id;
+  // Etapa C — só um picker (ação assistida OU adiamento) por vez no
+  // mesmo card, nunca os dois simultaneamente: "Adiar" fica escondido
+  // enquanto um picker de resultado está aberto, e vice-versa.
+  const canOfferSnooze = !isAssistingThisLead;
 
   return (
     <div className="followup-card">
@@ -196,12 +223,35 @@ function DueCard({ item, onEditLead, assistedAction, assistedRegistering, assist
           onCancel={() => onCancelAssisted(lead.id)}
         />
       )}
+      {/* Etapa C — requisito 1: "Adiar" disponível para qualquer lead
+          que exige acompanhamento (todo item desta aba, due), nunca
+          condicionado a ter uma CTA de call/whatsapp. */}
+      {canOfferSnooze && !isSnoozing && (
+        <div className="followup-card-actions">
+          <button type="button" className="icon-btn" onClick={() => onStartSnooze(lead.id)}>Adiar</button>
+        </div>
+      )}
+      {isSnoozing && (
+        <SnoozePicker
+          saving={snoozeSaving}
+          error={snoozeError}
+          onPick={(presetKey) => onPickSnooze(lead.id, presetKey)}
+          onCancel={() => onCancelSnooze(lead.id)}
+        />
+      )}
     </div>
   );
 }
 
-function WaitingCard({ item, onEditLead }) {
+function WaitingCard({ item, onEditLead, onRemoveSnooze }) {
   const { lead, evaluation } = item;
+  // Etapa C — reason === SNOOZE_REASON nunca está no mapa de
+  // REASON_COPY (followUpPresentation.js) de propósito (reason é
+  // local a followUpSnooze.js, nunca adicionado ao enum do motor) —
+  // por isso formatFollowUpReason devolve null aqui, nunca um texto
+  // incorreto; o rótulo "Adiado até..." vem de formatFollowUpTimeLabel
+  // (que já trata esse reason explicitamente).
+  const isSnoozed = evaluation.reason === SNOOZE_REASON;
   const reason = formatFollowUpReason(evaluation);
   const time = formatFollowUpTimeLabel(evaluation, item.now);
   // Etapa B — mesma correção de DueCard: usa a política efetiva do item.
@@ -210,15 +260,25 @@ function WaitingCard({ item, onEditLead }) {
   const timeLine = [time, attempt].filter(Boolean).join(' · ');
 
   return (
-    <button type="button" className="followup-card compact" onClick={() => onEditLead(lead)}>
-      <div className="followup-card-top">
-        <span className="followup-card-nome">{lead.nome}</span>
-      </div>
-      {reason && <div className="followup-card-reason">{reason.label}</div>}
-      {reason && <div className="card-meta">{reason.subtitle}</div>}
-      {timeLine && <div className="card-meta">{timeLine}</div>}
-      {missingPhone && <div className="followup-warning">Sem telefone cadastrado</div>}
-    </button>
+    <div className="followup-card compact">
+      <button type="button" className="followup-card-open" onClick={() => onEditLead(lead)}>
+        <div className="followup-card-top">
+          <span className="followup-card-nome">{lead.nome}</span>
+        </div>
+        {reason && <div className="followup-card-reason">{reason.label}</div>}
+        {reason && <div className="card-meta">{reason.subtitle}</div>}
+        {timeLine && <div className="card-meta">{timeLine}</div>}
+        {missingPhone && <div className="followup-warning">Sem telefone cadastrado</div>}
+      </button>
+      {/* Etapa C — requisito 6: só aparece aqui, único lugar possível
+          de "Cancelar adiamento" (card deixa de ser snoozed assim que
+          o adiamento é removido — a fila recalcula sozinha). */}
+      {isSnoozed && (
+        <div className="followup-card-actions">
+          <button type="button" className="icon-btn" onClick={() => onRemoveSnooze(lead.id)}>Cancelar adiamento</button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -248,6 +308,7 @@ export default function FollowUpQueue({
   leads, interactions, tasks, interactionsLoading, interactionsError, now,
   onEditLead, onRetryInteractions, onRegisterCommercialInteraction,
   stagePolicyOverrides,
+  snoozesByLead, onSaveSnooze, onRemoveSnooze,
 }) {
   const [tab, setTab] = useState('due');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -279,11 +340,19 @@ export default function FollowUpQueue({
     register: registerAssistedAction, clearError: clearAssistedError,
   } = useCommercialRegistration(onRegisterCommercialInteraction);
 
+  // Etapa C — qual lead (no máximo um por vez, mesmo princípio de
+  // `assistedAction`) está com o picker de "Adiar" aberto. State
+  // próprio, nunca reaproveita `assistedAction`: são ações
+  // independentes (adiar nunca é um resultado comercial).
+  const [snoozingLeadId, setSnoozingLeadId] = useState(null);
+  const [snoozeSaving, setSnoozeSaving] = useState(false);
+  const [snoozeError, setSnoozeError] = useState(null);
+
   useEffect(() => { setVisibleCount(PAGE_SIZE); }, [tab]);
 
   const queue = useMemo(
-    () => buildFollowUpQueue({ leads, interactions, tasks, now, policy: FOLLOW_UP_POLICY, stagePolicyOverrides }),
-    [leads, interactions, tasks, now, stagePolicyOverrides],
+    () => buildFollowUpQueue({ leads, interactions, tasks, now, policy: FOLLOW_UP_POLICY, stagePolicyOverrides, snoozesByLead }),
+    [leads, interactions, tasks, now, stagePolicyOverrides, snoozesByLead],
   );
 
   const dueItems = useMemo(() => sortDueFollowUps(queue), [queue]);
@@ -335,6 +404,16 @@ export default function FollowUpQueue({
     if (!stillExecutable) setAssistedAction(null);
   }, [dueItems, assistedAction]);
 
+  // Etapa C — mesmo princípio de invalidação do efeito acima: se o
+  // lead com o picker de "Adiar" aberto sair de due (ex. mudou de
+  // etapa, foi editado para Ganho/Perdido em outra aba), fecha o
+  // picker sem nunca salvar nada sozinho.
+  useEffect(() => {
+    if (!snoozingLeadId) return;
+    const stillDue = dueItems.some((item) => item.lead.id === snoozingLeadId);
+    if (!stillDue) { setSnoozingLeadId(null); setSnoozeError(null); }
+  }, [dueItems, snoozingLeadId]);
+
   // Fase 2D.2.C.1 — o clique na CTA congela o tipo junto com o leadId:
   // `type` só pode ser 'call'/'whatsapp' (validado defensivamente; um
   // tipo inesperado nunca abre picker, nunca registra nada).
@@ -372,6 +451,52 @@ export default function FollowUpQueue({
     } catch (e) {
       // erro já populado em assistedError pelo hook; picker permanece
       // aberto (continua montado porque o lead, por enquanto, ainda está em due).
+    }
+  }
+
+  // Etapa C — "Adiar": nunca cria/altera task/etapa/interação
+  // (requisito 8), só grava o prazo escolhido via onSaveSnooze
+  // (useAppState.js: computeSnoozeUntil + 3-passos UPDATE/INSERT).
+  function handleStartSnooze(leadId) {
+    if (assistedAction && assistedAction.leadId === leadId) return; // só um picker por card
+    setSnoozeError(null);
+    setSnoozingLeadId(leadId);
+  }
+
+  function handleCancelSnooze(leadId) {
+    if (snoozingLeadId !== leadId) return;
+    setSnoozingLeadId(null);
+    setSnoozeError(null);
+  }
+
+  async function handlePickSnooze(leadId, presetKey) {
+    if (snoozingLeadId !== leadId) return;
+    setSnoozeSaving(true);
+    setSnoozeError(null);
+    try {
+      await onSaveSnooze(leadId, presetKey, now);
+      setSnoozingLeadId(null);
+      // snoozesByLead já atualiza via useAppState.js -> a fila
+      // recalcula sozinha (dependência do useMemo acima), sem
+      // atualização manual paralela aqui.
+    } catch (e) {
+      setSnoozeError((e && e.message) || 'Não foi possível adiar este follow-up.');
+    } finally {
+      setSnoozeSaving(false);
+    }
+  }
+
+  // "Cancelar adiamento" (requisito 6) — chamado a partir de
+  // WaitingCard, nunca precisa de confirmação extra: é só remover a
+  // própria configuração do adiamento, nunca desfaz nada do histórico.
+  async function handleRemoveSnooze(leadId) {
+    try {
+      await onRemoveSnooze(leadId);
+    } catch {
+      // erro silencioso aqui é aceitável: se a remoção falhar, o
+      // adiamento continua ativo e o card continua mostrando "Cancelar
+      // adiamento" — o usuário pode tentar de novo, nenhum estado fica
+      // inconsistente.
     }
   }
 
@@ -432,6 +557,13 @@ export default function FollowUpQueue({
                   onStartAssisted={handleStartAssisted}
                   onAssistedResult={handleAssistedResult}
                   onCancelAssisted={handleCancelAssisted}
+                  isSnoozing={snoozingLeadId === item.lead.id}
+                  snoozeSaving={snoozeSaving}
+                  snoozeError={snoozingLeadId === item.lead.id ? snoozeError : null}
+                  onStartSnooze={handleStartSnooze}
+                  onPickSnooze={handlePickSnooze}
+                  onCancelSnooze={handleCancelSnooze}
+                  onRemoveSnooze={handleRemoveSnooze}
                 />
               ))}
             </div>
