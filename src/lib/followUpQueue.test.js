@@ -1217,3 +1217,78 @@ describe('Fase 2C.2B — sortBlockedFollowUps', () => {
     expect(sorted).not.toBe(queue);
   });
 });
+
+// Etapa B — follow-up configurável por etapa, integrado em
+// buildFollowUpQueue via stagePolicyOverrides (resolveFollowUpPolicyForStage,
+// followUpPolicyConfig.js, já testado isoladamente). Aqui a cobertura é
+// de INTEGRAÇÃO: provar que o override realmente muda o resultado real
+// da fila (status/dueAt) para o lead certo, e NUNCA para os demais.
+describe('Etapa B — buildFollowUpQueue com stagePolicyOverrides', () => {
+  it('sem stagePolicyOverrides -> comportamento IDÊNTICO ao anterior a esta fase (retrocompatibilidade)', () => {
+    const lead = makeLead({ etapa: 'Negociação' });
+    const interactions = [makeInteraction({ type: 'call', direction: 'outbound', occurredAt: hoursAgo(10), metadata: { activity_class: 'attempt' } })];
+    const withoutParam = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW });
+    const withEmptyOverrides = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW, stagePolicyOverrides: {} });
+    expect(withoutParam[0].evaluation).toEqual(withEmptyOverrides[0].evaluation);
+    expect(withoutParam[0].evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING); // 10h < 24h padrão de 'attempt'
+  });
+
+  it('override de etapa reduz o prazo e antecipa o status para due', () => {
+    const lead = makeLead({ etapa: 'Proposta' });
+    const interactions = [makeInteraction({ type: 'call', direction: 'outbound', occurredAt: hoursAgo(10), metadata: { activity_class: 'attempt' } })];
+    const stagePolicyOverrides = { Proposta: { attempt: { hoursUntilDue: 5 } } };
+    const queue = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW, stagePolicyOverrides });
+    expect(queue[0].evaluation.status).toBe(FOLLOW_UP_STATUS.DUE); // 10h >= 5h do override
+  });
+
+  it('override só afeta leads da ETAPA configurada, nunca os de outra etapa na mesma fila', () => {
+    const leadProposta = makeLead({ id: 'p1', etapa: 'Proposta' });
+    const leadNegociacao = makeLead({ id: 'n1', etapa: 'Negociação' });
+    const interactions = [
+      makeInteraction({ leadId: 'p1', type: 'call', direction: 'outbound', occurredAt: hoursAgo(10), metadata: { activity_class: 'attempt' } }),
+      makeInteraction({ leadId: 'n1', type: 'call', direction: 'outbound', occurredAt: hoursAgo(10), metadata: { activity_class: 'attempt' } }),
+    ];
+    const stagePolicyOverrides = { Proposta: { attempt: { hoursUntilDue: 5 } } };
+    const queue = buildFollowUpQueue({ leads: [leadProposta, leadNegociacao], interactions, tasks: [], now: NOW, stagePolicyOverrides });
+    const byId = Object.fromEntries(queue.map((item) => [item.lead.id, item]));
+    expect(byId.p1.evaluation.status).toBe(FOLLOW_UP_STATUS.DUE); // override: 10h >= 5h
+    expect(byId.n1.evaluation.status).toBe(FOLLOW_UP_STATUS.WAITING); // default: 10h < 24h
+  });
+
+  it('override de maxAttempts muda quando a cadência se esgota', () => {
+    const lead = makeLead({ etapa: 'Follow-up 1' });
+    const interactions = [
+      makeInteraction({ type: 'call', direction: 'outbound', occurredAt: hoursAgo(50) }),
+      makeInteraction({ type: 'call', direction: 'outbound', occurredAt: hoursAgo(26) }),
+    ];
+    const defaultQueue = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW });
+    expect(defaultQueue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.NO_RESPONSE_AFTER_ATTEMPT); // maxAttempts padrão (3) não esgotado com 2 tentativas
+
+    const stagePolicyOverrides = { 'Follow-up 1': { maxAttempts: 2 } };
+    const overriddenQueue = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW, stagePolicyOverrides });
+    expect(overriddenQueue[0].evaluation.reason).toBe(FOLLOW_UP_REASON.CADENCE_EXHAUSTED); // maxAttempts=2 já esgotado
+  });
+
+  it('cada item da fila expõe a política EFETIVA usada (item.policy), nunca a global quando há override', () => {
+    const lead = makeLead({ etapa: 'Proposta' });
+    const stagePolicyOverrides = { Proposta: { maxAttempts: 7 } };
+    const queue = buildFollowUpQueue({ leads: [lead], interactions: [], tasks: [], now: NOW, stagePolicyOverrides });
+    expect(queue[0].policy.maxAttempts).toBe(7);
+  });
+
+  it('override inválido (sanitiza para {}) -> fila idêntica à sem override, nunca um comportamento quebrado', () => {
+    const lead = makeLead({ etapa: 'Proposta' });
+    const interactions = [makeInteraction({ type: 'call', direction: 'outbound', occurredAt: hoursAgo(10), metadata: { activity_class: 'attempt' } })];
+    const invalidOverrides = { Proposta: { attempt: { hoursUntilDue: -5 } } };
+    const withInvalid = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW, stagePolicyOverrides: invalidOverrides });
+    const withoutOverride = buildFollowUpQueue({ leads: [lead], interactions, tasks: [], now: NOW });
+    expect(withInvalid[0].evaluation).toEqual(withoutOverride[0].evaluation);
+  });
+
+  it('nunca confunde etapa com atualização de cadastro: lead parado (ultimaAtualizacao antiga) mas com etapa SEM override permanece com o default, mesmo que outra etapa tenha override', () => {
+    const lead = makeLead({ etapa: 'Qualificação', ultimaAtualizacao: '2020-01-01' });
+    const stagePolicyOverrides = { Proposta: { maxAttempts: 1 } };
+    const queue = buildFollowUpQueue({ leads: [lead], interactions: [], tasks: [], now: NOW, stagePolicyOverrides });
+    expect(queue[0].policy).toEqual(followUpEngineModule.FOLLOW_UP_POLICY);
+  });
+});

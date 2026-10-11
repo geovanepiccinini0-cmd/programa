@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DIAS_SEMANA, CONTACT_ATTEMPT_TYPES } from '../constants.js';
 import { todayStr, normalizeBackup } from '../utils.js';
-import { leadsApi, tasksApi, templatesApi, interactionsApi, auditLogApi } from '../lib/db.js';
+import { leadsApi, tasksApi, templatesApi, interactionsApi, auditLogApi, followUpStagePoliciesApi } from '../lib/db.js';
 import { supabase } from '../lib/supabaseClient.js';
+import { buildStagePolicyOverridesMap } from '../lib/followUpPolicyConfig.js';
 
 // Infraestrutura RESERVADA para um futuro motor de automações comerciais
 // (lead sem resposta, pós-proposta, reativação etc.) — ver decisão em
@@ -440,6 +441,58 @@ export function useAppState(userId) {
     setInteractionsRetryToken((n) => n + 1);
   }, []);
 
+  // Etapa B — configuração de follow-up por etapa (migration 026).
+  // Mesmo padrão de isolamento já usado para `interactions`: fetch
+  // independente (uma falha aqui nunca impede o CRM de abrir), reset
+  // imediato ao trocar de usuário, retry token próprio.
+  const [stagePolicies, setStagePolicies] = useState([]);
+  const [stagePoliciesLoading, setStagePoliciesLoading] = useState(true);
+  const [stagePoliciesError, setStagePoliciesError] = useState(null);
+  const [stagePoliciesRetryToken, setStagePoliciesRetryToken] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setStagePolicies([]);
+    setStagePoliciesError(null);
+    setStagePoliciesLoading(Boolean(userId));
+    if (!userId) { setStagePoliciesLoading(false); return undefined; }
+    followUpStagePoliciesApi.fetchAll(userId)
+      .then((data) => { if (!cancelled) { setStagePolicies(data); setStagePoliciesLoading(false); } })
+      .catch((e) => { if (!cancelled) { setStagePoliciesError(e); setStagePoliciesLoading(false); } });
+    return () => { cancelled = true; };
+  }, [userId, stagePoliciesRetryToken]);
+
+  const refetchStagePolicies = useCallback(() => {
+    setStagePoliciesRetryToken((n) => n + 1);
+  }, []);
+
+  // Mapa { etapa -> override } pronto para buildFollowUpQueue — única
+  // conversão de `stagePolicies` (linhas) para o formato que
+  // resolveFollowUpPolicyForStage consome, nunca duplicada em cada
+  // consumidor (FollowUpQueue.jsx/FollowUpPolicySettings.jsx leem só
+  // este memo, nunca `stagePolicies` bruto).
+  const stagePolicyOverrides = useMemo(() => buildStagePolicyOverridesMap(stagePolicies), [stagePolicies]);
+
+  // Salvar/remover são sempre uma ação EXPLÍCITA do usuário na tela de
+  // configuração — nunca chamadas por nenhum efeito automático, nunca
+  // criam task/interação (requisito 7 da autorização): só atualizam
+  // esta tabela de configuração, que o motor só lê na PRÓXIMA avaliação
+  // (useMemo de FollowUpQueue.jsx recalcula sozinho quando
+  // stagePolicyOverrides muda, sem nenhuma ação adicional daqui).
+  const saveStagePolicy = useCallback(async (etapa, override) => {
+    const saved = await followUpStagePoliciesApi.save(etapa, override);
+    setStagePolicies((prev) => {
+      const next = prev.filter((p) => p.etapa !== etapa);
+      next.push(saved);
+      return next;
+    });
+  }, []);
+
+  const removeStagePolicy = useCallback(async (etapa) => {
+    await followUpStagePoliciesApi.remove(etapa);
+    setStagePolicies((prev) => prev.filter((p) => p.etapa !== etapa));
+  }, []);
+
   useEffect(() => {
     const channel = supabase
       .channel('crm-piccinini-sync')
@@ -643,5 +696,8 @@ export function useAppState(userId) {
     importBackup,
     addInteractionNote,
     registerCommercialInteraction,
+    // Etapa B — follow-up configurável por etapa.
+    stagePolicies, stagePoliciesLoading, stagePoliciesError, refetchStagePolicies,
+    stagePolicyOverrides, saveStagePolicy, removeStagePolicy,
   };
 }

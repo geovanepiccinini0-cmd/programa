@@ -31,6 +31,8 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
     importBackup,
     addInteractionNote,
     registerCommercialInteraction,
+    stagePolicies, stagePoliciesLoading, stagePoliciesError, refetchStagePolicies,
+    stagePolicyOverrides, saveStagePolicy, removeStagePolicy,
   } = useAppState(userId);
 
   const [activeTab, setActiveTab] = useState('hoje');
@@ -175,6 +177,13 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
           onEditLead={handleEditLead}
           onRetryInteractions={refetchInteractions}
           onRegisterCommercialInteraction={registerCommercialInteraction}
+          stagePolicies={stagePolicies}
+          stagePoliciesLoading={stagePoliciesLoading}
+          stagePoliciesError={stagePoliciesError}
+          onRetryStagePolicies={refetchStagePolicies}
+          stagePolicyOverrides={stagePolicyOverrides}
+          onSaveStagePolicy={saveStagePolicy}
+          onRemoveStagePolicy={removeStagePolicy}
         />
       )}
 
