@@ -5,6 +5,7 @@ import { leadsApi, tasksApi, templatesApi, interactionsApi, auditLogApi, followU
 import { supabase } from '../lib/supabaseClient.js';
 import { buildStagePolicyOverridesMap, shouldApplyStagePolicyResult } from '../lib/followUpPolicyConfig.js';
 import { buildSnoozeMap, shouldApplySnoozeResult, computeSnoozeUntil } from '../lib/followUpSnooze.js';
+import { buildAutoStageTaskAction, hasPendingAutoStageTask } from '../lib/autoStageTasks.js';
 
 // Infraestrutura RESERVADA para um futuro motor de automações comerciais
 // (lead sem resposta, pós-proposta, reativação etc.) — ver decisão em
@@ -287,6 +288,115 @@ export async function logStageChange(prevLead, updatedLead, userId, setInteracti
   } catch (e) {
     console.warn('Não foi possível registrar o histórico de mudança de etapa (migrations 007/011 já foram rodadas no Supabase?):', e);
   }
+}
+
+// Etapa D — único ponto de chamada para a criação de tarefas
+// automáticas por etapa, reutilizado IDENTICAMENTE por saveLead
+// (formulário), moveStage (Kanban) e setLeadStage (seleção direta) —
+// nunca reimplementado três vezes. Toda a DECISÃO (se deve criar, com
+// quais dados) vive em autoStageTasks.js (puro, testado isoladamente);
+// esta função só decide COMO persistir: 1ª linha de defesa client-side
+// (buildAutoStageTaskAction já verifica `tasks` local), e a 2ª linha —
+// a real — é o índice único parcial da migration 028, que
+// tasksApi.insertAutoStage traduz de "23505" para "devolve null, nunca
+// lança" (corrida entre abas: a outra aba já criou, nada a fazer aqui).
+//
+// Mesmo padrão defensivo de logStageChange acima: um erro aqui (ex.
+// migration 028 ainda não aplicada, coluna/índice inexistentes) NUNCA
+// pode derrubar a mudança de etapa em si (já persistida em `leads`
+// antes desta chamada) — só é avisado no console. Requisito 11 (nunca
+// envia WhatsApp/SMS/e-mail/contato automático): esta função nunca
+// chama nenhuma API de mensageria, só tasksApi — mesma garantia
+// estrutural de computeAutoStageTaskData (autoStageTasks.js), que
+// nunca importa nenhum módulo de envio.
+// Correção pós-revisão do PR #76 (achado 1 — "falha nunca pode passar
+// despercebida"): `onFailure`, quando fornecido, é chamado com
+// `{ leadId, leadNome, etapa, taskData, error }` sempre que a escrita
+// falhar por um motivo real (nunca para o caso idempotente de
+// `insertAutoStage` devolver `null`, que não é falha — ver comentário
+// abaixo). Quem chama (useAppState.js, mais abaixo) usa isso para
+// registrar a falha em `autoStageTaskFailures`, que a UI mostra e
+// oferece retry — nunca mais um `console.warn` como único sinal.
+//
+// NÃO É ATÔMICO (achado 2 da revisão do PR #76, dito aqui sem
+// eufemismo): `leadsApi.update` (a mudança de etapa) e
+// `tasksApi.insertAutoStage` (a tarefa) são duas chamadas de rede
+// SEPARADAS, sem transação compartilhada — o Postgres/PostgREST não
+// oferece, nesta arquitetura client-only, uma forma de envolver as
+// duas numa única transação sem uma função RPC dedicada (fora do
+// escopo desta fase: reescrever saveLead/moveStage/setLeadStage para
+// passar a chamar uma RPC alteraria o caminho de escrita usado por
+// TODAS as fases anteriores — Etapas A/B/C e WhatsApp incluídos —
+// risco desproporcional ao pedido desta fase). A escolha EXPLÍCITA
+// aqui é: 1) a mudança de etapa é sempre o efeito PRIMÁRIO e nunca
+// falha por causa da tarefa (ela já foi persistida quando esta função
+// é chamada); 2) se a tarefa falhar, a falha é registrada de forma
+// DURÁVEL (autoStageTaskFailures, persistida por usuário em
+// localStorage — sobrevive a um reload) e visível na UI com retry
+// explícito, nunca silenciosa. Isto é reconciliação com persistência
+// e aviso, NÃO uma garantia transacional — nunca descrito como tal em
+// nenhum comentário/texto deste projeto.
+export async function maybeCreateAutoStageTask(prevLead, updatedLead, tasks, setTasks, onFailure, now = new Date()) {
+  const action = buildAutoStageTaskAction({ prevEtapa: prevLead && prevLead.etapa, updatedLead, tasks, now });
+  if (!action) return;
+  try {
+    const inserted = await tasksApi.insertAutoStage(action);
+    if (inserted) setTasks((prev) => [...prev, inserted]);
+    // `inserted === null` é o caso idempotente de corrida (outra
+    // aba/operação já criou a mesma tarefa pendente entre a checagem
+    // client-side e esta escrita) — NUNCA uma falha: a tarefa existe,
+    // só não foi ESTA chamada que a criou. Nada a registrar.
+  } catch (e) {
+    const message = (e && e.message) || 'Falha desconhecida ao criar a tarefa automática.';
+    console.warn('Não foi possível criar a tarefa automática desta etapa (migration 028 já foi rodada no Supabase?):', e);
+    if (onFailure) onFailure({ leadId: updatedLead.id, leadNome: updatedLead.nome, etapa: updatedLead.etapa, taskData: action, error: message });
+  }
+}
+
+// Correção pós-revisão do PR #76 (achados 1/2) — persistência das
+// falhas de criação automática em `localStorage`, namespaced por
+// `userId`: uma falha precisa continuar visível mesmo que o vendedor
+// recarregue a página antes de perceber/tentar de novo (requisito
+// "nunca pode passar despercebida") — um state React puro se perderia
+// no reload. Nunca é a fonte de verdade sobre o que EXISTE no banco
+// (isso é sempre `tasks`/Realtime) — é só um registro operacional de
+// "esta tentativa de automação falhou e ainda não foi resolvida".
+// Qualquer falha de leitura/escrita do storage (modo privado, quota,
+// bloqueio) é absorvida em silêncio — nunca pode quebrar o CRM por
+// causa de um recurso auxiliar de UX.
+function autoStageFailuresStorageKey(userId) {
+  return `crm-piccinini:auto-stage-task-failures:${userId}`;
+}
+
+export function loadPersistedAutoStageFailures(userId) {
+  if (!userId) return [];
+  try {
+    const raw = window.localStorage.getItem(autoStageFailuresStorageKey(userId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function persistAutoStageFailures(userId, failures) {
+  if (!userId) return;
+  try {
+    window.localStorage.setItem(autoStageFailuresStorageKey(userId), JSON.stringify(failures));
+  } catch {
+    // privado/bloqueado/quota — nunca quebra a UI por isso.
+  }
+}
+
+// Mesma chave (`${leadId}:${etapa}`) usada por hasPendingAutoStageTask
+// (autoStageTasks.js) para o dedupe — uma 2ª falha para o MESMO lead+
+// etapa SUBSTITUI a anterior na lista (nunca acumula duplicadas do
+// mesmo evento), sempre com o erro e o horário mais recentes.
+export function upsertAutoStageFailure(failures, failure) {
+  const key = `${failure.leadId}:${failure.etapa}`;
+  const withoutExisting = failures.filter((f) => f.key !== key);
+  return [...withoutExisting, { ...failure, key, failedAt: new Date().toISOString() }];
 }
 
 // Concluir uma tarefa vinculada a um lead (Contato/lead-agenda ou, se
@@ -662,6 +772,62 @@ export function useAppState(userId) {
     setSnoozes((prev) => prev.filter((s) => s.leadId !== leadId));
   }, []);
 
+  // Etapa D (correção pós-revisão do PR #76, achados 1/2) — falhas de
+  // criação de tarefa automática, visíveis na UI (HojeView.jsx) com
+  // retry/dismiss, persistidas por usuário em localStorage (nunca se
+  // perdem num reload antes do vendedor notar/agir — ver
+  // loadPersistedAutoStageFailures/persistAutoStageFailures acima).
+  // Reset ao trocar de usuário (mesmo padrão de `stagePolicies`/
+  // `snoozes`: nunca mistura falhas de uma sessão com a de outra no
+  // mesmo navegador).
+  const [autoStageTaskFailures, setAutoStageTaskFailures] = useState([]);
+  useEffect(() => {
+    setAutoStageTaskFailures(loadPersistedAutoStageFailures(userId));
+  }, [userId]);
+  useEffect(() => {
+    persistAutoStageFailures(userId, autoStageTaskFailures);
+  }, [userId, autoStageTaskFailures]);
+
+  const recordAutoStageTaskFailure = useCallback((failure) => {
+    setAutoStageTaskFailures((prev) => upsertAutoStageFailure(prev, failure));
+  }, []);
+
+  // "Tentar novamente" (achado 1) — nunca cria duplicata: antes de
+  // reinserir, confirma contra o `tasks` ATUAL (pode ter chegado via
+  // Realtime desde a falha, ex. outra aba resolveu) se já existe uma
+  // pendente para este lead+etapa; se sim, só limpa a falha (já
+  // resolvida, sem nova escrita). Caso contrário repete a MESMA
+  // escrita que falhou (`failure.taskData`, nunca recalculada do
+  // zero — o lead pode já ter mudado de etapa outra vez entretanto, e
+  // esta tentativa é especificamente sobre a falha registrada, não
+  // sobre o estado atual do lead). `tasksApi.insertAutoStage` continua
+  // a mesma garantia de idempotência (índice único parcial da
+  // migration 028) mesmo numa segunda tentativa concorrente com outra
+  // aba.
+  const retryAutoStageTaskCreation = useCallback(async (key) => {
+    const failure = autoStageTaskFailures.find((f) => f.key === key);
+    if (!failure) return;
+    if (hasPendingAutoStageTask(tasks, failure.leadId, failure.etapa)) {
+      setAutoStageTaskFailures((prev) => prev.filter((f) => f.key !== key));
+      return;
+    }
+    try {
+      const inserted = await tasksApi.insertAutoStage(failure.taskData);
+      if (inserted) setTasks((prev) => [...prev, inserted]);
+      setAutoStageTaskFailures((prev) => prev.filter((f) => f.key !== key));
+    } catch (e) {
+      const message = (e && e.message) || 'Falha desconhecida ao criar a tarefa automática.';
+      setAutoStageTaskFailures((prev) => upsertAutoStageFailure(prev, { ...failure, error: message }));
+    }
+  }, [tasks, autoStageTaskFailures]);
+
+  // "Descartar" — o vendedor já resolveu manualmente (ex. criou a
+  // tarefa ele mesmo) ou decidiu que não é mais necessária; nunca
+  // tenta escrever nada, só remove o aviso.
+  const dismissAutoStageTaskFailure = useCallback((key) => {
+    setAutoStageTaskFailures((prev) => prev.filter((f) => f.key !== key));
+  }, []);
+
   useEffect(() => {
     const channel = supabase
       .channel('crm-piccinini-sync')
@@ -713,14 +879,21 @@ export function useAppState(userId) {
       ? await leadsApi.update(id, { ...data, ...stageFields, ultimaAtualizacao: todayStr() })
       : await leadsApi.insert({ ...data, criadoEm: todayStr(), ultimaAtualizacao: todayStr() });
     setLeads((prev) => (id ? prev.map((l) => (l.id === id ? saved : l)) : [...prev, saved]));
-    if (etapaChanged) await logStageChange(prevLead, saved, userId, setInteractions);
+    if (etapaChanged) {
+      await logStageChange(prevLead, saved, userId, setInteractions);
+      // Etapa D — só quando a mudança veio de um lead JÁ EXISTENTE
+      // (`id` presente): salvar um lead NOVO que já nasce numa etapa
+      // avançada nunca é uma "mudança efetiva de etapa" (requisito 3,
+      // mesmo princípio de computeStageChangeInteration/shouldGenerateAutoStageTask).
+      await maybeCreateAutoStageTask(prevLead, saved, tasks, setTasks, recordAutoStageTaskFailure);
+    }
     // proximoContato é um AGENDAMENTO: gera/reconcilia só a tarefa
     // "Contato" (lead-agenda). NÃO dispara pendingAutoTasksForLeads
     // (Follow-up/origem 'auto') — isso ficou reservado para uma automação
     // futura com condição própria, não para o simples preenchimento de
     // próximo contato. Ver comentário nas duas funções acima.
     await applyLeadAgendaActions(reconcileLeadAgendaActions([saved], tasks), setTasks);
-  }, [tasks, leads, userId]);
+  }, [tasks, leads, userId, recordAutoStageTaskFailure]);
 
   const deleteLead = useCallback(async (id) => {
     const relatedTasks = tasks.filter((t) => t.leadId === id);
@@ -746,7 +919,8 @@ export function useAppState(userId) {
     setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
     await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
     await logStageChange(lead, updated, userId, setInteractions);
-  }, [leads, tasks, userId]);
+    await maybeCreateAutoStageTask(lead, updated, tasks, setTasks, recordAutoStageTaskFailure);
+  }, [leads, tasks, userId, recordAutoStageTaskFailure]);
 
   const setLeadStage = useCallback(async (id, etapa) => {
     const lead = leads.find((l) => l.id === id);
@@ -756,7 +930,8 @@ export function useAppState(userId) {
     setLeads((prev) => prev.map((l) => (l.id === id ? updated : l)));
     await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
     await logStageChange(lead, updated, userId, setInteractions);
-  }, [leads, tasks, userId]);
+    await maybeCreateAutoStageTask(lead, updated, tasks, setTasks, recordAutoStageTaskFailure);
+  }, [leads, tasks, userId, recordAutoStageTaskFailure]);
 
   const addInteractionNote = useCallback((leadId, content) => (
     insertInteractionAndTrack(computeNoteInteractionData(leadId, content, userId), setInteractions)
@@ -900,5 +1075,7 @@ export function useAppState(userId) {
     // Etapa C — adiamento de follow-ups.
     snoozes, snoozesLoading, snoozesError, refetchSnoozes,
     snoozesByLead, saveSnooze, removeSnooze,
+    // Etapa D — tarefas automáticas por etapa (falhas visíveis + retry/dismiss).
+    autoStageTaskFailures, retryAutoStageTaskCreation, dismissAutoStageTaskFailure,
   };
 }

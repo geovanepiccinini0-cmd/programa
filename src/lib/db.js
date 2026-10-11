@@ -97,6 +97,30 @@ export function leadToRow(data) {
   };
 }
 
+// Etapa D — nome EXATO do índice único parcial criado pela migration
+// 028 (supabase/migrations/028_auto_stage_tasks.sql). Mantido como
+// constante aqui (não duplicado como string solta) para nunca
+// divergir silenciosamente do nome real no banco.
+const AUTO_STAGE_PENDING_UNIQUE_CONSTRAINT = 'tasks_auto_stage_pending_unique_idx';
+
+// Correção pós-revisão do PR #76 (achado 6) — exportada para teste
+// isolado. `error.code === '23505'` sozinho não basta: outras
+// restrições únicas em `tasks` (hoje só a PK, mas o Postgres também
+// reporta 23505 para ela) não têm relação com o dedupe desta fase, e
+// tratá-las como "já existe, tudo bem" esconderia um erro real. O
+// Postgres/PostgREST sempre inclui o NOME da constraint violada na
+// mensagem (`error.message`, formato
+// `duplicate key value violates unique constraint "<nome>"`) — só
+// quando esse nome é EXATAMENTE o índice desta fase é que o 23505
+// significa "outra aba/operação já criou esta tarefa pendente",
+// nunca para qualquer outro.
+export function isAutoStagePendingDuplicate(error) {
+  return Boolean(error)
+    && error.code === '23505'
+    && typeof error.message === 'string'
+    && error.message.includes(AUTO_STAGE_PENDING_UNIQUE_CONSTRAINT);
+}
+
 function taskFromRow(r) {
   return {
     id: r.id,
@@ -108,9 +132,41 @@ function taskFromRow(r) {
     leadId: r.lead_id,
     origem: r.origem,
     templateId: r.template_id,
+    // Etapa D — presente só nas tarefas origem='auto_stage' (migration
+    // 028). `r.etapa_gatilho` vem `undefined` se a migration ainda não
+    // foi aplicada no banco (coluna não existe na linha) — `|| null`
+    // normaliza os dois casos para o mesmo valor, nunca lança.
+    etapaGatilho: r.etapa_gatilho || null,
   };
 }
 
+// Correção pós-revisão do PR #76 (achado 3) — a versão anterior
+// incluía `etapa_gatilho` no payload sempre que `data.etapaGatilho
+// !== undefined`, achando que isso bastava para nunca afetar as
+// demais origens. MAS `taskFromRow` (abaixo) SEMPRE devolve
+// `etapaGatilho: r.etapa_gatilho || null` ao LER qualquer tarefa —
+// nunca `undefined`. Então qualquer tarefa já lida do banco (ex. em
+// `tasks` state, populada via fetchAll) e depois reenviada por
+// spread (`toggleTask`: `tasksApi.update(id, { ...t, concluida: ... })`)
+// já chega aqui com `etapaGatilho: null` DEFINIDO — a guard
+// `!== undefined` era sempre verdadeira para ela, incluindo
+// `etapa_gatilho: null` em TODO UPDATE de TODA tarefa, não só
+// 'auto_stage'. Antes da migration 028 ser aplicada isso quebraria
+// toggle/edição de QUALQUER tarefa (coluna inexistente); depois de
+// aplicada, um UPDATE genérico (ex. editar o título de uma tarefa
+// 'auto_stage' por algum fluxo futuro) poderia APAGAR silenciosamente
+// o `etapa_gatilho` que a tarefa já tinha, sem nenhuma intenção disso.
+//
+// Correção: `taskToRow` NUNCA emite `etapa_gatilho`, para NENHUM
+// chamador — nem para 'auto_stage'. Omitir a coluna num
+// UPDATE/INSERT do PostgREST significa "não tocar nela" (o Postgres
+// preserva o valor já armazenado) — exatamente o comportamento
+// correto para addTask/toggleTask/reconcileLeadAgenda/
+// pendingRotinaTasks/importBackup, que nunca devem alterar
+// `etapa_gatilho`. Só `tasksApi.insertAutoStage` (único ponto que
+// precisa GRAVAR esta coluna, e só no INSERT inicial, nunca em
+// updates posteriores) monta seu próprio payload incluindo-a — ver
+// abaixo, não reaproveita `taskToRow` para isso.
 function taskToRow(data) {
   return {
     titulo: data.titulo,
@@ -225,6 +281,37 @@ export const tasksApi = {
   update: (id, data) => updateRow('tasks', taskToRow, taskFromRow, id, data),
   remove: (id) => deleteRow('tasks', id),
   fromRow: taskFromRow,
+
+  // Etapa D — requisito 7: idempotência garantida pelo ÍNDICE ÚNICO
+  // PARCIAL do banco (migration 028: `unique (lead_id, etapa_gatilho)
+  // where origem='auto_stage' and concluida=false`), nunca só por uma
+  // verificação do lado do React (hasPendingAutoStageTask,
+  // autoStageTasks.js, é só a 1ª linha de defesa — duas abas/operações
+  // concorrentes podem passar por ela nos dois lados ANTES de qualquer
+  // uma escrever).
+  //
+  // Correção pós-revisão do PR #76 (achado 3) — monta o próprio
+  // payload aqui (NUNCA via `taskToRow`, que de propósito nunca emite
+  // `etapa_gatilho` — ver comentário acima): é o ÚNICO lugar deste
+  // arquivo que precisa gravar esta coluna, e só no INSERT inicial.
+  //
+  // Correção pós-revisão do PR #76 (achado 6) — a versão anterior
+  // tratava QUALQUER `error.code === '23505'` como "já existe,
+  // idempotente" — mas a tabela `tasks` pode ter outras restrições
+  // únicas (hoje só a PK, mas nada impede uma futura) cujo 23505 não
+  // tem NADA a ver com o dedupe desta fase; tratá-lo como sucesso
+  // mascararia um erro real. `isAutoStagePendingDuplicate` (abaixo)
+  // só reconhece o 23505 que vem ESPECIFICAMENTE do índice
+  // `tasks_auto_stage_pending_unique_idx` (o nome da constraint
+  // aparece na mensagem de erro do Postgres/PostgREST) — qualquer
+  // outro 23505 propaga normalmente, como qualquer outro erro.
+  insertAutoStage: async (data) => {
+    const row = { ...taskToRow(data), etapa_gatilho: data.etapaGatilho };
+    const { data: inserted, error } = await supabase.from('tasks').insert(row).select().single();
+    if (!error) return taskFromRow(inserted);
+    if (isAutoStagePendingDuplicate(error)) return null;
+    throw error;
+  },
 };
 
 export const templatesApi = {

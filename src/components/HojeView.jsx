@@ -6,6 +6,7 @@ import WeekAgenda from './WeekAgenda.jsx';
 import FollowUpQueue from './FollowUpQueue.jsx';
 import StaleLeadsAlert from './StaleLeadsAlert.jsx';
 import FollowUpPolicySettings from './FollowUpPolicySettings.jsx';
+import AutoStageTaskFailuresAlert from './AutoStageTaskFailuresAlert.jsx';
 
 export default function HojeView({
   leads, tasks, onAddTask, onToggleTask, onDeleteTask, onCompleteWithResult,
@@ -15,6 +16,7 @@ export default function HojeView({
   stagePolicyOverrides, onSaveStagePolicy, onRemoveStagePolicy,
   snoozesByLead, onSaveSnooze, onRemoveSnooze,
   snoozesLoading, snoozesError, onRetrySnoozes,
+  autoStageTaskFailures, onRetryAutoStageTask, onDismissAutoStageTaskFailure,
 }) {
   const [title, setTitle] = useState('');
   const [cat, setCat] = useState(CATS_TASK[0]);
@@ -37,6 +39,16 @@ export default function HojeView({
 
   return (
     <section className="view active">
+      {/* Etapa D (correção pós-revisão do PR #76) — aviso de falha na
+          automação, acima de tudo: o requisito prioritário é "nunca
+          passar despercebido", então fica visível antes mesmo da
+          configuração de política/fila de follow-up. */}
+      <AutoStageTaskFailuresAlert
+        failures={autoStageTaskFailures}
+        onRetry={onRetryAutoStageTask}
+        onDismiss={onDismissAutoStageTaskFailure}
+      />
+
       {/* Etapa B — configuração de prazos por etapa (migration 026).
           Nunca cria task/interação por si só: só grava a configuração,
           que o motor lê na próxima avaliação (stagePolicyOverrides,
