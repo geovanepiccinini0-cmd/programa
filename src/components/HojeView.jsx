@@ -4,6 +4,7 @@ import { todayStr, tomorrowStr } from '../utils.js';
 import TaskGroupedList from './TaskGroupedList.jsx';
 import WeekAgenda from './WeekAgenda.jsx';
 import FollowUpQueue from './FollowUpQueue.jsx';
+import StaleLeadsAlert from './StaleLeadsAlert.jsx';
 
 export default function HojeView({
   leads, tasks, onAddTask, onToggleTask, onDeleteTask, onCompleteWithResult,
@@ -42,6 +43,14 @@ export default function HojeView({
         onRetryInteractions={onRetryInteractions}
         onRegisterCommercialInteraction={onRegisterCommercialInteraction}
       />
+
+      {/* Etapa A — bloco independente da fila de follow-up acima:
+          "parado" (sem atualização de cadastro) nunca é a mesma coisa
+          que "follow-up vencido" (atividade comercial), ver
+          StaleLeadsAlert.jsx. Nunca cria tarefa, só leitura + atalho
+          para abrir o cadastro (onEditLead, mesmo fluxo já usado em
+          toda a aplicação). */}
+      <StaleLeadsAlert leads={leads} onEditLead={onEditLead} />
 
       <div className="add-task-form">
         <input
