@@ -3,7 +3,7 @@ import {
   formatPhoneBR, fmtDate, moneyFormat, parseMoneyValue, leadMatchesSearch,
   isTaskOverdue, minutesUntil, upcomingAppointments, leadHasNoNextAction,
   classifyLeadPriority, isValidBackup, normalizeBackup, todayStr,
-  formatRelativeTime,
+  formatRelativeTime, getStaleLeads, formatStaleDaysLabel,
 } from './utils.js';
 
 describe('formatPhoneBR', () => {
@@ -139,6 +139,74 @@ describe('leadHasNoNextAction / classifyLeadPriority (V2)', () => {
 
   it('lead Ganho/Perdido não recebe nenhuma classificação', () => {
     expect(classifyLeadPriority({ ...base, etapa: 'Ganho' })).toEqual([]);
+  });
+});
+
+// Etapa A — alertas de leads sem movimentação. getStaleLeads/
+// formatStaleDaysLabel nunca reimplementam o limiar — toda asserção
+// aqui existe para provar que a DELEGAÇÃO para classifyLeadPriority/
+// STALE_DAYS está correta, nunca para testar um cálculo próprio novo.
+describe('getStaleLeads / formatStaleDaysLabel (Etapa A)', () => {
+  function daysAgoStr(n) {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return d.toISOString().slice(0, 10);
+  }
+
+  const activeBase = { id: 'l1', nome: 'Ana', etapa: 'Qualificação', proximoContato: '', leadTemperature: '', priority: 'normal' };
+
+  it('lead ativo com última atualização >= STALE_DAYS (15) conta como parado', () => {
+    const lead = { ...activeBase, ultimaAtualizacao: daysAgoStr(15) };
+    expect(getStaleLeads([lead])).toEqual([lead]);
+  });
+
+  it('lead ativo com última atualização < STALE_DAYS (14) NÃO conta como parado', () => {
+    const lead = { ...activeBase, ultimaAtualizacao: daysAgoStr(14) };
+    expect(getStaleLeads([lead])).toEqual([]);
+  });
+
+  it('usa criadoEm quando ultimaAtualizacao está vazio (mesmo fallback de classifyLeadPriority)', () => {
+    const lead = { ...activeBase, ultimaAtualizacao: '', criadoEm: daysAgoStr(20) };
+    expect(getStaleLeads([lead])).toEqual([lead]);
+  });
+
+  it('lead Ganho/Perdido NUNCA é considerado parado, mesmo há muito tempo sem atualização', () => {
+    const ganho = { ...activeBase, id: 'l2', etapa: 'Ganho', ultimaAtualizacao: daysAgoStr(400) };
+    const perdido = { ...activeBase, id: 'l3', etapa: 'Perdido', ultimaAtualizacao: daysAgoStr(400) };
+    expect(getStaleLeads([ganho, perdido])).toEqual([]);
+  });
+
+  it('lead sem nenhuma data-base (ultimaAtualizacao e criadoEm ausentes) nunca conta como parado', () => {
+    const lead = { ...activeBase, ultimaAtualizacao: '', criadoEm: '' };
+    expect(getStaleLeads([lead])).toEqual([]);
+  });
+
+  it('mistura de leads: só os realmente parados são devolvidos, preservando os dados originais (nunca muta)', () => {
+    const stale = { ...activeBase, id: 'stale-1', ultimaAtualizacao: daysAgoStr(30) };
+    const fresh = { ...activeBase, id: 'fresh-1', ultimaAtualizacao: daysAgoStr(1) };
+    const result = getStaleLeads([stale, fresh]);
+    expect(result).toEqual([stale]);
+    expect(fresh).toEqual({ ...activeBase, id: 'fresh-1', ultimaAtualizacao: daysAgoStr(1) });
+  });
+
+  it('lista vazia/nula/indefinida -> array vazio, nunca lança', () => {
+    expect(getStaleLeads([])).toEqual([]);
+    expect(getStaleLeads(null)).toEqual([]);
+    expect(getStaleLeads(undefined)).toEqual([]);
+  });
+
+  it('entrada com item nulo/indefinido na lista -> ignorado, nunca lança', () => {
+    const lead = { ...activeBase, ultimaAtualizacao: daysAgoStr(20) };
+    expect(getStaleLeads([null, lead, undefined])).toEqual([lead]);
+  });
+
+  it('formatStaleDaysLabel devolve "Sem atualização de cadastro há Nd" (correção pós-revisão do PR #73 — a fonte é ultimaAtualizacao, nunca o histórico de contato comercial)', () => {
+    const lead = { ...activeBase, ultimaAtualizacao: daysAgoStr(20) };
+    expect(formatStaleDaysLabel(lead)).toBe('Sem atualização de cadastro há 20d');
+  });
+
+  it('formatStaleDaysLabel devolve null quando não há nenhuma data-base, nunca lança', () => {
+    expect(formatStaleDaysLabel({ ...activeBase, ultimaAtualizacao: '', criadoEm: '' })).toBeNull();
   });
 });
 

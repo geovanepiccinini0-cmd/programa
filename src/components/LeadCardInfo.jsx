@@ -1,5 +1,5 @@
 import { PROD_COLOR, TAG_COLOR } from '../constants.js';
-import { diasDesde, fmtBRL, fmtDate, leadHasNoNextAction, leadValor, todayStr } from '../utils.js';
+import { classifyLeadPriority, diasDesde, fmtBRL, fmtDate, leadHasNoNextAction, leadValor, todayStr } from '../utils.js';
 
 export function DetailLine({ lead }) {
   if (lead.produto === 'Carta Contemplada') {
@@ -19,17 +19,20 @@ export function DetailLine({ lead }) {
   return null;
 }
 
+// Etapa A — ÚNICA fonte de verdade é classifyLeadPriority/STALE_DAYS
+// (utils.js). Antes desta correção, o limiar "15 dias" estava
+// duplicado aqui como literal — agora delega inteiramente, nunca
+// reimplementa o cálculo. Comportamento idêntico ao anterior (mesma
+// condição: lead ativo, com diasDesde >= STALE_DAYS).
 export function isLeadStale(lead) {
-  const isFinal = lead.etapa === 'Ganho' || lead.etapa === 'Perdido';
-  const dias = diasDesde(lead.ultimaAtualizacao || lead.criadoEm);
-  return !isFinal && dias !== null && dias >= 15;
+  return classifyLeadPriority(lead).includes('PARADO');
 }
 
 export function LeadCardBody({ lead, footer }) {
   const today = todayStr();
   const isFinal = lead.etapa === 'Ganho' || lead.etapa === 'Perdido';
   const dias = diasDesde(lead.ultimaAtualizacao || lead.criadoEm);
-  const isStale = !isFinal && dias !== null && dias >= 15;
+  const isStale = isLeadStale(lead);
   const late = lead.proximoContato && lead.proximoContato < today && !isFinal;
 
   return (
