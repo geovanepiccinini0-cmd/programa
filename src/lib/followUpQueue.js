@@ -1,5 +1,6 @@
 import { evaluateFollowUpEligibility, FOLLOW_UP_STATUS, FOLLOW_UP_POLICY } from './followUpEngine.js';
 import { resolveFollowUpPolicyForStage } from './followUpPolicyConfig.js';
+import { applySnoozeToEvaluation } from './followUpSnooze.js';
 import { evaluateNextBestAction } from './nextBestAction.js';
 import { presentNextBestAction } from './nextBestActionPresentation.js';
 import { buildCommercialInteractionHistory } from './commercialInteractionHistory.js';
@@ -134,7 +135,17 @@ function indexByLeadId(items) {
 // etapas diferentes nesta mesma chamada podem ter prazos diferentes.
 // `policy` continua sendo o "base" conservador para quem não tem
 // override (FOLLOW_UP_POLICY por padrão, igual a antes desta fase).
-export function buildFollowUpQueue({ leads, interactions, tasks, now, policy = FOLLOW_UP_POLICY, stagePolicyOverrides }) {
+// Etapa C — `snoozesByLead` é um 6º parâmetro OPCIONAL (mesmo padrão
+// retrocompatível de `stagePolicyOverrides` na Etapa B: omiti-lo
+// mantém EXATAMENTE o comportamento anterior a esta fase). Mapa
+// `{ [leadId]: snoozedUntilIso }` — aplicado como pós-processamento
+// PURO sobre a `evaluation` já calculada por evaluateFollowUpEligibility
+// (applySnoozeToEvaluation, followUpSnooze.js), nunca dentro do motor.
+// Isso preserva o "zero diff" de followUpEngine.js e compõe-se
+// corretamente com a política por etapa (Etapa B): a política decide
+// QUANDO o motor consideraria vencido; o adiamento só SUPRIME esse
+// "vencido" temporariamente por cima do resultado já correto.
+export function buildFollowUpQueue({ leads, interactions, tasks, now, policy = FOLLOW_UP_POLICY, stagePolicyOverrides, snoozesByLead }) {
   const interactionsByLead = indexByLeadId(interactions);
   const tasksByLead = indexByLeadId(tasks);
 
@@ -143,7 +154,9 @@ export function buildFollowUpQueue({ leads, interactions, tasks, now, policy = F
       const leadInteractions = interactionsByLead.get(lead && lead.id) || [];
       const leadTasks = tasksByLead.get(lead && lead.id) || [];
       const effectivePolicy = resolveFollowUpPolicyForStage(lead && lead.etapa, stagePolicyOverrides, policy);
-      const evaluation = evaluateFollowUpEligibility({ lead, interactions: leadInteractions, tasks: leadTasks, now, policy: effectivePolicy });
+      const rawEvaluation = evaluateFollowUpEligibility({ lead, interactions: leadInteractions, tasks: leadTasks, now, policy: effectivePolicy });
+      const snoozedUntil = snoozesByLead && lead ? snoozesByLead[lead.id] : null;
+      const evaluation = applySnoozeToEvaluation(rawEvaluation, snoozedUntil, now);
       const currentNba = evaluateNextBestAction({ lead, followUpEvaluation: evaluation });
 
       // Boundary 1 (seção 28-D do plano de ativação): história + policy

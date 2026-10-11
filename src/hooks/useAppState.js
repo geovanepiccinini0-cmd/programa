@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DIAS_SEMANA, CONTACT_ATTEMPT_TYPES } from '../constants.js';
 import { todayStr, normalizeBackup } from '../utils.js';
-import { leadsApi, tasksApi, templatesApi, interactionsApi, auditLogApi, followUpStagePoliciesApi } from '../lib/db.js';
+import { leadsApi, tasksApi, templatesApi, interactionsApi, auditLogApi, followUpStagePoliciesApi, followUpSnoozesApi } from '../lib/db.js';
 import { supabase } from '../lib/supabaseClient.js';
 import { buildStagePolicyOverridesMap, shouldApplyStagePolicyResult } from '../lib/followUpPolicyConfig.js';
+import { buildSnoozeMap, shouldApplySnoozeResult, computeSnoozeUntil } from '../lib/followUpSnooze.js';
 
 // Infraestrutura RESERVADA para um futuro motor de automações comerciais
 // (lead sem resposta, pós-proposta, reativação etc.) — ver decisão em
@@ -337,6 +338,49 @@ export function applyRealtimeChange(setState, fromRow, payload) {
   });
 }
 
+// Etapa C — applyRealtimeChange (acima) identifica cada linha por
+// `item.id`/`payload.old.id`/`payload.new.id`, mas follow_up_snoozes
+// não tem coluna `id` — sua PK é `lead_id`. Um DELETE do Realtime só
+// traz as colunas da PK no payload antigo, então `payload.old.id`
+// seria sempre `undefined` e nenhuma linha seria removida do estado
+// local. Função dedicada, mesmo princípio de identidade por chave
+// própria já usado para applyConversationStateRealtimeEvent (fase do
+// WhatsApp) — nunca reaproveita applyRealtimeChange como está.
+// Correção pós-revisão do PR #75 (achado 1) — extraída do handler do
+// canal Realtime (useAppState, abaixo) como função pura e testável
+// isoladamente: decide se um evento de `follow_up_snoozes` deve ser
+// IGNORADO (nunca aplicado ao state local) antes de chamar
+// `applySnoozeRealtimeChange`. Nunca filtra DELETE por `user_id` —
+// um DELETE sob RLS com REPLICA IDENTITY padrão só traz a PK
+// (`lead_id`) em `payload.old`, nunca `user_id`; filtrar por um
+// campo ausente faria TODO DELETE ser descartado (o bug original).
+// A RLS da tabela (migration 027) já garante que esta aba só recebe
+// eventos de linhas que pertencem ao próprio usuário autenticado —
+// não há nada para `user_id` validar aqui no caso de DELETE. Para
+// INSERT/UPDATE, `payload.new` sempre traz a linha completa
+// (user_id incluído) — o filtro aqui é defesa em profundidade, não a
+// única barreira.
+export function shouldSkipSnoozeRealtimeEvent(payload, userId) {
+  if (payload.eventType === 'DELETE') return false;
+  return Boolean(payload.new) && payload.new.user_id !== userId;
+}
+
+export function applySnoozeRealtimeChange(setState, fromRow, payload) {
+  if (payload.eventType === 'DELETE') {
+    const leadId = payload.old && payload.old.lead_id;
+    setState((prev) => prev.filter((item) => item.leadId !== leadId));
+    return;
+  }
+  const row = fromRow(payload.new);
+  setState((prev) => {
+    const idx = prev.findIndex((item) => item.leadId === row.leadId);
+    if (idx === -1) return [...prev, row];
+    const next = prev.slice();
+    next[idx] = row;
+    return next;
+  });
+}
+
 export function useAppState(userId) {
   const [leads, setLeads] = useState([]);
   const [tasks, setTasks] = useState([]);
@@ -534,6 +578,90 @@ export function useAppState(userId) {
     setStagePolicies((prev) => prev.filter((p) => p.etapa !== etapa));
   }, []);
 
+  // Etapa C — adiamento de follow-ups (migration 027). Mesmo padrão de
+  // isolamento de `stagePolicies`/`interactions`: fetch independente,
+  // reset imediato ao trocar de usuário, retry token próprio.
+  const [snoozes, setSnoozes] = useState([]);
+  const [snoozesLoading, setSnoozesLoading] = useState(true);
+  const [snoozesError, setSnoozesError] = useState(null);
+  const [snoozesRetryToken, setSnoozesRetryToken] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSnoozes([]);
+    setSnoozesError(null);
+    setSnoozesLoading(Boolean(userId));
+    if (!userId) { setSnoozesLoading(false); return undefined; }
+    followUpSnoozesApi.fetchAll(userId)
+      .then((data) => { if (!cancelled) { setSnoozes(data); setSnoozesLoading(false); } })
+      .catch((e) => { if (!cancelled) { setSnoozesError(e); setSnoozesLoading(false); } });
+    return () => { cancelled = true; };
+  }, [userId, snoozesRetryToken]);
+
+  const refetchSnoozes = useCallback(() => {
+    setSnoozesRetryToken((n) => n + 1);
+  }, []);
+
+  // Mapa { leadId -> snoozedUntil } pronto para buildFollowUpQueue —
+  // única conversão de `snoozes` (linhas) para o formato que
+  // applySnoozeToEvaluation consome, nunca duplicada em cada
+  // consumidor (FollowUpQueue.jsx lê só este memo, nunca `snoozes` bruto).
+  const snoozesByLead = useMemo(() => buildSnoozeMap(snoozes), [snoozes]);
+
+  // Mesma guarda de corrida de saveStagePolicy/removeStagePolicy
+  // acima (troca de usuário em voo / operações concorrentes para o
+  // MESMO lead resolvendo fora de ordem) — `shouldApplySnoozeResult`
+  // é a função ANÁLOGA, deliberadamente duplicada em
+  // followUpSnooze.js (ver comentário lá) em vez de reaproveitar
+  // `shouldApplyStagePolicyResult` diretamente, para manter os dois
+  // domínios (config por etapa vs. adiamento por lead) independentes.
+  // Ref própria (`snoozeOpSeqRef`), chaveada por leadId, nunca
+  // compartilhada com `stagePolicyOpSeqRef` (chaveada por etapa) —
+  // mesmo `userIdRef` já existente acima é reaproveitado (é o mesmo
+  // conceito de "sessão atual", não precisa de uma segunda ref).
+  const snoozeOpSeqRef = useRef({});
+
+  function nextSnoozeOpSeq(leadId) {
+    const seq = (snoozeOpSeqRef.current[leadId] || 0) + 1;
+    snoozeOpSeqRef.current[leadId] = seq;
+    return seq;
+  }
+
+  // "Adiar" — ação EXPLÍCITA do usuário na fila de follow-up (requisito
+  // 1-2 da autorização), nunca automática. Só grava nesta tabela —
+  // nunca cria/altera task, nunca toca em leads/lead_interactions
+  // (requisitos 7-8). `presetKey` é uma das 3 chaves de
+  // SNOOZE_PRESETS ('1h'/'1d'/'1w'); `now` é injetado pelo chamador
+  // (mesmo princípio de followUpEngine.js — nunca Date.now() aqui).
+  const saveSnooze = useCallback(async (leadId, presetKey, now) => {
+    const snoozedUntil = computeSnoozeUntil(now, presetKey);
+    if (!snoozedUntil) throw new Error('Prazo de adiamento inválido.');
+    const requestUserId = userIdRef.current;
+    const requestSeq = nextSnoozeOpSeq(leadId);
+    const saved = await followUpSnoozesApi.save(leadId, snoozedUntil);
+    if (!shouldApplySnoozeResult({ requestUserId, currentUserId: userIdRef.current, requestSeq, currentSeq: snoozeOpSeqRef.current[leadId] })) {
+      return saved;
+    }
+    setSnoozes((prev) => {
+      const next = prev.filter((s) => s.leadId !== leadId);
+      next.push(saved);
+      return next;
+    });
+    return saved;
+  }, []);
+
+  // "Cancelar adiamento" (requisito 6) — idem, nunca toca em
+  // leads/tasks/lead_interactions, só remove esta linha.
+  const removeSnooze = useCallback(async (leadId) => {
+    const requestUserId = userIdRef.current;
+    const requestSeq = nextSnoozeOpSeq(leadId);
+    await followUpSnoozesApi.remove(leadId);
+    if (!shouldApplySnoozeResult({ requestUserId, currentUserId: userIdRef.current, requestSeq, currentSeq: snoozeOpSeqRef.current[leadId] })) {
+      return;
+    }
+    setSnoozes((prev) => prev.filter((s) => s.leadId !== leadId));
+  }, []);
+
   useEffect(() => {
     const channel = supabase
       .channel('crm-piccinini-sync')
@@ -544,6 +672,35 @@ export function useAppState(userId) {
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, (payload) => applyRealtimeChange(setTasks, tasksApi.fromRow, payload))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'templates' }, (payload) => applyRealtimeChange(setTemplates, templatesApi.fromRow, payload))
+      // Etapa C — multi-aba: adiar/cancelar numa aba reflete nas
+      // demais sem precisar recarregar. `applySnoozeRealtimeChange`
+      // (não `applyRealtimeChange` — ver comentário na definição
+      // dela) identifica a linha por `lead_id`, nunca por `id`.
+      //
+      // Correção pós-revisão do PR #75 (achado 1) — DIFERENTE do
+      // handler de `leads` acima: um DELETE do Postgres Changes só
+      // traz no payload antigo as colunas da REPLICA IDENTITY da
+      // tabela (por padrão, só a PK — `lead_id` aqui, ver migration
+      // 027), nunca `user_id`. A versão anterior fazia
+      // `const row = payload.new || payload.old; if (row.user_id !==
+      // userId) return;` incondicionalmente — em todo DELETE,
+      // `payload.new` é `null` e `payload.old.user_id` é
+      // `undefined`, então a condição era SEMPRE verdadeira e TODO
+      // DELETE era descartado, inclusive os do próprio usuário
+      // (cancelar adiamento numa aba nunca refletia nas outras).
+      //
+      // Por isso o filtro por user_id só se aplica a INSERT/UPDATE
+      // (onde `payload.new` sempre traz a linha completa, user_id
+      // incluído) — nunca a DELETE. Isso é seguro mesmo sem o filtro
+      // client-side: a subscription do Realtime já é filtrada pela
+      // RLS da tabela (migration 027, policy de SELECT `user_id =
+      // auth.uid()`) usando o JWT da sessão — o evento de DELETE de
+      // um lead/adiamento de OUTRO usuário nunca chega a esta aba,
+      // então não há nada para `row.user_id` precisar validar aqui.
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'follow_up_snoozes' }, (payload) => {
+        if (shouldSkipSnoozeRealtimeEvent(payload, userId)) return;
+        applySnoozeRealtimeChange(setSnoozes, followUpSnoozesApi.fromRow, payload);
+      })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [userId]);
@@ -740,5 +897,8 @@ export function useAppState(userId) {
     // Etapa B — follow-up configurável por etapa.
     stagePolicies, stagePoliciesLoading, stagePoliciesError, refetchStagePolicies,
     stagePolicyOverrides, saveStagePolicy, removeStagePolicy,
+    // Etapa C — adiamento de follow-ups.
+    snoozes, snoozesLoading, snoozesError, refetchSnoozes,
+    snoozesByLead, saveSnooze, removeSnooze,
   };
 }

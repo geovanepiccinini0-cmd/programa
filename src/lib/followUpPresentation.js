@@ -1,6 +1,7 @@
 import { FOLLOW_UP_REASON, FOLLOW_UP_STATUS, FOLLOW_UP_POLICY, FOLLOW_UP_BLOCKER } from './followUpEngine.js';
 import { NEXT_ACTION_TYPES } from '../constants.js';
 import { formatRelativeTime } from '../utils.js';
+import { SNOOZE_REASON, formatSnoozedUntilLabel } from './followUpSnooze.js';
 
 // Fase 2C.2B — camada de apresentação do Shadow Mode. Pura: sem React,
 // sem Supabase, sem efeitos colaterais. Só traduz o resultado já
@@ -50,6 +51,11 @@ export function formatFollowUpReason(evaluation) {
 // (decisão aprovada: "Reativação disponível", sem relógio).
 export function formatFollowUpTimeLabel(evaluation, now) {
   if (!evaluation || evaluation.status === FOLLOW_UP_STATUS.BLOCKED) return null;
+  // Etapa C — adiamento (followUpSnooze.js): rótulo próprio, nunca o
+  // genérico "Vence {rel}" (que sugeriria um prazo do motor, não uma
+  // escolha do usuário). `evaluation.snoozedUntil` só existe quando
+  // applySnoozeToEvaluation de fato aplicou um adiamento ativo.
+  if (evaluation.reason === SNOOZE_REASON) return formatSnoozedUntilLabel(evaluation.snoozedUntil);
   if (evaluation.reason === FOLLOW_UP_REASON.REACTIVATION_DUE) return 'Reativação disponível';
   if (!evaluation.dueAt) return null;
   const rel = formatRelativeTime(evaluation.dueAt, now);

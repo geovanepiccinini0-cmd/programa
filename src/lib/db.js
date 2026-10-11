@@ -344,6 +344,66 @@ export const followUpStagePoliciesApi = {
   },
 };
 
+// Etapa C — adiamento de follow-ups (migration 027, NÃO aplicada em
+// produção ainda — ver PR). 1 linha por lead (lead_id é a própria PK
+// da tabela, nunca um id próprio). `user_id` NUNCA é enviado pelo
+// cliente — o trigger da migration 027 sempre o deriva de
+// `leads.user_id` via lookup SECURITY DEFINER, nunca confia no
+// client (mesmo princípio de todas as outras tabelas deste projeto).
+function followUpSnoozeFromRow(r) {
+  return { leadId: r.lead_id, snoozedUntil: r.snoozed_until };
+}
+
+export const followUpSnoozesApi = {
+  fromRow: followUpSnoozeFromRow,
+
+  fetchAll: async (userId) => {
+    let query = supabase.from('follow_up_snoozes').select('*');
+    if (userId) query = query.eq('user_id', userId);
+    const { data, error } = await query;
+    if (error) throw error;
+    return (data || []).map(followUpSnoozeFromRow);
+  },
+
+  // Mesmo princípio do HOTFIX do PR #72 (ver followUpStagePoliciesApi
+  // acima) — NUNCA .upsert()/ON CONFLICT. UPDATE -> INSERT se 0
+  // linhas -> retry de UPDATE em caso de corrida com outra aba (23505).
+  save: async (leadId, snoozedUntil) => {
+    const { data: updated, error: updateError } = await supabase
+      .from('follow_up_snoozes')
+      .update({ snoozed_until: snoozedUntil })
+      .eq('lead_id', leadId)
+      .select()
+      .maybeSingle();
+    if (updateError) throw updateError;
+    if (updated) return followUpSnoozeFromRow(updated);
+
+    const { data: inserted, error: insertError } = await supabase
+      .from('follow_up_snoozes')
+      .insert({ lead_id: leadId, snoozed_until: snoozedUntil })
+      .select()
+      .maybeSingle();
+    if (!insertError) return followUpSnoozeFromRow(inserted);
+    if (insertError.code !== '23505') throw insertError;
+
+    const { data: retried, error: retryError } = await supabase
+      .from('follow_up_snoozes')
+      .update({ snoozed_until: snoozedUntil })
+      .eq('lead_id', leadId)
+      .select()
+      .maybeSingle();
+    if (retryError) throw retryError;
+    return followUpSnoozeFromRow(retried);
+  },
+
+  // "Cancelar adiamento" (requisito 6) — idempotente, nunca falha se
+  // a linha já não existir. Nunca toca em leads/tasks/lead_interactions.
+  remove: async (leadId) => {
+    const { error } = await supabase.from('follow_up_snoozes').delete().eq('lead_id', leadId);
+    if (error) throw error;
+  },
+};
+
 // Fase 3.5.1 — Caixa de entrada WhatsApp, SOMENTE LEITURA.
 //
 // Zero INSERT/UPDATE/DELETE aqui de propósito: esta fase não implementa
