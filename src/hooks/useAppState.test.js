@@ -22,6 +22,7 @@ import {
   logStageChange, insertInteractionAndTrack, fetchInteractionsForUser,
   applySnoozeRealtimeChange, shouldSkipSnoozeRealtimeEvent,
   maybeCreateAutoStageTask,
+  loadPersistedAutoStageFailures, persistAutoStageFailures, upsertAutoStageFailure,
 } from './useAppState.js';
 import { interactionsApi, auditLogApi, tasksApi } from '../lib/db.js';
 import { todayStr } from '../utils.js';
@@ -993,19 +994,21 @@ describe('Etapa D — maybeCreateAutoStageTask (orquestração; ver autoStageTas
     tasksApi.insertAutoStage.mockResolvedValueOnce(inserted);
     let state = [];
     const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+    const onFailure = vi.fn();
 
-    await maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), [], setTasks, NOW);
+    await maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), [], setTasks, onFailure, NOW);
 
     expect(tasksApi.insertAutoStage).toHaveBeenCalledTimes(1);
     expect(tasksApi.insertAutoStage).toHaveBeenCalledWith(expect.objectContaining({ leadId: 'lead-1', origem: 'auto_stage', etapaGatilho: 'Proposta' }));
     expect(state).toEqual([inserted]);
+    expect(onFailure).not.toHaveBeenCalled();
   });
 
   it('sem mudança efetiva de etapa -> nunca chama tasksApi.insertAutoStage (requisito 3)', async () => {
     let state = [];
     const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
 
-    await maybeCreateAutoStageTask(makeLead({ etapa: 'Proposta' }), makeLead({ etapa: 'Proposta' }), [], setTasks, NOW);
+    await maybeCreateAutoStageTask(makeLead({ etapa: 'Proposta' }), makeLead({ etapa: 'Proposta' }), [], setTasks, vi.fn(), NOW);
 
     expect(tasksApi.insertAutoStage).not.toHaveBeenCalled();
     expect(state).toEqual([]);
@@ -1015,7 +1018,7 @@ describe('Etapa D — maybeCreateAutoStageTask (orquestração; ver autoStageTas
     let state = [];
     const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
 
-    await maybeCreateAutoStageTask(makeLead({ etapa: 'Proposta' }), makeLead({ etapa: 'Ligação' }), [], setTasks, NOW);
+    await maybeCreateAutoStageTask(makeLead({ etapa: 'Proposta' }), makeLead({ etapa: 'Ligação' }), [], setTasks, vi.fn(), NOW);
 
     expect(tasksApi.insertAutoStage).not.toHaveBeenCalled();
   });
@@ -1025,30 +1028,51 @@ describe('Etapa D — maybeCreateAutoStageTask (orquestração; ver autoStageTas
     let state = tasks.slice();
     const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
 
-    await maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), tasks, setTasks, NOW);
+    await maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), tasks, setTasks, vi.fn(), NOW);
 
     expect(tasksApi.insertAutoStage).not.toHaveBeenCalled();
     expect(state).toEqual(tasks); // nunca duplicada
   });
 
-  it('corrida entre abas: tasksApi.insertAutoStage devolve null (23505) -> nunca adiciona nada ao state, nunca lança', async () => {
+  it('corrida entre abas: tasksApi.insertAutoStage devolve null (23505 do índice específico) -> nunca adiciona nada ao state, nunca chama onFailure (não é uma falha)', async () => {
     tasksApi.insertAutoStage.mockResolvedValueOnce(null);
     let state = [];
     const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+    const onFailure = vi.fn();
 
-    await expect(maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), [], setTasks, NOW)).resolves.toBeUndefined();
+    await expect(maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), [], setTasks, onFailure, NOW)).resolves.toBeUndefined();
 
     expect(state).toEqual([]);
+    expect(onFailure).not.toHaveBeenCalled();
   });
 
-  it('falha real (ex. migration 028 não aplicada, RLS) -> nunca lança, nunca derruba a mudança de etapa (mesmo princípio de logStageChange)', async () => {
-    tasksApi.insertAutoStage.mockRejectedValueOnce(new Error('column "etapa_gatilho" does not exist'));
+  // Correção pós-revisão do PR #76 (achado 1) — nunca mais só
+  // console.warn: `onFailure` é chamado com os dados completos da
+  // tentativa (incluindo `taskData`, necessário para o retry depois
+  // reusar exatamente a mesma escrita que falhou).
+  it('falha real (ex. migration 028 não aplicada, RLS) -> nunca lança, nunca derruba a mudança de etapa, e CHAMA onFailure com os dados da tentativa', async () => {
+    const error = new Error('column "etapa_gatilho" does not exist');
+    tasksApi.insertAutoStage.mockRejectedValueOnce(error);
+    let state = [];
+    const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
+    const onFailure = vi.fn();
+
+    await expect(maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), [], setTasks, onFailure, NOW)).resolves.toBeUndefined();
+
+    expect(state).toEqual([]);
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({
+      leadId: 'lead-1', leadNome: 'Lilliane', etapa: 'Proposta', error: 'column "etapa_gatilho" does not exist',
+      taskData: expect.objectContaining({ leadId: 'lead-1', origem: 'auto_stage', etapaGatilho: 'Proposta' }),
+    }));
+  });
+
+  it('onFailure ausente (chamador não forneceu) -> nunca lança mesmo com falha real', async () => {
+    tasksApi.insertAutoStage.mockRejectedValueOnce(new Error('falha simulada'));
     let state = [];
     const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
 
-    await expect(maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), [], setTasks, NOW)).resolves.toBeUndefined();
-
-    expect(state).toEqual([]);
+    await expect(maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), [], setTasks, undefined, NOW)).resolves.toBeUndefined();
   });
 
   it('requisito 11 — nunca chama nada além de tasksApi: sem efeito colateral de mensageria', async () => {
@@ -1058,9 +1082,52 @@ describe('Etapa D — maybeCreateAutoStageTask (orquestração; ver autoStageTas
     let state = [];
     const setTasks = (updater) => { state = typeof updater === 'function' ? updater(state) : updater; };
 
-    await maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), [], setTasks, NOW);
+    await maybeCreateAutoStageTask(makeLead({ etapa: 'Qualificação' }), makeLead({ etapa: 'Proposta' }), [], setTasks, vi.fn(), NOW);
 
     expect(interactionsApi.insert).not.toHaveBeenCalled();
     expect(auditLogApi.insert).not.toHaveBeenCalled();
+  });
+});
+
+// Correção pós-revisão do PR #76 (achados 1/2) — persistência e
+// composição das falhas de criação automática. `loadPersistedAutoStageFailures`/
+// `persistAutoStageFailures` tocam `window.localStorage`, que não
+// existe no ambiente "node" do Vitest (sem jsdom) — ambas têm
+// try/catch internos que absorvem exatamente esse `ReferenceError`,
+// então os testes abaixo cobrem o comportamento de FALLBACK seguro
+// (nunca lança, nunca quebra), que é também o comportamento real num
+// navegador com localStorage bloqueado/privado.
+describe('Etapa D — persistência e composição de autoStageTaskFailures (achados 1/2)', () => {
+  it('loadPersistedAutoStageFailures sem userId -> [] sempre', () => {
+    expect(loadPersistedAutoStageFailures(undefined)).toEqual([]);
+    expect(loadPersistedAutoStageFailures(null)).toEqual([]);
+  });
+
+  it('loadPersistedAutoStageFailures sem storage disponível (ambiente sem window) -> [] , nunca lança', () => {
+    expect(loadPersistedAutoStageFailures('user-1')).toEqual([]);
+  });
+
+  it('persistAutoStageFailures sem storage disponível -> nunca lança', () => {
+    expect(() => persistAutoStageFailures('user-1', [{ key: 'lead-1:Proposta' }])).not.toThrow();
+  });
+
+  it('upsertAutoStageFailure adiciona uma falha nova', () => {
+    const result = upsertAutoStageFailure([], { leadId: 'lead-1', leadNome: 'Lilliane', etapa: 'Proposta', error: 'x', taskData: {} });
+    expect(result).toHaveLength(1);
+    expect(result[0].key).toBe('lead-1:Proposta');
+    expect(result[0].failedAt).toBeTruthy();
+  });
+
+  it('upsertAutoStageFailure SUBSTITUI a falha existente do mesmo lead+etapa (nunca acumula duplicadas do mesmo evento)', () => {
+    const first = upsertAutoStageFailure([], { leadId: 'lead-1', leadNome: 'Lilliane', etapa: 'Proposta', error: 'erro antigo', taskData: {} });
+    const second = upsertAutoStageFailure(first, { leadId: 'lead-1', leadNome: 'Lilliane', etapa: 'Proposta', error: 'erro novo', taskData: {} });
+    expect(second).toHaveLength(1);
+    expect(second[0].error).toBe('erro novo');
+  });
+
+  it('upsertAutoStageFailure preserva falhas de OUTROS lead+etapa', () => {
+    const first = upsertAutoStageFailure([], { leadId: 'lead-1', leadNome: 'Lilliane', etapa: 'Proposta', error: 'x', taskData: {} });
+    const second = upsertAutoStageFailure(first, { leadId: 'lead-2', leadNome: 'Outro', etapa: 'Negociação', error: 'y', taskData: {} });
+    expect(second).toHaveLength(2);
   });
 });

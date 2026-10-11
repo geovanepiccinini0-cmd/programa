@@ -72,8 +72,29 @@ export const AUTO_STAGE_TASK_RULES = {
   },
 };
 
-function addDaysStr(now, days) {
-  return new Date(now.getTime() + days * 86400000).toISOString().slice(0, 10);
+// Correção pós-revisão do PR #76 (achado 4) — a versão anterior fazia
+// `new Date(now.getTime() + days*86400000).toISOString().slice(0,10)`:
+// somava MILISSEGUNDOS e depois lia o dia em UTC. Para uma operação no
+// fuso do Brasil (UTC-3), um clique perto da meia-noite local produzia
+// um prazo um dia a mais do que o esperado — ex. `now` = 12/10 23:30
+// local (= 13/10 02:30 UTC); +1 dia em ms = 14/10 02:30 UTC ->
+// `.toISOString().slice(0,10)` = "2026-10-14", quando o usuário via
+// na tela "hoje é 12/10" e esperava "13/10" (hoje + 1 dia civil).
+//
+// A correção opera SÓ nos componentes de calendário LOCAIS de `now`
+// (getFullYear/getMonth/getDate — sempre no fuso do navegador que
+// executa o código, nunca UTC) e deixa o próprio `Date` normalizar
+// overflow de mês/ano (ex. dia 31 + 2 em janeiro vira o dia certo de
+// março) — nunca soma milissegundos/dias em UTC. Robusto a DST: como
+// a aritmética é em CAMPOS de calendário (dia civil), não em instante
+// absoluto, um horário de verão no meio do intervalo não desloca o
+// resultado em uma hora como aconteceria somando 86400000ms fixos.
+function addLocalDaysStr(now, days) {
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + days);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 // Requisito 3 — só uma mudança EFETIVA de etapa pode gerar a tarefa.
@@ -105,7 +126,7 @@ export function computeAutoStageTaskData(lead, now) {
   return {
     titulo: rule.titulo(lead.nome),
     categoria: rule.categoria,
-    data: addDaysStr(now, rule.diasPrazo),
+    data: addLocalDaysStr(now, rule.diasPrazo),
     horario: '',
     concluida: false,
     leadId: lead.id,
@@ -124,6 +145,26 @@ export function computeAutoStageTaskData(lead, now) {
 // Uma tarefa já CONCLUÍDA para a mesma etapa nunca bloqueia uma nova
 // (requisito 8 — histórico preservado; um novo ciclo pela mesma etapa
 // é um novo "evento de entrada", merece sua própria tarefa).
+//
+// LIMITAÇÃO EXPLÍCITA (achado 6 da revisão do PR #76) — o dedupe
+// (tanto este quanto o índice do banco) é por "(lead, etapa) com uma
+// tarefa PENDENTE", NUNCA por "evento de entrada" individual. Dois
+// cenários onde isso importa, de propósito:
+// 1) Reentrada ENQUANTO a tarefa anterior ainda está pendente: se o
+//    lead sai de 'Proposta' e volta para 'Proposta' outra vez antes
+//    de concluir a tarefa da primeira entrada, NENHUMA segunda tarefa
+//    é criada — a pendente já existente cobre as duas entradas. Isso
+//    é intencional (evita duplicar o mesmo pedido de ação enquanto
+//    ele continua válido), não um bug.
+// 2) Reentrada DEPOIS de concluir ou a tarefa ser cancelada/excluída:
+//    aí sim uma nova tarefa é gerada — não há mais nenhuma linha
+//    pendente para (lead, etapa) bloqueando. "Cancelar" aqui significa
+//    excluir a tarefa pelos controles genéricos já existentes
+//    (onDeleteTask) — o mesmo efeito de "concluída" para fins deste
+//    dedupe, já que ambos retiram a linha do conjunto "pendente".
+// Produto pode decidir no futuro que cada entrada merece sua própria
+// tarefa mesmo com uma ainda pendente — isso é uma decisão de domínio
+// NOVA, documentada aqui para nunca ficar implícita.
 export function hasPendingAutoStageTask(tasks, leadId, etapa) {
   return tasks.some((t) => t.leadId === leadId && t.origem === AUTO_STAGE_TASK_ORIGEM && t.etapaGatilho === etapa && !t.concluida);
 }

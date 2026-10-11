@@ -35,6 +35,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
     stagePolicyOverrides, saveStagePolicy, removeStagePolicy,
     snoozes, snoozesLoading, snoozesError, refetchSnoozes,
     snoozesByLead, saveSnooze, removeSnooze,
+    autoStageTaskFailures, retryAutoStageTaskCreation, dismissAutoStageTaskFailure,
   } = useAppState(userId);
 
   const [activeTab, setActiveTab] = useState('hoje');
@@ -192,6 +193,9 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
           onRetrySnoozes={refetchSnoozes}
           onSaveSnooze={saveSnooze}
           onRemoveSnooze={removeSnooze}
+          autoStageTaskFailures={autoStageTaskFailures}
+          onRetryAutoStageTask={retryAutoStageTaskCreation}
+          onDismissAutoStageTaskFailure={dismissAutoStageTaskFailure}
         />
       )}
 

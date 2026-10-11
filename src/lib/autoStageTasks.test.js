@@ -1,4 +1,10 @@
 import { describe, expect, test } from 'vitest';
+// Correção pós-revisão do PR #76 (achado 4) — fixa o fuso do PROCESSO
+// de teste para o Brasil (UTC-3), ANTES de qualquer import/uso de
+// Date neste arquivo, para reproduzir deterministicamente o cenário
+// real da operação (navegador em horário local brasileiro) — nunca
+// depender do TZ do ambiente de CI (que pode ser UTC).
+process.env.TZ = 'America/Sao_Paulo';
 import {
   AUTO_STAGE_TASK_ORIGEM,
   AUTO_STAGE_TASK_RULES,
@@ -53,6 +59,24 @@ describe('computeAutoStageTaskData — requisitos 2/5/9', () => {
     expect(task.data).toBe('2026-10-13'); // diasPrazo: 1
     const taskNegociacao = computeAutoStageTaskData(makeLead({ etapa: 'Negociação' }), NOW);
     expect(taskNegociacao.data).toBe('2026-10-14'); // diasPrazo: 2
+  });
+
+  // Correção pós-revisão do PR #76 (achado 4) — prova que o prazo usa
+  // o DIA CIVIL LOCAL (America/Sao_Paulo, fixado no topo do arquivo),
+  // nunca o dia em UTC. `now` = 23:30 local de 12/10 é 02:30 UTC de
+  // 13/10 — a versão anterior (soma de ms + toISOString em UTC)
+  // devolveria "2026-10-14" (um dia alem do esperado) para diasPrazo=1;
+  // a versão corrigida devolve "2026-10-13" (hoje local + 1 dia civil).
+  test('mudança de etapa perto da meia-noite local -> prazo calculado pelo dia civil local, nunca pelo dia UTC', () => {
+    const lateNightLocal = new Date('2026-10-13T02:30:00.000Z'); // 23:30 de 12/10 em America/Sao_Paulo (UTC-3)
+    const task = computeAutoStageTaskData(makeLead({ etapa: 'Qualificação' }), lateNightLocal); // diasPrazo: 1
+    expect(task.data).toBe('2026-10-13');
+  });
+
+  test('prazo de 2 dias atravessando virada de mês continua correto (overflow de calendário tratado pelo próprio Date)', () => {
+    const endOfMonthLocal = new Date('2026-10-31T15:00:00.000Z'); // 12:00 local
+    const task = computeAutoStageTaskData(makeLead({ etapa: 'Negociação' }), endOfMonthLocal); // diasPrazo: 2
+    expect(task.data).toBe('2026-11-02');
   });
 
   test.each(['Novo Lead', 'Ligação', 'Atendimento', 'Follow-up 2', 'Follow-up 3'])('etapa sem modelo "%s" -> null, nunca gera tarefa genérica', (etapa) => {

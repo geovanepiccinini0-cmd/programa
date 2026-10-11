@@ -20,14 +20,26 @@
 --   `origem = 'auto_stage'` (src/lib/autoStageTasks.js) — nunca nas
 --   tarefas 'manual'/'lead-agenda'/'auto'/'rotina' já existentes, que
 --   continuam escrevendo exatamente as mesmas colunas de sempre (ver
---   taskToRow, src/lib/db.js: guard `!== undefined`, nunca envia esta
---   coluna para quem não a usa).
+--   taskToRow, src/lib/db.js: NUNCA emite esta coluna para nenhum
+--   chamador — só tasksApi.insertAutoStage grava, e só no INSERT).
 -- - `origem = 'auto_stage'` é uma string NOVA, deliberadamente
 --   diferente de 'automation' (um blocker já existente e reservado em
 --   src/lib/followUpEngine.js, nunca usado por nenhuma automação até
 --   hoje) — os dois conceitos nunca se confundem.
 --
--- Rollback: "drop index if exists public.tasks_auto_stage_pending_unique_idx; alter table public.tasks drop column if exists etapa_gatilho;"
+-- Correção pós-revisão do PR #76 (achado 5) — `tasks.origem`/
+-- `tasks.categoria` NÃO têm (e nunca tiveram) nenhum CHECK no schema
+-- baseline deste projeto (docs/ARCHITECTURE_V1.md: "nenhuma tem CHECK
+-- constraint... validados somente no frontend"), então
+-- `origem = 'auto_stage'` é permitida sem nenhuma alteração adicional
+-- — confirmado também empiricamente na validação local (ver relatório
+-- do PR). Esta migration ACRESCENTA, de forma mínima e aditiva, só a
+-- invariante NOVA que o requisito 5 pede para a coluna NOVA desta
+-- fase (bloco B abaixo) — nunca uma CHECK retroativa sobre
+-- origem/categoria em geral, que poderia falhar contra dados antigos
+-- fora do controle desta fase e está fora do escopo mínimo necessário.
+--
+-- Rollback: "drop index if exists public.tasks_auto_stage_pending_unique_idx; alter table public.tasks drop constraint if exists tasks_auto_stage_etapa_gatilho_consistency; alter table public.tasks drop column if exists etapa_gatilho;"
 -- (aditiva, nenhuma outra tabela/coluna depende desta).
 
 -------------------------------------------------------------------
@@ -59,10 +71,74 @@ alter table public.tasks add column if not exists etapa_gatilho text;
 comment on column public.tasks.etapa_gatilho is
   'Etapa D — etapa do funil (STAGES de constants.js) que disparou esta tarefa automática. Só preenchida quando origem = ''auto_stage''; NULL para toda tarefa manual/lead-agenda/auto/rotina já existente.';
 
--- Rollback deste bloco: "alter table public.tasks drop column if exists etapa_gatilho;" (também remove o índice do bloco B, que depende da coluna).
+-- Rollback deste bloco: "alter table public.tasks drop column if exists etapa_gatilho;" (também remove a CHECK do bloco B e o índice do bloco C, que dependem da coluna).
 
 -------------------------------------------------------------------
--- B) índice único PARCIAL — requisito 7 ("garanta idempotência
+-- B) CHECK de consistência — requisito 5 ("integridade dos campos").
+-- Garante, no nível do banco, exatamente a relação que
+-- src/lib/autoStageTasks.js já impõe do lado puro
+-- (computeAutoStageTaskData sempre preenche `etapaGatilho` quando e
+-- só quando `origem = 'auto_stage'`, e sempre com `leadId` presente —
+-- uma tarefa auto_stage sem lead não tem sentido de domínio):
+--   (origem <> 'auto_stage' e etapa_gatilho é null)
+--   OU (origem = 'auto_stage' e etapa_gatilho NÃO é null e lead_id NÃO é null)
+-- Nunca falha para nenhuma linha PRÉ-EXISTENTE: antes desta migration
+-- nenhuma linha tem `origem = 'auto_stage'` (string nova desta fase) e
+-- todas têm `etapa_gatilho` NULL (coluna recém-criada, default NULL,
+-- bloco A) — o primeiro branch da condição vale para 100% das linhas
+-- já existentes, então `add constraint` nunca encontra uma violação.
+--
+-- Isto também resolve, por construção, a preocupação levantada na
+-- revisão sobre "UNIQUE(lead_id, etapa_gatilho) não cobrir múltiplos
+-- NULL sem NULLS NOT DISTINCT" (achado 5): o índice do bloco C é
+-- PARCIAL (`where origem='auto_stage' and concluida=false`), e dentro
+-- desse subconjunto de linhas esta CHECK já GARANTE que
+-- `etapa_gatilho` nunca é NULL — o problema clássico de "múltiplos
+-- NULL não contam como duplicados" nunca chega a existir no espaço de
+-- linhas que o índice de fato enxerga; `NULLS NOT DISTINCT` seria
+-- necessário se o índice indexasse linhas com `etapa_gatilho` NULL,
+-- o que, por esta CHECK, nunca acontece dentro do filtro
+-- `origem = 'auto_stage'`.
+-------------------------------------------------------------------
+-- `alter table ... add constraint` não tem `if not exists` (diferente
+-- de `create index`/`create table`) — o bloco DO abaixo torna a
+-- adição idempotente manualmente, mesmo padrão já usado para a
+-- publication Realtime na migration 027 (checar antes de agir, nunca
+-- deixar uma re-execução falhar com "already exists").
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.tasks'::regclass and conname = 'tasks_auto_stage_etapa_gatilho_consistency'
+  ) then
+    alter table public.tasks
+      add constraint tasks_auto_stage_etapa_gatilho_consistency
+      check (
+        (origem is distinct from 'auto_stage' and etapa_gatilho is null)
+        or
+        (origem = 'auto_stage' and etapa_gatilho is not null and lead_id is not null)
+      ) not valid;
+  end if;
+end $$;
+
+-- `not valid` + `validate constraint` em dois passos (em vez de um
+-- `add constraint` único): evita um ACCESS EXCLUSIVE lock de validação
+-- de todas as linhas já existentes bloquear escritas concorrentes em
+-- `tasks` por mais tempo que o necessário — mesmo cuidado operacional
+-- recomendado pela documentação do Postgres para tabelas em uso. A
+-- validação em si é rápida (0 linhas podem violar, ver acima), mas o
+-- padrão em dois passos é mantido aqui como prática consistente.
+-- `validate constraint` é naturalmente idempotente: reaplicá-la a uma
+-- constraint já validada é um no-op rápido, nunca um erro.
+alter table public.tasks validate constraint tasks_auto_stage_etapa_gatilho_consistency;
+
+comment on constraint tasks_auto_stage_etapa_gatilho_consistency on public.tasks is
+  'Etapa D — etapa_gatilho preenchida se e somente se origem=''auto_stage'', e nesse caso lead_id também é obrigatório. Nunca violada por linhas anteriores a esta migration (todas tinham origem <> ''auto_stage'' e etapa_gatilho NULL).';
+
+-- Rollback deste bloco: "alter table public.tasks drop constraint if exists tasks_auto_stage_etapa_gatilho_consistency;"
+
+-------------------------------------------------------------------
+-- C) índice único PARCIAL — requisito 7 ("garanta idempotência
 -- inclusive com duas abas ou operações concorrentes... não dependa
 -- apenas de uma verificação no React"). Este é o mecanismo REAL de
 -- idempotência: hasPendingAutoStageTask (autoStageTasks.js) é só a
@@ -93,6 +169,20 @@ comment on column public.tasks.etapa_gatilho is
 --    etapa gerar sua própria tarefa, exatamente como
 --    hasPendingAutoStageTask (autoStageTasks.js) já decide do lado
 --    puro.
+--
+-- LIMITAÇÃO EXPLÍCITA (achado 6 da revisão do PR #76, documentada
+-- igualmente em autoStageTasks.js) — este índice impede duplicação
+-- enquanto existir uma linha PENDENTE para (lead_id, etapa_gatilho),
+-- NÃO impede duas tarefas para "o mesmo lead voltou a entrar nesta
+-- etapa" em geral: se o lead reentra na mesma etapa enquanto a tarefa
+-- da entrada anterior AINDA está pendente, nenhuma segunda é criada
+-- (a pendente já cobre as duas entradas, por desenho); só depois que
+-- ela é concluída OU excluída (onDeleteTask, controle genérico já
+-- existente) é que uma nova entrada na mesma etapa volta a gerar
+-- tarefa. "Tarefa cancelada" neste domínio é sinônimo de "excluída"
+-- — não existe um terceiro estado "cancelada" distinto de "concluída"
+-- na tabela `tasks` hoje; ambos retiram a linha do conjunto PENDENTE
+-- que este índice (e hasPendingAutoStageTask) enxergam.
 -------------------------------------------------------------------
 create unique index if not exists tasks_auto_stage_pending_unique_idx
   on public.tasks (lead_id, etapa_gatilho)
@@ -111,9 +201,17 @@ comment on index public.tasks_auto_stage_pending_unique_idx is
 --   1. Coluna presente:
 --      select column_name from information_schema.columns
 --        where table_schema = 'public' and table_name = 'tasks' and column_name = 'etapa_gatilho';
---   2. Índice único parcial presente e com a condição esperada:
+--   2. CHECK de consistência presente e VALIDADA (não apenas
+--      declarada — confirme convalidated = true, nunca 'not valid'
+--      pendurado):
+--      select conname, convalidated, pg_get_constraintdef(oid) from pg_constraint
+--        where conrelid = 'public.tasks'::regclass and conname = 'tasks_auto_stage_etapa_gatilho_consistency';
+--   3. Índice único parcial presente e com a condição esperada:
 --      select indexname, indexdef from pg_indexes
 --        where schemaname = 'public' and tablename = 'tasks' and indexname = 'tasks_auto_stage_pending_unique_idx';
---   3. RLS de `tasks` continua exatamente como antes (esta migration
+--   4. RLS de `tasks` continua exatamente como antes (esta migration
 --      não altera nenhuma policy):
 --      select polname, polcmd from pg_policy where polrelid = 'public.tasks'::regclass;
+--   5. Teste funcional de integridade (deve FALHAR, confirmando a
+--      CHECK): tentar inserir uma linha com origem='auto_stage' e
+--      etapa_gatilho NULL deve ser rejeitado pelo Postgres.
