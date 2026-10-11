@@ -32,18 +32,19 @@
 -------------------------------------------------------------------
 -- PRECONDIÇÕES
 -------------------------------------------------------------------
-do $$
-begin
-  if to_regclass('public.leads') is null then
-    raise exception 'Precondicao falhou: public.leads nao existe';
-  end if;
-  if not exists (
-    select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public' and p.proname = 'is_admin'
-  ) then
-    raise exception 'Precondicao falhou: public.is_admin() nao existe';
-  end if;
-end $$;
+-- Correção pós-revisão do PR #74 (achado CONFIRMED 4) — a versão
+-- anterior checava public.leads e public.is_admin() por hábito (mesmo
+-- padrão das migrations do WhatsApp, que de fato dependem dos dois),
+-- mas esta tabela não tem FK para leads (é configuração do USUÁRIO,
+-- nunca de um lead específico) e não usa nenhuma policy de admin (ver
+-- seção C — decisão deliberada: configuração é pessoal, sem
+-- visibilidade de admin). Precondição removida por ser desnecessária
+-- e potencialmente confusa (sugeria uma dependência que não existe).
+-- A única dependência real desta tabela é auth.users, que o Supabase
+-- sempre provisiona — não há nada útil para verificar aqui além do
+-- que o próprio `create table`/`references auth.users` já garante.
+
+-------------------------------------------------------------------
 
 -------------------------------------------------------------------
 -- A) follow_up_stage_policies — 1 linha por (usuário, etapa). Cada
@@ -115,6 +116,28 @@ comment on table public.follow_up_stage_policies is
 -- updated_at. Como esta tabela não referencia leads, não há
 -- user_id "derivado de outra tabela" para validar — é só o próprio
 -- usuário autenticado, sempre.
+--
+-- Correção pós-revisão do PR #74 (achado CONFIRMED 4, análise
+-- explícita pedida) — o trigger rodar também em UPDATE (não só
+-- INSERT) NUNCA permite a um dono "reatribuir" o registro para outro
+-- usuário, nem a outro usuário "roubar" o registro:
+--   1. a policy de UPDATE (seção C) já tem `using (user_id =
+--      auth.uid())` — ou seja, um UPDATE só consegue CASAR com uma
+--      linha que já pertence ao próprio chamador; nenhum outro
+--      usuário consegue nem começar a atualizar a linha de alguém
+--      mais, com ou sem este trigger.
+--   2. mesmo que o payload do cliente tentasse enviar um `user_id`
+--      diferente (ex. para transferir a configuração para outra
+--      conta), o trigger sobrescreve SEMPRE para auth.uid() — o
+--      resultado final nunca é outro usuário, nunca o próprio
+--      usuário "perde" a linha para ninguém.
+--   3. a policy `with check (user_id = auth.uid())` da seção C é a
+--      segunda camada: mesmo num cenário hipotético em que o trigger
+--      fosse removido/alterado por engano, o Postgres ainda rejeitaria
+--      qualquer linha final cujo user_id não seja o do chamador.
+-- Testado empiricamente (ver relatório do PR): INSERT/UPDATE
+-- funcionam normalmente para o dono autenticado, e um usuário nunca
+-- consegue ler/alterar a configuração de outro.
 -------------------------------------------------------------------
 create or replace function public.follow_up_stage_policies_consistency_check()
 returns trigger

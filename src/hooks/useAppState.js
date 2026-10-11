@@ -3,7 +3,7 @@ import { DIAS_SEMANA, CONTACT_ATTEMPT_TYPES } from '../constants.js';
 import { todayStr, normalizeBackup } from '../utils.js';
 import { leadsApi, tasksApi, templatesApi, interactionsApi, auditLogApi, followUpStagePoliciesApi } from '../lib/db.js';
 import { supabase } from '../lib/supabaseClient.js';
-import { buildStagePolicyOverridesMap } from '../lib/followUpPolicyConfig.js';
+import { buildStagePolicyOverridesMap, shouldApplyStagePolicyResult } from '../lib/followUpPolicyConfig.js';
 
 // Infraestrutura RESERVADA para um futuro motor de automações comerciais
 // (lead sem resposta, pós-proposta, reativação etc.) — ver decisão em
@@ -473,6 +473,36 @@ export function useAppState(userId) {
   // este memo, nunca `stagePolicies` bruto).
   const stagePolicyOverrides = useMemo(() => buildStagePolicyOverridesMap(stagePolicies), [stagePolicies]);
 
+  // Correção pós-revisão do PR #74 (achado CONFIRMED 3) — sem guarda,
+  // duas corridas corrompiam `stagePolicies`:
+  // 1) o usuário troca de sessão (logout/login de outro usuário)
+  //    enquanto uma chamada da sessão ANTERIOR ainda está em voo —
+  //    ao resolver, ela aplicaria a resposta de um usuário ao estado
+  //    JÁ do usuário novo.
+  // 2) duas operações concorrentes para a MESMA etapa (ex. dois
+  //    cliques rápidos em "Salvar", ou "Salvar" seguido de "Voltar
+  //    ao padrão" antes do primeiro terminar) resolvendo fora de
+  //    ordem — a resposta mais LENTA venceria mesmo sendo a mais
+  //    ANTIGA, desfazendo silenciosamente a ação mais recente.
+  // `userIdRef` espelha sempre o `userId` ATUAL (nunca o capturado no
+  // fechamento da chamada), e `stagePolicyOpSeqRef` guarda, por
+  // etapa, o número da operação mais recente INICIADA — cada chamada
+  // só aplica seu resultado se, ao resolver, ainda for a sessão E a
+  // operação mais recentes (shouldApplyStagePolicyResult, puro e
+  // testado em followUpPolicyConfig.test.js). Nunca afeta o que a
+  // Promise devolve ao chamador (a UI sempre sabe se a ESCRITA no
+  // banco teve sucesso ou falhou) — só decide se o resultado deve
+  // ser refletido no state local desta sessão.
+  const userIdRef = useRef(userId);
+  useEffect(() => { userIdRef.current = userId; }, [userId]);
+  const stagePolicyOpSeqRef = useRef({});
+
+  function nextStagePolicyOpSeq(etapa) {
+    const seq = (stagePolicyOpSeqRef.current[etapa] || 0) + 1;
+    stagePolicyOpSeqRef.current[etapa] = seq;
+    return seq;
+  }
+
   // Salvar/remover são sempre uma ação EXPLÍCITA do usuário na tela de
   // configuração — nunca chamadas por nenhum efeito automático, nunca
   // criam task/interação (requisito 7 da autorização): só atualizam
@@ -480,16 +510,27 @@ export function useAppState(userId) {
   // (useMemo de FollowUpQueue.jsx recalcula sozinho quando
   // stagePolicyOverrides muda, sem nenhuma ação adicional daqui).
   const saveStagePolicy = useCallback(async (etapa, override) => {
+    const requestUserId = userIdRef.current;
+    const requestSeq = nextStagePolicyOpSeq(etapa);
     const saved = await followUpStagePoliciesApi.save(etapa, override);
+    if (!shouldApplyStagePolicyResult({ requestUserId, currentUserId: userIdRef.current, requestSeq, currentSeq: stagePolicyOpSeqRef.current[etapa] })) {
+      return saved;
+    }
     setStagePolicies((prev) => {
       const next = prev.filter((p) => p.etapa !== etapa);
       next.push(saved);
       return next;
     });
+    return saved;
   }, []);
 
   const removeStagePolicy = useCallback(async (etapa) => {
+    const requestUserId = userIdRef.current;
+    const requestSeq = nextStagePolicyOpSeq(etapa);
     await followUpStagePoliciesApi.remove(etapa);
+    if (!shouldApplyStagePolicyResult({ requestUserId, currentUserId: userIdRef.current, requestSeq, currentSeq: stagePolicyOpSeqRef.current[etapa] })) {
+      return;
+    }
     setStagePolicies((prev) => prev.filter((p) => p.etapa !== etapa));
   }, []);
 

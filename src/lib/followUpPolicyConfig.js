@@ -21,21 +21,11 @@ import { FOLLOW_UP_POLICY } from './followUpEngine.js';
 // configuração, lido pelo motor na próxima avaliação (ver
 // followUpQueue.js).
 
-// Campos configuráveis — mesma forma de FOLLOW_UP_POLICY, cada um
-// OPCIONAL (override parcial). Nenhum campo fora desta lista é
-// aceito — "política padrão conservadora" (requisito 2) significa
-// nunca aceitar um campo desconhecido/extra silenciosamente.
-const OVERRIDE_FIELD_PATHS = [
-  ['attempt', 'hoursUntilDue'],
-  ['proposal', 'hoursUntilDue'],
-  ['noNewAttemptSinceEngagement', 'hoursUntilDue'],
-  ['reactivationAfterMaxAttempts', 'daysUntilDue'],
-];
-
-// Limites conservadores — nunca 0/negativo/não-finito, nunca um prazo
-// absurdamente longo que tornaria o follow-up praticamente desativado
-// por engano de digitação (ex. "8760" horas = 1 ano). Decisão de
-// produto desta fase, documentada aqui para nunca ficar implícita.
+// Limites conservadores — nunca 0/negativo/não-finito/não-inteiro,
+// nunca um prazo absurdamente longo que tornaria o follow-up
+// praticamente desativado por engano de digitação (ex. "8760" horas =
+// 1 ano). Decisão de produto desta fase, documentada aqui para nunca
+// ficar implícita.
 const MIN_HOURS = 1;
 const MAX_HOURS = 24 * 90; // 90 dias
 const MIN_DAYS = 1;
@@ -43,8 +33,18 @@ const MAX_DAYS = 180;
 const MIN_ATTEMPTS = 1;
 const MAX_ATTEMPTS = 20;
 
-function isValidNumberInRange(value, min, max) {
-  return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
+// Correção pós-revisão do PR #74 (achado CONFIRMED): exige INTEIRO,
+// não só "número finito". As colunas da migration 026 são `integer` —
+// um valor como 2.5 passava por Number.isFinite, era aceito em JS, e
+// só falhava tarde (na gravação, com um erro de banco pouco claro
+// para o usuário) ou era truncado silenciosamente pelo driver. Agora
+// a MESMA regra (inteiro dentro do limite) vale tanto para
+// sanitizeStagePolicyOverride (defesa em profundidade/dado vindo do
+// banco) quanto para validateStagePolicyForm (feedback imediato na
+// UI, ver abaixo) — nunca duas definições divergentes do que é
+// "válido".
+function isValidIntegerInRange(value, min, max) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
 }
 
 function getPath(obj, path) {
@@ -66,19 +66,19 @@ export function sanitizeStagePolicyOverride(raw) {
   if (!raw || typeof raw !== 'object') return {};
   const sanitized = {};
 
-  if (isValidNumberInRange(getPath(raw, ['attempt', 'hoursUntilDue']), MIN_HOURS, MAX_HOURS)) {
+  if (isValidIntegerInRange(getPath(raw, ['attempt', 'hoursUntilDue']), MIN_HOURS, MAX_HOURS)) {
     sanitized.attempt = { hoursUntilDue: raw.attempt.hoursUntilDue };
   }
-  if (isValidNumberInRange(getPath(raw, ['proposal', 'hoursUntilDue']), MIN_HOURS, MAX_HOURS)) {
+  if (isValidIntegerInRange(getPath(raw, ['proposal', 'hoursUntilDue']), MIN_HOURS, MAX_HOURS)) {
     sanitized.proposal = { hoursUntilDue: raw.proposal.hoursUntilDue };
   }
-  if (isValidNumberInRange(getPath(raw, ['noNewAttemptSinceEngagement', 'hoursUntilDue']), MIN_HOURS, MAX_HOURS)) {
+  if (isValidIntegerInRange(getPath(raw, ['noNewAttemptSinceEngagement', 'hoursUntilDue']), MIN_HOURS, MAX_HOURS)) {
     sanitized.noNewAttemptSinceEngagement = { hoursUntilDue: raw.noNewAttemptSinceEngagement.hoursUntilDue };
   }
-  if (isValidNumberInRange(raw.maxAttempts, MIN_ATTEMPTS, MAX_ATTEMPTS)) {
+  if (isValidIntegerInRange(raw.maxAttempts, MIN_ATTEMPTS, MAX_ATTEMPTS)) {
     sanitized.maxAttempts = raw.maxAttempts;
   }
-  if (isValidNumberInRange(getPath(raw, ['reactivationAfterMaxAttempts', 'daysUntilDue']), MIN_DAYS, MAX_DAYS)) {
+  if (isValidIntegerInRange(getPath(raw, ['reactivationAfterMaxAttempts', 'daysUntilDue']), MIN_DAYS, MAX_DAYS)) {
     sanitized.reactivationAfterMaxAttempts = { daysUntilDue: raw.reactivationAfterMaxAttempts.daysUntilDue };
   }
   return sanitized;
@@ -145,4 +145,120 @@ export function buildStagePolicyOverridesMap(rows) {
     if (Object.keys(override).length > 0) map[row.etapa] = override;
   }
   return map;
+}
+
+// --- Formulário (FollowUpPolicySettings.jsx) ---------------------------
+//
+// Correção pós-revisão do PR #74 (achado CONFIRMED) — movidas do
+// componente para aqui: puras, testáveis sem renderizar React/sem
+// nenhuma biblioteca de teste de componente nova (este projeto nunca
+// usou React Testing Library — mantém a convenção de testar a LÓGICA
+// extraída, nunca o JSX em si).
+
+const FORM_FIELD_SPECS = [
+  { key: 'attemptHours', path: ['attempt', 'hoursUntilDue'], label: 'Retorno após tentativa (horas)', min: MIN_HOURS, max: MAX_HOURS },
+  { key: 'proposalHours', path: ['proposal', 'hoursUntilDue'], label: 'Retorno após proposta (horas)', min: MIN_HOURS, max: MAX_HOURS },
+  { key: 'noNewAttemptHours', path: ['noNewAttemptSinceEngagement', 'hoursUntilDue'], label: 'Parado após engajamento (horas)', min: MIN_HOURS, max: MAX_HOURS },
+  { key: 'maxAttempts', path: ['maxAttempts'], label: 'Número de tentativas', min: MIN_ATTEMPTS, max: MAX_ATTEMPTS },
+  { key: 'reactivationDays', path: ['reactivationAfterMaxAttempts', 'daysUntilDue'], label: 'Reativação (dias)', min: MIN_DAYS, max: MAX_DAYS },
+];
+
+export function emptyStagePolicyForm() {
+  return { attemptHours: '', proposalHours: '', noNewAttemptHours: '', maxAttempts: '', reactivationDays: '' };
+}
+
+// override (forma aninhada, já sanitizada ou não) -> form (strings de
+// <input>, uma por campo). Campo ausente no override = string vazia
+// (nunca "0"/"undefined") — representa "sem configuração", o mesmo
+// significado usado por formToOverride/sanitizeStagePolicyOverride.
+export function overrideToForm(override) {
+  const form = emptyStagePolicyForm();
+  if (!override || typeof override !== 'object') return form;
+  for (const { key, path } of FORM_FIELD_SPECS) {
+    const value = getPath(override, path);
+    if (typeof value === 'number') form[key] = String(value);
+  }
+  return form;
+}
+
+// form -> override (forma aninhada). Campo vazio/ausente nunca entra
+// no resultado — nunca um 0/NaN que pareceria um valor real
+// configurado. Não valida (ver validateStagePolicyForm/
+// sanitizeStagePolicyOverride) — só reestrutura.
+export function formToOverride(form) {
+  const override = {};
+  for (const { key, path } of FORM_FIELD_SPECS) {
+    const raw = form && form[key];
+    if (raw === '' || raw === undefined || raw === null) continue;
+    const container = path.length === 2 ? (override[path[0]] = override[path[0]] || {}) : override;
+    const leafKey = path[path.length - 1];
+    container[leafKey] = Number(raw);
+  }
+  return override;
+}
+
+// Correção pós-revisão do PR #74 (achado CONFIRMED, item 1) —
+// validação PARA A UI, distinta de sanitizeStagePolicyOverride: aqui
+// um campo PREENCHIDO mas inválido (decimal, negativo, fora do
+// limite, não-numérico) gera um erro ESPECÍFICO para aquele campo e
+// NUNCA é descartado silenciosamente — o chamador (FollowUpPolicySettings.jsx)
+// deve bloquear o salvamento inteiro enquanto houver qualquer erro,
+// nunca salvar só os campos válidos e ignorar os inválidos. Campo
+// vazio nunca é erro (significa "não configurar este campo").
+// Mesma regra de validade de sanitizeStagePolicyOverride
+// (isValidIntegerInRange) — nunca uma segunda definição de "válido".
+export function validateStagePolicyForm(form) {
+  const errors = {};
+  for (const { key, label, min, max } of FORM_FIELD_SPECS) {
+    const raw = form && form[key];
+    if (raw === '' || raw === undefined || raw === null) continue;
+    const num = Number(raw);
+    if (!isValidIntegerInRange(num, min, max)) {
+      errors[key] = `${label}: informe um número inteiro entre ${min} e ${max}.`;
+    }
+  }
+  return errors;
+}
+
+// --- Sincronização do formulário com dados assíncronos ------------------
+//
+// Correção pós-revisão do PR #74 (achado CONFIRMED, item 2) —
+// FollowUpPolicySettings.jsx inicializava `form` a partir das props
+// ANTES do fetch assíncrono de stagePolicyOverrides terminar; depois
+// de carregar, nada forçava uma nova sincronização, então o
+// formulário podia ficar vazio mesmo havendo configuração salva — e
+// salvar nesse estado sobrescreveria (zeraria) a configuração
+// existente. A correção: só resincroniza quando a etapa EXIBIDA
+// ainda não corresponde à etapa cujo dado já carregado foi aplicado
+// (`initializedStage`) E o carregamento já terminou — nunca
+// resincroniza em cima de uma edição em andamento na MESMA etapa já
+// inicializada (ex. uma atualização de Realtime/re-fetch não deve
+// apagar o que o usuário está digitando).
+export function shouldSyncStagePolicyForm({ loading, selectedStage, initializedStage }) {
+  if (loading) return false;
+  return initializedStage !== selectedStage;
+}
+
+// --- Guarda de corrida para save/remove assíncronos (useAppState.js) ----
+//
+// Correção pós-revisão do PR #74 (achado CONFIRMED, item 3) —
+// saveStagePolicy/removeStagePolicy são chamadas assíncronas; sem
+// esta guarda, dois cenários corrompiam o estado local:
+// 1) o usuário troca de sessão (logout/login de outro usuário)
+//    enquanto uma chamada da sessão ANTERIOR ainda está em voo — ao
+//    resolver, ela aplicaria dados de um usuário à sessão do usuário
+//    NOVO.
+// 2) duas operações concorrentes para a MESMA etapa (ex. dois cliques
+//    rápidos em "Salvar", ou "Salvar" seguido de "Voltar ao padrão"
+//    antes do primeiro terminar) resolvem fora de ordem — sem
+//    nenhuma guarda, a resposta mais LENTA venceria mesmo sendo a
+//    mais ANTIGA, desfazendo silenciosamente a ação mais recente do
+//    usuário.
+// Pura — recebe só os quatro identificadores já capturados pelo
+// chamador (nunca lê estado/closures diretamente), testável sem
+// mockar Supabase/React. `true` só quando a chamada que está
+// resolvendo ainda é, ao mesmo tempo, da sessão atual E a operação
+// mais recente iniciada para aquela etapa.
+export function shouldApplyStagePolicyResult({ requestUserId, currentUserId, requestSeq, currentSeq }) {
+  return requestUserId === currentUserId && requestSeq === currentSeq;
 }
