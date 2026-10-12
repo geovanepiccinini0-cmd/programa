@@ -1111,6 +1111,42 @@ describe('Etapa D — persistência e composição de autoStageTaskFailures (ach
     expect(() => persistAutoStageFailures('user-1', [{ key: 'lead-1:Proposta' }])).not.toThrow();
   });
 
+  it('persiste e recupera o aviso de falha após uma nova leitura, isolado por usuário', () => {
+    const storage = new Map();
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: vi.fn((key) => storage.get(key) ?? null),
+        setItem: vi.fn((key, value) => { storage.set(key, value); }),
+      },
+    });
+    try {
+      const failure = {
+        key: 'lead-1:Proposta',
+        leadId: 'lead-1',
+        leadNome: 'Lead de teste',
+        etapa: 'Proposta',
+        error: 'Falha simulada',
+        taskData: { leadId: 'lead-1', etapaGatilho: 'Proposta', origem: 'auto_stage' },
+      };
+      persistAutoStageFailures('user-1', [failure]);
+      expect(loadPersistedAutoStageFailures('user-1')).toEqual([failure]);
+      expect(loadPersistedAutoStageFailures('user-2')).toEqual([]);
+      persistAutoStageFailures('user-1', []);
+      expect(loadPersistedAutoStageFailures('user-1')).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('storage com JSON inválido não derruba a leitura de falhas', () => {
+    vi.stubGlobal('window', { localStorage: { getItem: () => '{inválido' } });
+    try {
+      expect(loadPersistedAutoStageFailures('user-1')).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('upsertAutoStageFailure adiciona uma falha nova', () => {
     const result = upsertAutoStageFailure([], { leadId: 'lead-1', leadNome: 'Lilliane', etapa: 'Proposta', error: 'x', taskData: {} });
     expect(result).toHaveLength(1);
