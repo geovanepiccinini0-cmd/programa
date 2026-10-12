@@ -45,6 +45,17 @@ describe('buildCommercialDashboard', () => {
     expect(data.byProduct[0].name).toBe('Imóvel');
   });
 
+  it('calcula prioridades apenas para oportunidades abertas', () => {
+    const data = buildCommercialDashboard([
+      lead('1', { etapa: 'Negociação', proximoContato: '2026-10-10', ultimaAtualizacao: '2026-09-01', criadoEm: '2026-09-01' }),
+      lead('2', { etapa: 'Ganho', proximoContato: '2026-10-01', ultimaAtualizacao: '2026-09-01' }),
+      lead('3', { etapa: 'Qualificação', proximoContato: '2026-10-14', ultimaAtualizacao: '2026-10-10' }),
+    ], { now });
+    expect(data.negotiations).toBe(1);
+    expect(data.overdueNextContact).toBe(1);
+    expect(data.staleRegistrations).toBe(1);
+  });
+
   it('retorna zero em filtros sem resultados', () => {
     const data = buildCommercialDashboard([lead('1')], { product: 'Financiamento', now });
     expect(data.total).toBe(0);
