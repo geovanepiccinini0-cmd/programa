@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { STAGES } from '../constants.js';
 import { leadsApi, profilesApi } from '../lib/db.js';
-import { fmtBRL, leadValor } from '../utils.js';
+import { fmtBRL, leadValor, getStaleLeads } from '../utils.js';
 
 // O período filtra a data de cadastro, não a data de fechamento.
 // Sem histórico completo de mudanças, os indicadores são uma fotografia
@@ -22,6 +22,11 @@ export function buildCommercialDashboard(leads, { period = 'all', product = 'Tod
   const won = scoped.filter((lead) => lead.etapa === 'Ganho');
   const lost = scoped.filter((lead) => lead.etapa === 'Perdido');
   const pipeline = open.reduce((sum, lead) => sum + leadValor(lead), 0);
+  // Cadastro desatualizado NÃO significa necessariamente falta de contato.
+  const staleRegistrations = getStaleLeads(open).length;
+  const today = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
+  const overdueNextContact = open.filter((lead) => lead.proximoContato && lead.proximoContato < today).length;
+  const negotiations = open.filter((lead) => lead.etapa === 'Negociação').length;
   const byStage = STAGES.map((stage) => ({
     name: stage,
     count: scoped.filter((lead) => lead.etapa === stage).length,
@@ -37,7 +42,7 @@ export function buildCommercialDashboard(leads, { period = 'all', product = 'Tod
   }, {})).map(([, value]) => value).sort((a, b) => b.count - a.count);
   return {
     total: scoped.length, open: open.length, won: won.length, lost: lost.length,
-    pipeline, currentWonRate: scoped.length ? won.length / scoped.length : 0,
+    pipeline, staleRegistrations, overdueNextContact, negotiations, currentWonRate: scoped.length ? won.length / scoped.length : 0,
     byStage, byOwner: group('userId'), byProduct: group('produto'), byChannel: group('canal'),
   };
 }
@@ -116,7 +121,7 @@ export default function MetricasView({ userId }) {
     <section className="view active">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div><h2>Dashboard Comercial</h2><p style={{ opacity: .75 }}>Visão gerencial de toda a equipe, incluindo seus próprios leads.</p></div>
-        <button type="button" onClick={refresh} disabled={loading}>Atualizar dados</button>
+        <button className="btn-primary" type="button" onClick={refresh} disabled={loading}>{loading ? "Atualizando..." : "Atualizar dados"}</button>
       </div>
       <div className="filters" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '18px 0' }}>
         <label>Cadastros <select aria-label="Período de cadastro" value={period} onChange={(e) => setPeriod(e.target.value)}>
@@ -143,13 +148,28 @@ export default function MetricasView({ userId }) {
             ['% dos cadastrados hoje em Ganho', (data.currentWonRate * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + '%'],
           ].map(([label, value]) => <div className="stat-card" style={cardStyle} key={label}><div className="num">{value}</div><div className="label">{label}</div></div>)}
         </div>
+        <div style={{ marginTop: 24, padding: '18px', border: '1px solid var(--border)', borderRadius: 12, background: 'var(--surface)' }}>
+          <h3 style={{ marginTop: 0 }}>Prioridades comerciais</h3>
+          <p style={{ fontSize: 12, opacity: .75, marginBottom: 14 }}>Indicadores de atenção para oportunidades abertas nos filtros selecionados. Podem se sobrepor; não são uma contagem de tarefas.</p>
+          <div className="stats" style={{ marginBottom: 0 }}>
+            {[
+              ['Cadastros sem atualização há 15+ dias', data.staleRegistrations, 'Base: última atualização do cadastro, não último contato.'],
+              ['Próximo contato com data vencida', data.overdueNextContact, 'Base: data de próximo contato registrada no lead.'],
+              ['Oportunidades em negociação', data.negotiations, 'Base: etapa atual Negociação.'],
+            ].map(([label, value, detail]) => <div className="stat-card" key={label}>
+              <div className="num">{value}</div><div className="label" style={{ fontSize: 12 }}>{label}</div>
+              <div style={{ fontSize: 11, opacity: .65, marginTop: 8 }}>{detail}</div>
+            </div>)}
+          </div>
+        </div>
         <div style={{ marginTop: 24 }}>
           <h3>Distribuição atual do funil</h3>
+          <p style={{ fontSize: 12, opacity: .7 }}>Barras relativas à maior etapa do filtro atual; o número à direita é a quantidade de leads.</p>
           {data.byStage.map((stage) => (
             <div key={stage.name} style={{ display: 'grid', gridTemplateColumns: 'minmax(105px, 160px) 1fr 36px', gap: 12, alignItems: 'center', margin: '10px 0' }}>
               <span style={{ fontSize: 13 }}>{stage.name}</span>
               <div style={{ background: 'var(--border)', borderRadius: 5, height: 13, overflow: 'hidden' }}>
-                <div style={{ width: (data.total ? stage.count / data.total * 100 : 0) + '%', background: 'var(--gold)', height: '100%' }} />
+                <div style={{ width: (Math.max(1, ...data.byStage.map((item) => item.count)) ? stage.count / Math.max(1, ...data.byStage.map((item) => item.count)) * 100 : 0) + '%', background: 'var(--gold)', height: '100%' }} />
               </div>
               <strong>{stage.count}</strong>
             </div>
