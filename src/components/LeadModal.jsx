@@ -194,6 +194,7 @@ export default function LeadModal({ lead, tasks, onClose, onSave, onAddInteracti
               <select id="f-canal" value={canal} onChange={(e) => setCanal(e.target.value)}>
                 {canalOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
+              {canal === 'Parceiro' && <small>Use o telefone do parceiro quando ele indicar clientes diferentes. Neste canal, o mesmo número pode aparecer em vários leads.</small>}
             </div>
           </div>
           <div className="field-row">
