@@ -72,7 +72,14 @@ header.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-
 /* SHADOW MODE - FOLLOW-UPS SUGERIDOS (Fase 2C.2B) */
 .followup-section{margin-bottom:24px;}
 .followup-subtitle{font-size:12px;color:var(--text-dim);margin:0 0 14px;}
-.followup-list{display:flex;flex-direction:column;}
+/* Grade compacta: cinco cards por linha no desktop, sem alterar as ações. */
+.followup-list{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;align-items:start;}
+.followup-list .followup-card{min-width:0;margin-bottom:0;overflow-wrap:anywhere;}
+.followup-list .followup-card-actions .icon-btn{min-width:0;text-align:center;}
+@media(max-width:1500px){.followup-list{grid-template-columns:repeat(4,minmax(0,1fr));}}
+@media(max-width:1100px){.followup-list{grid-template-columns:repeat(3,minmax(0,1fr));}}
+@media(max-width:760px){.followup-list{grid-template-columns:repeat(2,minmax(0,1fr));}}
+@media(max-width:480px){.followup-list{grid-template-columns:minmax(0,1fr);}}
 .followup-card{display:block;width:100%;text-align:left;font-family:inherit;cursor:pointer;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:12px;margin-bottom:8px;color:var(--text);}
 .followup-card:hover{border-color:var(--blue);}
 .followup-card.compact{padding:9px 12px;}
