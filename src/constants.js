@@ -5,7 +5,7 @@ export const STAGES = ['Novo Lead', 'Ligação', 'Qualificação', 'Atendimento'
 // 'Consórcio', inalterado. Nunca inferir um produto real (ex.
 // "Consórcio") para um lead cujo produto é desconhecido.
 export const PRODUTOS = ['Consórcio', 'Carta Contemplada', 'Home Equity', 'Financiamento', 'Imóvel', 'A identificar'];
-export const CANAIS = ['Facebook Marketplace', 'Instagram', 'TikTok', 'LinkedIn', 'Site Próprio', 'Prospecção Ativa', 'Indicação', 'Attemics', 'Insta Felipe', 'CRM Conseg', 'Parceiro'];
+export const CANAIS = ['Facebook Marketplace', 'Instagram', 'TikTok', 'LinkedIn', 'Site Próprio', 'Prospecção Ativa', 'Indicação', 'Cliente', 'Attemics', 'Insta Felipe', 'CRM Conseg', 'Parceiro'];
 export const CATS_TASK = ['Follow-up', 'Conteúdo', 'Agenda/Ligação', 'Operacional'];
 export const DIAS_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 export const PROD_COLOR = {
