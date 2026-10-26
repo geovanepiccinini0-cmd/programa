@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DIAS_SEMANA, CONTACT_ATTEMPT_TYPES } from '../constants.js';
-import { todayStr, normalizeBackup } from '../utils.js';
+import { todayStr, normalizeBackup, leadIsActive } from '../utils.js';
 import { leadsApi, tasksApi, templatesApi, interactionsApi, auditLogApi, followUpStagePoliciesApi, followUpSnoozesApi } from '../lib/db.js';
 import { supabase } from '../lib/supabaseClient.js';
 import { buildStagePolicyOverridesMap, shouldApplyStagePolicyResult } from '../lib/followUpPolicyConfig.js';
 import { buildSnoozeMap, shouldApplySnoozeResult, computeSnoozeUntil } from '../lib/followUpSnooze.js';
-import { buildAutoStageTaskAction, hasPendingAutoStageTask } from '../lib/autoStageTasks.js';
+import { buildAutoStageTaskAction, hasPendingAutoStageTask, addLocalDaysStr } from '../lib/autoStageTasks.js';
 
 // Infraestrutura RESERVADA para um futuro motor de automações comerciais
 // (lead sem resposta, pós-proposta, reativação etc.) — ver decisão em
@@ -199,6 +199,36 @@ export function computeCommercialInteractionData(leadId, action, userId) {
     metadata: { ...config.metadata, source: 'user' },
     createdBy: userId || null,
   };
+}
+
+// Pura, determinística, sem Supabase/React — mesmo princípio de
+// autoStageTasks.js/followUpSnooze.js: decide O QUE deveria mudar,
+// nunca escreve nada. `now` é sempre injetado pelo chamador.
+//
+// Pedido do usuário: registrar uma ATIVIDADE comercial no card do
+// lead (qualquer uma das 6 ações de COMMERCIAL_INTERACTION_ACTIONS —
+// ligação, WhatsApp, reunião, proposta) não pode deixar o lead "SEM
+// PRÓXIMA AÇÃO" (leadHasNoNextAction, utils.js) só porque ninguém
+// preencheu manualmente um "próximo contato". Esta função preenche
+// `proximoContato` automaticamente para o dia seguinte (civil, local
+// — nunca UTC, mesma correção já aplicada em autoStageTasks.js) toda
+// vez que uma interação é registrada, com duas exceções:
+// 1) o lead JÁ TEM um proximoContato definido — nunca sobrescreve uma
+//    decisão explícita do próprio vendedor, mesmo que esteja no
+//    passado (vencida): se ele quis um prazo diferente, este não é o
+//    lugar de corrigir isso sozinho;
+// 2) o lead está em etapa terminal (Ganho/Perdido, leadIsActive) —
+//    nunca agenda um próximo contato para um negócio já encerrado.
+// Quando o resultado não é `null`, o chamador (registerCommercialInteraction,
+// mais abaixo) persiste via leadsApi.update e reconcilia a tarefa
+// "Contato: {nome}" pelo MESMO mecanismo já existente
+// (reconcileLeadAgendaActions) — nenhuma automação nova de tarefas
+// aqui, só preenche o campo que já aciona tudo o mais.
+export function computeAutoNextContatoAfterInteraction(lead, actionKey, now) {
+  if (!lead || !COMMERCIAL_INTERACTION_ACTIONS[actionKey]) return null;
+  if (!leadIsActive(lead)) return null;
+  if (lead.proximoContato) return null;
+  return { proximoContato: addLocalDaysStr(now, 1), proximoContatoHorario: '' };
 }
 
 // --- Fase 2A.1 — três relógios de atividade/contato, a partir de uma
@@ -937,9 +967,36 @@ export function useAppState(userId) {
     insertInteractionAndTrack(computeNoteInteractionData(leadId, content, userId), setInteractions)
   ), [userId]);
 
-  const registerCommercialInteraction = useCallback((leadId, action) => (
-    insertInteractionAndTrack(computeCommercialInteractionData(leadId, action, userId), setInteractions)
-  ), [userId]);
+  // Pedido do usuário — registrar qualquer atividade comercial
+  // (ligação, WhatsApp, reunião, proposta) nunca mais deixa o lead
+  // "SEM PRÓXIMA AÇÃO" sozinho: se `computeAutoNextContatoAfterInteraction`
+  // decidir que há um prazo a agendar (sempre que o lead ainda não
+  // tem nenhum `proximoContato` definido — nunca sobrescreve uma
+  // escolha já feita pelo vendedor), persiste exatamente como
+  // saveLead/moveStage/setLeadStage já fazem: `leadsApi.update` +
+  // `reconcileLeadAgendaActions` (a mesma reconciliação que já cria/
+  // atualiza a tarefa "Contato: {nome}" sempre que `proximoContato`
+  // muda) — nenhum mecanismo novo de tarefas, só reaproveita o que já
+  // existe. A interação em si (`inserted`, o valor devolvido por esta
+  // função) nunca é afetada por uma falha aqui — mesmo princípio
+  // defensivo de logStageChange/maybeCreateAutoStageTask: um problema
+  // ao agendar o próximo contato nunca derruba o registro da
+  // atividade que já foi salvo com sucesso.
+  const registerCommercialInteraction = useCallback(async (leadId, action) => {
+    const inserted = await insertInteractionAndTrack(computeCommercialInteractionData(leadId, action, userId), setInteractions);
+    try {
+      const lead = leads.find((l) => l.id === leadId);
+      const autoNext = computeAutoNextContatoAfterInteraction(lead, action, new Date());
+      if (autoNext) {
+        const updated = await leadsApi.update(leadId, { ...lead, ...autoNext, ultimaAtualizacao: todayStr() });
+        setLeads((prev) => prev.map((l) => (l.id === leadId ? updated : l)));
+        await applyLeadAgendaActions(reconcileLeadAgendaActions([updated], tasks), setTasks);
+      }
+    } catch (e) {
+      console.warn('Não foi possível agendar automaticamente a próxima ação após esta atividade:', e);
+    }
+    return inserted;
+  }, [userId, leads, tasks]);
 
   const addTask = useCallback(async (titulo, categoria, data, horario) => {
     const inserted = await tasksApi.insert({ titulo, categoria, data, horario, concluida: false, leadId: null, origem: 'manual' });

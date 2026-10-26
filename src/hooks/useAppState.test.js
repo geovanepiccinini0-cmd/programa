@@ -17,7 +17,7 @@ import {
   computeStageTimestamps, computeStageChangeInteraction, shouldClearNextContato,
   computeNoteInteractionData,
   computeLastActivityAt, computeLastContactAttemptAt, computeLastCustomerEngagementAt,
-  computeCommercialInteractionData,
+  computeCommercialInteractionData, computeAutoNextContatoAfterInteraction,
   shouldOfferResultCapture, runCompleteTaskWithResult,
   logStageChange, insertInteractionAndTrack, fetchInteractionsForUser,
   applySnoozeRealtimeChange, shouldSkipSnoozeRealtimeEvent,
@@ -424,6 +424,58 @@ describe('Fase 2A.2 — computeCommercialInteractionData (registro rápido de in
 
   it('9) ação inválida falha de maneira previsível (erro explícito, não payload incorreto)', () => {
     expect(() => computeCommercialInteractionData('l1', 'acao_que_nao_existe', 'user-abc')).toThrow();
+  });
+});
+
+// Pedido do usuário — registrar uma atividade comercial não pode
+// deixar o lead "SEM PRÓXIMA AÇÃO" sozinho. Fixa o fuso em
+// America/Sao_Paulo, ANTES de qualquer uso de Date neste describe,
+// mesmo cuidado já aplicado em autoStageTasks.test.js (achado 4 da
+// revisão do PR #76) para reproduzir o dia civil local de verdade.
+process.env.TZ = 'America/Sao_Paulo';
+
+describe('computeAutoNextContatoAfterInteraction — "próxima ação automática" após registrar atividade', () => {
+  const NOW = new Date('2026-10-26T15:00:00.000Z'); // 12:00 local (America/Sao_Paulo)
+
+  function makeLead(overrides = {}) {
+    return { id: 'lead-1', nome: 'Lilliane', etapa: 'Proposta', proximoContato: '', ...overrides };
+  }
+
+  it.each(['call_connected', 'call_no_answer', 'whatsapp_sent', 'whatsapp_received', 'meeting_held', 'proposal_sent'])(
+    'ação "%s" sem proximoContato definido -> agenda para amanhã (dia civil local)',
+    (action) => {
+      const result = computeAutoNextContatoAfterInteraction(makeLead(), action, NOW);
+      expect(result).toEqual({ proximoContato: '2026-10-27', proximoContatoHorario: '' });
+    },
+  );
+
+  it('lead já tem proximoContato definido -> null, nunca sobrescreve a escolha do vendedor', () => {
+    const lead = makeLead({ proximoContato: '2026-11-05' });
+    expect(computeAutoNextContatoAfterInteraction(lead, 'proposal_sent', NOW)).toBeNull();
+  });
+
+  it('proximoContato já definido e VENCIDO (no passado) -> ainda assim null, nunca corrige sozinho', () => {
+    const lead = makeLead({ proximoContato: '2020-01-01' });
+    expect(computeAutoNextContatoAfterInteraction(lead, 'proposal_sent', NOW)).toBeNull();
+  });
+
+  it.each(['Ganho', 'Perdido'])('lead em etapa terminal "%s" -> null, nunca agenda contato para negócio encerrado', (etapa) => {
+    const lead = makeLead({ etapa, proximoContato: '' });
+    expect(computeAutoNextContatoAfterInteraction(lead, 'proposal_sent', NOW)).toBeNull();
+  });
+
+  it('ação inválida/desconhecida -> null, nunca lança', () => {
+    expect(computeAutoNextContatoAfterInteraction(makeLead(), 'acao_que_nao_existe', NOW)).toBeNull();
+  });
+
+  it('lead ausente -> null, nunca lança', () => {
+    expect(computeAutoNextContatoAfterInteraction(null, 'proposal_sent', NOW)).toBeNull();
+  });
+
+  it('usa o dia civil LOCAL, nunca o dia em UTC (mesmo achado 4 da revisão do PR #76)', () => {
+    const lateNightLocal = new Date('2026-10-27T02:30:00.000Z'); // 23:30 de 26/10 em America/Sao_Paulo
+    const result = computeAutoNextContatoAfterInteraction(makeLead(), 'whatsapp_sent', lateNightLocal);
+    expect(result.proximoContato).toBe('2026-10-27'); // hoje local (26/10) + 1 dia civil
   });
 });
 

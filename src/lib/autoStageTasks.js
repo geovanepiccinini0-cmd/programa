@@ -89,7 +89,11 @@ export const AUTO_STAGE_TASK_RULES = {
 // a aritmética é em CAMPOS de calendário (dia civil), não em instante
 // absoluto, um horário de verão no meio do intervalo não desloca o
 // resultado em uma hora como aconteceria somando 86400000ms fixos.
-function addLocalDaysStr(now, days) {
+// Exportada (reaproveitada por useAppState.js:
+// computeAutoNextContatoAfterInteraction, "próxima ação automática
+// após registrar atividade comercial") — mesma aritmética de
+// calendário local, nunca duplicada uma terceira vez.
+export function addLocalDaysStr(now, days) {
   const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + days);
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
