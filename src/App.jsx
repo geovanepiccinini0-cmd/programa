@@ -41,7 +41,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
   const [activeTab, setActiveTab] = useState('hoje');
   const [filterProduto, setFilterProduto] = useState('Todos');
   const [filterStale, setFilterStale] = useState(false);
-  const [sortOrder, setSortOrder] = useState('padrao');
+  const [sortOrder, setSortOrder] = useState('novo');
   const [searchQuery, setSearchQuery] = useState('');
   const [leadModalOpen, setLeadModalOpen] = useState(false);
   const [editingLead, setEditingLead] = useState(null);
