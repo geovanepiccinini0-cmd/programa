@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildCommercialDashboard } from './MetricasView.jsx';
 
 const lead = (id, overrides = {}) => ({
@@ -9,6 +9,8 @@ const lead = (id, overrides = {}) => ({
 const now = new Date('2026-10-12T12:00:00Z');
 
 describe('buildCommercialDashboard', () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(now); });
+  afterEach(() => vi.useRealTimers());
   it('inclui os leads de todos os responsáveis, inclusive administrador, sem duplicar valores', () => {
     const data = buildCommercialDashboard([
       lead('1'), lead('2', { userId: 'admin', etapa: 'Ganho' }),

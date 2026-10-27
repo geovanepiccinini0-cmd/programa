@@ -1,74 +1,107 @@
-import { useEffect, useMemo, useState } from 'react';
-import { STAGES } from '../constants.js';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { leadsApi, profilesApi } from '../lib/db.js';
-import { fmtBRL, leadValor, getStaleLeads } from '../utils.js';
+import { buildCommercialDashboard, dashboardCSV } from '../lib/commercialDashboard.js';
+import { fmtBRL, todayStr } from '../utils.js';
+import Icon from './Icon.jsx';
+import ProductInsights from './ProductInsights.jsx';
 
-// O período filtra a data de cadastro, não a data de fechamento.
-// Sem histórico completo de mudanças, os indicadores são uma fotografia
-// do estágio ATUAL dos leads captados no intervalo escolhido.
-export function buildCommercialDashboard(leads, { period = 'all', product = 'Todos', owner = 'Todos', now = new Date() } = {}) {
-  const cutoff = period === 'all' ? null : new Date(now.getTime() - Number(period) * 86400000);
-  const scoped = leads.filter((lead) => {
-    if (lead.deletedAt) return false;
-    if (product !== 'Todos' && lead.produto !== product) return false;
-    if (owner !== 'Todos' && (lead.userId || '') !== owner) return false;
-    if (!cutoff) return true;
-    const created = lead.createdAt || lead.criadoEm;
-    if (!created) return false;
-    const date = new Date(created);
-    return !Number.isNaN(date.getTime()) && date >= cutoff && date <= now;
-  });
-  const open = scoped.filter((lead) => !['Ganho', 'Perdido'].includes(lead.etapa));
-  const won = scoped.filter((lead) => lead.etapa === 'Ganho');
-  const lost = scoped.filter((lead) => lead.etapa === 'Perdido');
-  const pipeline = open.reduce((sum, lead) => sum + leadValor(lead), 0);
-  // Cadastro desatualizado NÃO significa necessariamente falta de contato.
-  const staleRegistrations = getStaleLeads(open).length;
-  const today = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
-  const overdueNextContact = open.filter((lead) => lead.proximoContato && lead.proximoContato < today).length;
-  const negotiations = open.filter((lead) => lead.etapa === 'Negociação').length;
-  const byStage = STAGES.map((stage) => ({
-    name: stage,
-    count: scoped.filter((lead) => lead.etapa === stage).length,
-  }));
-  const group = (key) => Object.entries(scoped.reduce((acc, lead) => {
-    const name = key === 'userId' ? (lead.userId || 'Sem responsável') : (lead[key] || 'Não informado');
-    if (!acc[name]) acc[name] = { name, count: 0, won: 0, lost: 0, pipeline: 0 };
-    acc[name].count += 1;
-    if (lead.etapa === 'Ganho') acc[name].won += 1;
-    if (lead.etapa === 'Perdido') acc[name].lost += 1;
-    if (!['Ganho', 'Perdido'].includes(lead.etapa)) acc[name].pipeline += leadValor(lead);
-    return acc;
-  }, {})).map(([, value]) => value).sort((a, b) => b.count - a.count);
-  return {
-    total: scoped.length, open: open.length, won: won.length, lost: lost.length,
-    pipeline, staleRegistrations, overdueNextContact, negotiations, currentWonRate: scoped.length ? won.length / scoped.length : 0,
-    byStage, byOwner: group('userId'), byProduct: group('produto'), byChannel: group('canal'),
-  };
+export { buildCommercialDashboard } from '../lib/commercialDashboard.js';
+const PERIODS = { all: 'Todo o histórico', 7: 'Últimos 7 dias', 30: 'Últimos 30 dias', 90: 'Últimos 90 dias' };
+const GROUPS = { byProduct: 'Produto', byChannel: 'Origem', byOwner: 'Responsável', byLostReason: 'Motivo de perda' };
+const percent = (value) => value.toLocaleString('pt-BR', { style: 'percent', maximumFractionDigits: 1 });
+
+function Bars({ rows, stage = false }) {
+  const maximum = Math.max(1, ...rows.map((row) => row.count));
+  if (!rows.length) return <p className="chart-empty">Sem dados para os filtros selecionados.</p>;
+  return <div className={stage ? 'chart-bars stage-bars' : 'chart-bars'}>{rows.map((row) => (
+    <div className="chart-bar-row" key={row.name}><span>{row.label || row.name}</span><div className="chart-track" aria-hidden="true"><div className={`chart-fill ${row.name === 'Ganho' ? 'won' : row.name === 'Negociação' ? 'negotiation' : ''}`} style={{ width: `${row.count / maximum * 100}%` }} /></div><strong>{row.count}</strong></div>
+  ))}</div>;
 }
 
-const cardStyle = { minWidth: 0 };
-const tableStyle = { width: '100%', borderCollapse: 'collapse' };
-const cellStyle = { padding: '10px 8px', borderBottom: '1px solid var(--border)', textAlign: 'left' };
+function AcquisitionChart({ acquisition }) {
+  const container = useRef(null);
+  const [width, setWidth] = useState(480);
+  useEffect(() => {
+    if (!container.current || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(([entry]) => { if (entry.contentRect.width > 0) setWidth(entry.contentRect.width); });
+    observer.observe(container.current);
+    return () => observer.disconnect();
+  }, []);
+  const { bins, undated } = acquisition;
+  const height = 210, left = 32, right = 16, top = 22, bottom = 40;
+  const maximum = Math.max(1, ...bins.map((bin) => bin.count));
+  const x = (i) => bins.length === 1 ? width / 2 : left + i * (width - left - right) / (bins.length - 1);
+  const y = (count) => height - bottom - count / maximum * (height - top - bottom);
+  const path = bins.map((bin, i) => `${i ? 'L' : 'M'}${x(i)},${y(bin.count)}`).join(' ');
+  const tickStep = Math.max(1, Math.ceil((bins.length - 1) / (width < 400 ? 2 : 3)));
+  return <div ref={container} className="acquisition-chart">
+    {!bins.length ? <p className="chart-empty">Nenhum cadastro com data válida nesta seleção.</p> : <>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Evolução da captação: quantidade de novos cadastros por intervalo">
+        <title>Evolução da captação</title><desc>{bins.map((bin) => `${bin.range}: ${bin.count} leads`).join('; ')}</desc>
+        {[0, maximum].map((count) => <g key={count}><line x1={left} x2={width - right} y1={y(count)} y2={y(count)} className="chart-grid-line"/><text x={left - 8} y={y(count) + 4} textAnchor="end">{count}</text></g>)}
+        {bins.length > 1 && <path d={`${path} L${x(bins.length - 1)},${height - bottom} L${x(0)},${height - bottom} Z`} className="acquisition-area"/>}
+        <path d={path} className="acquisition-line"/>
+        {bins.map((bin, i) => <g key={bin.date}><circle cx={x(i)} cy={y(bin.count)} r="4" className="acquisition-point"><title>{bin.range}: {bin.count} leads</title></circle>{(i % tickStep === 0 || i === bins.length - 1) && <><text x={x(i)} y={height - 18} textAnchor={i === 0 ? 'start' : i === bins.length - 1 ? 'end' : 'middle'}>{bin.label}</text><text x={x(i)} y={y(bin.count) - 10} textAnchor={i === 0 ? 'start' : i === bins.length - 1 ? 'end' : 'middle'}>{bin.count}</text></>}</g>)}
+        <text x="0" y="11">Leads</text><text x={width - right} y={height - 2} textAnchor="end">Data de cadastro</text>
+      </svg>
+      <details className="chart-data"><summary>Ver dados da captação</summary><table className="dashboard-table"><thead><tr><th>Intervalo</th><th>Leads</th></tr></thead><tbody>{bins.map((bin) => <tr key={bin.date}><td>{bin.range}</td><td>{bin.count}</td></tr>)}</tbody></table></details>
+    </>}
+    {undated > 0 && <p className="chart-note">{undated} cadastro(s) sem data válida para este gráfico. Permanecem nos totais quando o período é “Todo o histórico”.</p>}
+  </div>;
+}
 
-function Breakdown({ title, rows, withPipeline = false }) {
-  return (
-    <div style={{ overflowX: 'auto', marginTop: 24 }}>
-      <h3>{title}</h3>
-      {rows.length === 0 ? <p className="empty-state">Sem dados para os filtros selecionados.</p> : (
-        <table style={tableStyle}>
-          <thead><tr><th style={cellStyle}>Categoria</th><th style={cellStyle}>Leads</th><th style={cellStyle}>Ganhos</th><th style={cellStyle}>Perdidos</th>{withPipeline && <th style={cellStyle}>Pipeline ativo</th>}</tr></thead>
-          <tbody>{rows.map((row) => <tr key={row.name}>
-            <td style={cellStyle}>{row.label || row.name}</td>
-            <td style={cellStyle}>{row.count}</td>
-            <td style={cellStyle}>{row.won}</td>
-            <td style={cellStyle}>{row.lost}</td>
-            {withPipeline && <td style={cellStyle}>{fmtBRL(row.pipeline)}</td>}
-          </tr>)}</tbody>
-        </table>
-      )}
-    </div>
-  );
+function ReportTable({ rows, category, lostReasons }) {
+  if (!rows.length) return <p className="chart-empty">Sem dados para os filtros selecionados.</p>;
+  return <div className="dashboard-table-scroll"><table className="dashboard-table"><thead><tr><th scope="col">{category}</th><th scope="col">Leads</th>{!lostReasons && <><th scope="col">Ganhos</th><th scope="col">Perdidos</th><th scope="col">Pipeline ativo</th></>}</tr></thead><tbody>{rows.map((row) => <tr key={row.name}><th scope="row">{row.label || row.name}</th><td>{row.count}</td>{!lostReasons && <><td>{row.won}</td><td>{row.lost}</td><td>{fmtBRL(row.pipeline)}</td></>}</tr>)}</tbody></table></div>;
+}
+
+// Pure presentation: the authenticated admin loading path stays in MetricasView.
+export function CommercialDashboard({ leads, profiles, asOf, loading = false, error = null, onRefresh }) {
+  const [period, setPeriod] = useState('all');
+  const [product, setProduct] = useState('Todos');
+  const [owner, setOwner] = useState('Todos');
+  const [view, setView] = useState('overview');
+  const [group, setGroup] = useState('byProduct');
+  const emailById = useMemo(() => Object.fromEntries(profiles.map((profile) => [profile.id, profile.email || 'Sem e-mail'])), [profiles]);
+  const products = useMemo(() => [...new Set(leads.filter((lead) => !lead.deletedAt).map((lead) => lead.produto).filter(Boolean))].sort(), [leads]);
+  const owners = useMemo(() => [...new Set(leads.filter((lead) => !lead.deletedAt).map((lead) => lead.userId).filter(Boolean))], [leads]);
+  const data = useMemo(() => buildCommercialDashboard(leads, { period, product, owner, now: asOf }), [leads, period, product, owner, asOf]);
+  const rows = group === 'byOwner' ? data.byOwner.map((row) => ({ ...row, label: emailById[row.name] || (row.name === 'Sem responsável' ? row.name : 'Usuário sem perfil') })) : data[group];
+  const ownerLabel = owner === 'Todos' ? 'Toda a equipe' : emailById[owner] || 'Usuário sem perfil';
+  function exportCSV() {
+    const csv = dashboardCSV(rows, { category: GROUPS[group], period: PERIODS[period], product, owner: ownerLabel, asOf });
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    const link = document.createElement('a'); link.href = url; link.download = `relatorio-comercial-${group}-${todayStr()}.csv`;
+    document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+  }
+  return <section className="view dashboard" aria-label="Métricas comerciais">
+    <div className="dashboard-heading"><div className="page-heading"><span className="eyebrow">Painel Piccinini · Métricas</span><h1>Visão do seu negócio</h1><p>Oportunidades, origens e prioridades de toda a equipe, incluindo seus leads.</p></div><div className="dashboard-actions"><button className="btn-ghost" type="button" onClick={onRefresh} disabled={loading}>{loading ? 'Atualizando...' : 'Atualizar dados'}</button><button className="btn-primary" type="button" onClick={() => setView('report')}><Icon name="file"/>Ver relatório</button></div></div>
+    <div className="dashboard-filters"><label>Data de cadastro<select value={period} onChange={(event) => setPeriod(event.target.value)} aria-label="Período de cadastro">{Object.entries(PERIODS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>Produto<select value={product} onChange={(event) => setProduct(event.target.value)} aria-label="Produto"><option value="Todos">Todos os produtos</option>{products.map((name) => <option key={name}>{name}</option>)}</select></label><label>Responsável<select value={owner} onChange={(event) => setOwner(event.target.value)} aria-label="Responsável"><option value="Todos">Toda a equipe</option>{owners.map((id) => <option key={id} value={id}>{emailById[id] || 'Usuário sem perfil'}</option>)}</select></label></div>
+    <div className="dashboard-tabs" aria-label="Visualização de métricas"><button type="button" aria-pressed={view === 'overview'} onClick={() => setView('overview')}>Visão geral</button><button type="button" aria-pressed={view === 'report'} onClick={() => setView('report')}>Relatórios</button></div>
+    {loading && <p className="empty-state" role="status">Carregando indicadores...</p>}
+    {error && <p className="empty-state" role="alert">Falha ao carregar dados: {error.message}. Use “Atualizar dados” para tentar novamente.</p>}
+    {!loading && !error && <>
+      <p className="dashboard-scope">Etapas atuais dos leads cadastrados no período selecionado. Não representa fechamentos ocorridos no período.</p>
+      {view === 'overview' ? <>
+        <div className="dashboard-kpis">{[['Leads cadastrados', data.total, 'No período selecionado'], ['Em aberto', data.open, 'Oportunidades ativas'], ['Pipeline ativo', fmtBRL(data.pipeline), 'Crédito / valor dos negócios'], ['Em negociação', data.negotiations, 'Etapa atual do lead']].map(([label, value, detail], index) => <div className={`stat-card ${index === 2 ? 'featured' : ''}`} key={label}><div className="label">{label}</div><div className="num">{value}</div><div className="stat-detail">{detail}</div></div>)}</div>
+        <div className="dashboard-secondary"><span><i className="status-dot won"/><strong>{data.won}</strong> em Ganho</span><span><i className="status-dot lost"/><strong>{data.lost}</strong> em Perdido</span><span><strong>{percent(data.currentWonRate)}</strong> dos cadastros estão em Ganho</span></div>
+        <div className="dashboard-grid">
+          <section className="dashboard-panel"><h2>Evolução da captação</h2><p className="chart-note">Novos cadastros por intervalo · quantidade de leads</p><AcquisitionChart acquisition={data.acquisition}/></section>
+          <section className="dashboard-panel"><h2>Onde estão as oportunidades</h2><p className="chart-note">Distribuição atual pelas 11 etapas · quantidade de leads</p><Bars rows={data.byStage} stage/></section>
+          <section className="dashboard-panel"><h2>De onde vêm seus leads</h2><p className="chart-note">Volume por canal de origem</p><Bars rows={data.byChannel}/></section>
+          <section className="dashboard-panel product-panel"><h2>Interesse por produto</h2><p className="chart-note">Participação no total de cadastros · selecione para explorar</p><ProductInsights key={`${period}|${product}|${owner}`} rows={data.byProduct} total={data.total} onFilter={setProduct} onReport={(name) => { setProduct(name); setGroup('byProduct'); setView('report'); }}/></section>
+        </div>
+        <section className="dashboard-priorities"><div><span className="eyebrow">Prioridades comerciais</span><h2>O que precisa da sua atenção</h2><p>Indicadores podem se sobrepor; não representam quantidade de tarefas.</p></div><div className="priority-grid"><div><strong>{data.overdueNextContact}</strong><span>Próximos contatos vencidos</span><small>Data de próximo contato anterior a hoje.</small></div><div><strong>{data.staleRegistrations}</strong><span>Cadastros sem atualização há 15+ dias</span><small>Última atualização do cadastro; não último contato.</small></div><div><strong>{data.negotiations}</strong><span>Oportunidades em negociação</span><small>Leads atualmente na etapa Negociação.</small></div></div></section>
+      </> : <section className="dashboard-panel report-panel">
+        <div className="report-heading"><div><h2>Relatório comercial</h2><p className="chart-note">{PERIODS[period]} · {product === 'Todos' ? 'Todos os produtos' : product} · {ownerLabel}</p></div><div className="dashboard-actions"><button className="btn-ghost" type="button" onClick={() => window.print()}>Imprimir / PDF</button><button className="btn-primary" type="button" onClick={exportCSV} disabled={!rows.length}>Exportar CSV</button></div></div>
+        <div className="report-groups" aria-label="Agrupamento do relatório">{Object.entries(GROUPS).map(([key, label]) => <button className="chip" type="button" key={key} aria-pressed={group === key} onClick={() => setGroup(key)}>{label}</button>)}</div>
+        {group === 'byLostReason' && <p className="chart-note">Somente leads atualmente em Perdido. Ausência de motivo registrado aparece como “Não informado”.</p>}
+        <ReportTable rows={rows} category={GROUPS[group]} lostReasons={group === 'byLostReason'}/>
+        <p className="report-summary">{data.total} leads na seleção · {data.won} em Ganho · {data.lost} em Perdido · {fmtBRL(data.pipeline)} em pipeline ativo.</p>
+      </section>}
+      <p className="dashboard-footnote">Atualizado em {asOf.toLocaleString('pt-BR')}. Pipeline é crédito/valor do negócio; não é receita, comissão ou previsão garantida. Conversão histórica entre etapas depende de histórico completo.</p>
+    </>}
+  </section>;
 }
 
 export default function MetricasView({ userId }) {
@@ -76,110 +109,15 @@ export default function MetricasView({ userId }) {
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [period, setPeriod] = useState('all');
-  const [product, setProduct] = useState('Todos');
-  const [owner, setOwner] = useState('Todos');
   const [asOf, setAsOf] = useState(() => new Date());
-
-  async function refresh() {
-    setLoading(true);
-    setError(null);
-    try {
-      const [allLeads, allProfiles] = await Promise.all([
-        leadsApi.fetchAllForAdmin(), profilesApi.fetchAll(),
-      ]);
-      setLeads(allLeads);
-      setProfiles(allProfiles);
-      setAsOf(new Date());
-    } catch (err) {
-      setError(err);
-    } finally {
-      setLoading(false);
-    }
-  }
-
+  const [refreshKey, setRefreshKey] = useState(0);
   useEffect(() => {
-    let active = true;
+    let active = true; setLoading(true); setError(null);
     Promise.all([leadsApi.fetchAllForAdmin(), profilesApi.fetchAll()])
-      .then(([allLeads, allProfiles]) => {
-        if (!active) return;
-        setLeads(allLeads);
-        setProfiles(allProfiles);
-        setAsOf(new Date());
-      })
+      .then(([allLeads, allProfiles]) => { if (active) { setLeads(allLeads); setProfiles(allProfiles); setAsOf(new Date()); } })
       .catch((err) => { if (active) setError(err); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [userId]);
-
-  const emailById = useMemo(() => Object.fromEntries(profiles.map((p) => [p.id, p.email || 'Sem e-mail'])), [profiles]);
-  const products = useMemo(() => [...new Set(leads.map((l) => l.produto).filter(Boolean))].sort(), [leads]);
-  const owners = useMemo(() => [...new Set(leads.map((l) => l.userId).filter(Boolean))], [leads]);
-  const data = useMemo(() => buildCommercialDashboard(leads, { period, product, owner, now: asOf }), [leads, period, product, owner, asOf]);
-
-  return (
-    <section className="view active">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <div><h2>Dashboard Comercial</h2><p style={{ opacity: .75 }}>Visão gerencial de toda a equipe, incluindo seus próprios leads.</p></div>
-        <button className="btn-primary" type="button" onClick={refresh} disabled={loading}>{loading ? "Atualizando..." : "Atualizar dados"}</button>
-      </div>
-      <div className="filters" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '18px 0' }}>
-        <label>Cadastros <select aria-label="Período de cadastro" value={period} onChange={(e) => setPeriod(e.target.value)}>
-          <option value="all">Todo o histórico</option><option value="7">Últimos 7 dias</option><option value="30">Últimos 30 dias</option><option value="90">Últimos 90 dias</option>
-        </select></label>
-        <label>Produto <select aria-label="Produto" value={product} onChange={(e) => setProduct(e.target.value)}>
-          <option>Todos</option>{products.map((p) => <option key={p}>{p}</option>)}
-        </select></label>
-        <label>Responsável <select aria-label="Responsável" value={owner} onChange={(e) => setOwner(e.target.value)}>
-          <option value="Todos">Todos</option>{owners.map((id) => <option key={id} value={id}>{emailById[id] || 'Usuário sem perfil'}</option>)}
-        </select></label>
-      </div>
-      {loading && <div className="empty-state">Carregando indicadores...</div>}
-      {error && <div role="alert" className="empty-state" style={{ color: 'var(--red)' }}>Falha ao carregar dados: {error.message}</div>}
-      {!loading && !error && <>
-        <p style={{ fontSize: 13, opacity: .75 }}>Fotografia das etapas atuais dos leads cadastrados no período selecionado. Não representa fechamentos ocorridos no período nem faturamento recebido.</p>
-        <div className="stats">
-          {[
-            ['Leads cadastrados', data.total],
-            ['Oportunidades abertas', data.open],
-            ['Negócios ganhos (etapa atual)', data.won],
-            ['Negócios perdidos (etapa atual)', data.lost],
-            ['Crédito/valor em pipeline ativo', fmtBRL(data.pipeline)],
-            ['% dos cadastrados hoje em Ganho', (data.currentWonRate * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + '%'],
-          ].map(([label, value]) => <div className="stat-card" style={cardStyle} key={label}><div className="num">{value}</div><div className="label">{label}</div></div>)}
-        </div>
-        <div style={{ marginTop: 24, padding: '18px', border: '1px solid var(--border)', borderRadius: 12, background: 'var(--surface)' }}>
-          <h3 style={{ marginTop: 0 }}>Prioridades comerciais</h3>
-          <p style={{ fontSize: 12, opacity: .75, marginBottom: 14 }}>Indicadores de atenção para oportunidades abertas nos filtros selecionados. Podem se sobrepor; não são uma contagem de tarefas.</p>
-          <div className="stats" style={{ marginBottom: 0 }}>
-            {[
-              ['Cadastros sem atualização há 15+ dias', data.staleRegistrations, 'Base: última atualização do cadastro, não último contato.'],
-              ['Próximo contato com data vencida', data.overdueNextContact, 'Base: data de próximo contato registrada no lead.'],
-              ['Oportunidades em negociação', data.negotiations, 'Base: etapa atual Negociação.'],
-            ].map(([label, value, detail]) => <div className="stat-card" key={label}>
-              <div className="num">{value}</div><div className="label" style={{ fontSize: 12 }}>{label}</div>
-              <div style={{ fontSize: 11, opacity: .65, marginTop: 8 }}>{detail}</div>
-            </div>)}
-          </div>
-        </div>
-        <div style={{ marginTop: 24 }}>
-          <h3>Distribuição atual do funil</h3>
-          <p style={{ fontSize: 12, opacity: .7 }}>Barras relativas à maior etapa do filtro atual; o número à direita é a quantidade de leads.</p>
-          {data.byStage.map((stage) => (
-            <div key={stage.name} style={{ display: 'grid', gridTemplateColumns: 'minmax(105px, 160px) 1fr 36px', gap: 12, alignItems: 'center', margin: '10px 0' }}>
-              <span style={{ fontSize: 13 }}>{stage.name}</span>
-              <div style={{ background: 'var(--border)', borderRadius: 5, height: 13, overflow: 'hidden' }}>
-                <div style={{ width: (Math.max(1, ...data.byStage.map((item) => item.count)) ? stage.count / Math.max(1, ...data.byStage.map((item) => item.count)) * 100 : 0) + '%', background: 'var(--gold)', height: '100%' }} />
-              </div>
-              <strong>{stage.count}</strong>
-            </div>
-          ))}
-        </div>
-        <Breakdown title="Desempenho por responsável" rows={data.byOwner.map((row) => ({ ...row, label: emailById[row.name] || (row.name === 'Sem responsável' ? row.name : 'Usuário sem perfil') }))} withPipeline />
-        <Breakdown title="Desempenho por produto" rows={data.byProduct} withPipeline />
-        <Breakdown title="Origem dos leads" rows={data.byChannel} />
-        <p style={{ marginTop: 20, fontSize: 12, opacity: .75 }}>O valor do pipeline é o valor de crédito ou do negócio informado no cadastro; não representa receita, comissão ou previsão garantida. Conversão histórica entre etapas e motivos de perda serão incluídos quando os registros permitirem apuração confiável.</p>
-      </>}
-    </section>
-  );
+  }, [userId, refreshKey]);
+  return <CommercialDashboard leads={leads} profiles={profiles} asOf={asOf} loading={loading} error={error} onRefresh={() => setRefreshKey((value) => value + 1)}/>;
 }

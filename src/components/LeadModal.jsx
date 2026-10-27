@@ -169,7 +169,7 @@ export default function LeadModal({ lead, tasks, onClose, onSave, onAddInteracti
       <div className="modal">
         <h2>{lead ? 'Editar lead' : 'Novo Lead'}</h2>
         {error && (
-          <div style={{ display: 'block', background: '#2a1418', border: '1px solid var(--red)', color: 'var(--red)', padding: '8px 12px', borderRadius: 8, fontSize: 12.5, marginBottom: 12 }}>
+          <div style={{ display: 'block', background: 'var(--danger-soft)', border: '1px solid var(--red)', color: 'var(--red)', padding: '8px 12px', borderRadius: 8, fontSize: 12.5, marginBottom: 12 }}>
             {error}
           </div>
         )}

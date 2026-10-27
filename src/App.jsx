@@ -141,7 +141,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
   }
 
   return (
-    <div className="app">
+    <div className="app crm-shell">
       <Header
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -153,6 +153,8 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
         isAdmin={isAdmin}
       />
 
+      <main className="crm-workspace">
+      {activeTab !== 'metricas' && <div className="page-heading"><span className="eyebrow">Painel Piccinini</span><h1>{{ hoje: 'Seu dia, com clareza', funil: 'Cada oportunidade no seu lugar', rotina: 'Uma rotina que faz acontecer', conversas: 'Suas conversas, organizadas' }[activeTab]}</h1><p>{{ hoje: 'Agenda, retornos e próximas ações para o seu dia.', funil: 'Todos os detalhes dos leads, com uma leitura mais clara.', rotina: 'Organize suas tarefas recorrentes e acompanhe a execução.', conversas: 'Continue seus atendimentos com todo o contexto.' }[activeTab]}</p></div>}
       <AppointmentAlertBanner
         upcoming={appointmentAlerts.upcoming}
         permission={appointmentAlerts.permission}
@@ -230,6 +232,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
         />
       )}
 
+      </main>
       {leadModalOpen && (
         <LeadModal
           lead={editingLead}
