@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { PROD_COLOR } from '../constants.js';
 import { leadsApi, profilesApi } from '../lib/db.js';
 import { buildCommercialDashboard, dashboardCSV } from '../lib/commercialDashboard.js';
 import { fmtBRL, todayStr } from '../utils.js';
 import Icon from './Icon.jsx';
+import ProductInsights from './ProductInsights.jsx';
 
 export { buildCommercialDashboard } from '../lib/commercialDashboard.js';
 const PERIODS = { all: 'Todo o histórico', 7: 'Últimos 7 dias', 30: 'Últimos 30 dias', 90: 'Últimos 90 dias' };
@@ -50,12 +50,6 @@ function AcquisitionChart({ acquisition }) {
   </div>;
 }
 
-function ProductChart({ rows, total }) {
-  let angle = 0;
-  const segments = rows.map((row) => { const start = angle; angle += total ? row.count / total * 360 : 0; return `${PROD_COLOR[row.name] || 'var(--text-dim)'} ${start}deg ${angle}deg`; });
-  return <div className="product-chart"><div className="product-donut" role="img" aria-label={rows.length ? rows.map((row) => `${row.name}: ${row.count} leads`).join('; ') : 'Nenhum lead'} style={{ background: total ? `conic-gradient(${segments.join(',')})` : 'var(--surface-2)' }}><div><strong>{total}</strong><span>leads</span></div></div><div className="product-legend">{rows.length ? rows.map((row) => <div key={row.name}><i aria-hidden="true" style={{ background: PROD_COLOR[row.name] || 'var(--text-dim)' }}/><span>{row.name}</span><strong>{row.count}</strong></div>) : <p className="chart-note">Sem dados nesta seleção.</p>}</div></div>;
-}
-
 function ReportTable({ rows, category, lostReasons }) {
   if (!rows.length) return <p className="chart-empty">Sem dados para os filtros selecionados.</p>;
   return <div className="dashboard-table-scroll"><table className="dashboard-table"><thead><tr><th scope="col">{category}</th><th scope="col">Leads</th>{!lostReasons && <><th scope="col">Ganhos</th><th scope="col">Perdidos</th><th scope="col">Pipeline ativo</th></>}</tr></thead><tbody>{rows.map((row) => <tr key={row.name}><th scope="row">{row.label || row.name}</th><td>{row.count}</td>{!lostReasons && <><td>{row.won}</td><td>{row.lost}</td><td>{fmtBRL(row.pipeline)}</td></>}</tr>)}</tbody></table></div>;
@@ -95,7 +89,7 @@ export function CommercialDashboard({ leads, profiles, asOf, loading = false, er
           <section className="dashboard-panel"><h2>Evolução da captação</h2><p className="chart-note">Novos cadastros por intervalo · quantidade de leads</p><AcquisitionChart acquisition={data.acquisition}/></section>
           <section className="dashboard-panel"><h2>Onde estão as oportunidades</h2><p className="chart-note">Distribuição atual pelas 11 etapas · quantidade de leads</p><Bars rows={data.byStage} stage/></section>
           <section className="dashboard-panel"><h2>De onde vêm seus leads</h2><p className="chart-note">Volume por canal de origem</p><Bars rows={data.byChannel}/></section>
-          <section className="dashboard-panel"><h2>Interesse por produto</h2><p className="chart-note">Participação no total de cadastros</p><ProductChart rows={data.byProduct} total={data.total}/></section>
+          <section className="dashboard-panel product-panel"><h2>Interesse por produto</h2><p className="chart-note">Participação no total de cadastros · selecione para explorar</p><ProductInsights key={`${period}|${product}|${owner}`} rows={data.byProduct} total={data.total} onFilter={setProduct} onReport={(name) => { setProduct(name); setGroup('byProduct'); setView('report'); }}/></section>
         </div>
         <section className="dashboard-priorities"><div><span className="eyebrow">Prioridades comerciais</span><h2>O que precisa da sua atenção</h2><p>Indicadores podem se sobrepor; não representam quantidade de tarefas.</p></div><div className="priority-grid"><div><strong>{data.overdueNextContact}</strong><span>Próximos contatos vencidos</span><small>Data de próximo contato anterior a hoje.</small></div><div><strong>{data.staleRegistrations}</strong><span>Cadastros sem atualização há 15+ dias</span><small>Última atualização do cadastro; não último contato.</small></div><div><strong>{data.negotiations}</strong><span>Oportunidades em negociação</span><small>Leads atualmente na etapa Negociação.</small></div></div></section>
       </> : <section className="dashboard-panel report-panel">
