@@ -1,20 +1,24 @@
 import { PROD_COLOR, TAG_COLOR } from '../constants.js';
 import { classifyLeadPriority, diasDesde, fmtBRL, fmtDate, leadHasNoNextAction, leadValor, todayStr } from '../utils.js';
 
+function FinancialDetail({ label, children, wide }) {
+  return <div className={wide ? 'financial-detail wide' : 'financial-detail'}><span>{label}</span><strong>{children}</strong></div>;
+}
+
 export function DetailLine({ lead }) {
   if (lead.produto === 'Carta Contemplada') {
     const pctEntrada = lead.credito > 0 && lead.entrada != null ? Math.round((Number(lead.entrada) / Number(lead.credito)) * 100) : null;
-    return <div className="card-meta">Entrada {fmtBRL(lead.entrada)}{pctEntrada !== null ? ' (' + pctEntrada + '% do crédito)' : ''} · Parcela {fmtBRL(lead.parcela)}</div>;
+    return <div className="card-financials"><FinancialDetail label="Entrada">{fmtBRL(lead.entrada)}</FinancialDetail><FinancialDetail label="Parcela">{fmtBRL(lead.parcela)}</FinancialDetail>{pctEntrada !== null && <FinancialDetail label="Entrada / crédito" wide>{pctEntrada}% do crédito</FinancialDetail>}</div>;
   }
   if (lead.produto === 'Consórcio') {
-    return <div className="card-meta">Parcela {fmtBRL(lead.parcela)} · Lance {fmtBRL(lead.lance)}</div>;
+    return <div className="card-financials"><FinancialDetail label="Parcela">{fmtBRL(lead.parcela)}</FinancialDetail><FinancialDetail label="Lance">{fmtBRL(lead.lance)}</FinancialDetail></div>;
   }
   if (lead.produto === 'Home Equity') {
     const ltv = lead.valorImovel > 0 && lead.valor != null ? Math.round((Number(lead.valor) / Number(lead.valorImovel)) * 100) : null;
-    return <div className="card-meta">Imóvel avaliado em {fmtBRL(lead.valorImovel)}{ltv !== null ? ' · LTV ' + ltv + '%' : ''}</div>;
+    return <div className="card-financials"><FinancialDetail label="Imóvel avaliado em" wide>{fmtBRL(lead.valorImovel)}</FinancialDetail>{ltv !== null && <FinancialDetail label="LTV" wide>{ltv}%</FinancialDetail>}</div>;
   }
   if (lead.produto === 'Financiamento') {
-    return <div className="card-meta">Entrada {fmtBRL(lead.entrada)} · Parcela {fmtBRL(lead.parcela)}</div>;
+    return <div className="card-financials"><FinancialDetail label="Entrada">{fmtBRL(lead.entrada)}</FinancialDetail><FinancialDetail label="Parcela">{fmtBRL(lead.parcela)}</FinancialDetail></div>;
   }
   return null;
 }
@@ -42,31 +46,30 @@ export function LeadCardBody({ lead, footer }) {
           <div className="card-nome">{lead.nome}</div>
           <div className="card-fone">{lead.telefone || 'sem telefone'}</div>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
-          <span className="prod-badge" style={{ background: PROD_COLOR[lead.produto] || '#888' }}>{lead.produto}</span>
-          {lead.tipo && <span className="badge" style={{ background: 'var(--surface-2)', color: 'var(--text)', whiteSpace: 'nowrap' }}>{lead.tipo}</span>}
+        <div className="card-product">
+          <span className="prod-badge" style={{ '--product-color': lead.produto === 'A identificar' ? 'var(--text-dim)' : PROD_COLOR[lead.produto] || 'var(--text-dim)' }}>{lead.produto}</span>
+          {lead.tipo && <span className="card-type">{lead.tipo}</span>}
         </div>
       </div>
       {(lead.tags && lead.tags.length > 0) || leadHasNoNextAction(lead) ? (
-        <div className="card-meta" style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        <div className="card-tags">
           {lead.tags && lead.tags.map((tag) => (
-            <span key={tag} className="badge" style={{ background: TAG_COLOR[tag] || 'var(--surface-2)', color: '#fff' }}>
+            <span key={tag} className="badge lead-tag" style={{ '--tag-color': TAG_COLOR[tag] || 'var(--text-dim)' }}>
               {tag}
             </span>
           ))}
           {leadHasNoNextAction(lead) && (
-            <span className="badge" style={{ background: 'var(--red)', color: '#fff' }}>SEM PRÓXIMA AÇÃO</span>
+            <span className="badge lead-tag" style={{ '--tag-color': 'var(--red)' }}>SEM PRÓXIMA AÇÃO</span>
           )}
         </div>
       ) : null}
-      <div className="card-valor">{fmtBRL(leadValor(lead))}</div>
+      <div className="card-value-label">{['Consórcio', 'Carta Contemplada'].includes(lead.produto) ? 'Crédito' : 'Valor do negócio'}</div><div className="card-valor">{fmtBRL(leadValor(lead))}</div>
       <DetailLine lead={lead} />
-      <div className={`card-meta ${late ? 'late' : ''}`}>
-        {lead.canal || ''}{lead.cidade ? ' · ' + lead.cidade : ''}{lead.proximoContato ? ' · próx. contato ' + fmtDate(lead.proximoContato) + (lead.proximoContatoHorario ? ' ' + lead.proximoContatoHorario : '') : ''}
-      </div>
-      <div className="card-meta">
+      <div className="card-context">{lead.canal && <div><span>Origem</span>{lead.canal}</div>}{lead.cidade && <div><span>Cidade</span>{lead.cidade}</div>}</div>
+      {lead.proximoContato && <div className={`card-next-contact ${late ? 'late' : ''}`}><strong>{late ? 'Próximo contato vencido' : 'Próximo contato'}</strong><span>{fmtDate(lead.proximoContato)}{lead.proximoContatoHorario ? ' · ' + lead.proximoContatoHorario : ''}</span></div>}
+      <div className="card-meta card-idle">
         {!isFinal && dias !== null ? (
-          isStale ? <span className="badge tag-overdue">SEM CONTATO HÁ {dias}d</span> : `sem contato há ${dias}d`
+          isStale ? <span className="badge tag-overdue">Sem atualização de cadastro há {dias}d</span> : `Sem atualização de cadastro há ${dias}d`
         ) : ''}
       </div>
       {footer}

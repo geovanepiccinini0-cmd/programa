@@ -23,14 +23,14 @@ export default function Login({ onSignIn }) {
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <form onSubmit={handleSubmit} className="modal" style={{ maxWidth: 360, width: '100%' }}>
         <div className="brand" style={{ marginBottom: 18 }}>
-          <div className="brand-mark">CI</div>
+          <img src="/brand/geovane-piccinini.webp" width="520" height="144" alt="Geovane Piccinini — Corretor especialista" />
           <div className="brand-text">
             <h1>Painel Piccinini</h1>
             <span>Entre para acessar seu CRM</span>
           </div>
         </div>
         {error && (
-          <div style={{ background: '#2a1418', border: '1px solid var(--red)', color: 'var(--red)', padding: '8px 12px', borderRadius: 8, fontSize: 12.5, marginBottom: 12 }}>
+          <div role="alert" style={{ background: 'var(--danger-soft)', border: '1px solid var(--red)', color: 'var(--red)', padding: '8px 12px', borderRadius: 8, fontSize: 12.5, marginBottom: 12 }}>
             {error}
           </div>
         )}
