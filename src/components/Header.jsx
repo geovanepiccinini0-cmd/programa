@@ -24,7 +24,6 @@ export default function Header({ activeTab, onTabChange, onNewLead, onOpenExport
     <aside className="crm-sidebar" aria-label="Navegação principal">
       <div className="brand">
         <img src="/brand/geovane-piccinini.webp" width="520" height="144" alt="Geovane Piccinini — Corretor especialista" />
-        <span className="brand-caption">CRM · Conseg Invest</span>
       </div>
       <div className="sidebar-label">Espaço comercial</div>
       <nav className="tabs" aria-label="Áreas do CRM">
