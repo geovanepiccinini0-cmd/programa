@@ -46,6 +46,14 @@ As regras e percentuais pré-carregados são didáticos. Não representam as con
 
 ## Validação e liberação
 
+### Evolução das regras por assembleia
+
+As regras novas usam percentuais de crédito por parcela: por exemplo 0,30% + 0,15% + 0,15% + 0,20% + 0,20% = 1,00%. A comissão total é calculada; não é necessário converter esses valores manualmente em participações de 100%. A identificação da regra é automática, com descrição opcional. Categorias e planos podem ser consultados por administradora, e os planos novos distinguem integral, reduzida 70% e 50%. Registros legados não são reescritos.
+
+O calendário pode permanecer manual ou usar o corte pelo vencimento do grupo. O corte é configurado na regra, sem uma data global ou uma condição aplicada pelo nome da administradora. Na condição esclarecida por Geovane para a Serello (dia 10, primeiro recebimento no mês seguinte), uma venda em 10/10 segue novembro/dezembro/janeiro; uma venda em 11/10 segue novembro/janeiro/fevereiro. Apenas as parcelas a partir da segunda ganham um mês adicional, sem remover comissão. A data exata do recebimento usa o dia de pagamento da comissão, quando cadastrado; sem ele, o operador confirma a primeira data na venda. O dia da assembleia não é presumido como dia de pagamento da comissão.
+
+As vendas exibem o calendário projetado e congelam a regra escolhida. Condições já confirmadas e movimentos financeiros permanecem intactos. O sistema calcula previsão contratual; não presume pagamento efetivo do cliente ou recebimento bancário.
+
 Testes de dinheiro/calendário/recebimento/caixas, testes PostgreSQL de autorização, revisão, auditoria, ganho atômico, reconciliação e rejeição de recebimento excessivo; suite anterior e builds normal e deploy-preview.
 
 Antes de produção: aprovação visual/funcional de Geovane, verificar os papéis reais de administrador, aplicar e validar a migração no ambiente destinado à operação, conferir pendências antigas, cadastrar regras reais e validar a base de saldo/recebimentos. O PR permanece sem merge até essa aprovação.

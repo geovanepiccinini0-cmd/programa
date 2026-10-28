@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { uid, cents, money, dateLabel, businessDate, monthOf, confirmSale, cancelSale, netPaid, exportCSV } from './model.js';
+import { uid, cents, money, dateLabel, businessDate, monthOf, confirmSale, cancelSale, exportCSV, samePlan, canonicalPlan, CONSORTIUM_PLANS, ruleFirstDue, consortiumSchedule, validDate } from './model.js';
 import { Field, Amount, Panel, Table, Empty, Status, Kpis } from './ui.jsx';
 
-const blankSale=()=>({id:uid(),name:'',product:'Carta Contemplada',channel:'Não informado',soldAt:businessDate(),firstDue:businessDate(),credit:'',saleValue:'',costValue:'',officePercent:50,administratorId:'',modality:'Imobiliário',plan:'Parcela integral',ruleId:'',status:'draft',installments:[]});
+const blankSale=()=>({id:uid(),name:'',product:'Carta Contemplada',channel:'Não informado',soldAt:businessDate(),firstDue:'',credit:'',saleValue:'',costValue:'',officePercent:50,administratorId:'',modality:'Imobiliário',plan:'Parcela integral',ruleId:'',status:'draft',installments:[]});
 const toForm=s=>({...s,credit:s.credit==null||s.credit===''?'':s.credit/100,saleValue:s.saleValue==null||s.saleValue===''?'':s.saleValue/100,costValue:s.costValue==null||s.costValue===''?'':s.costValue/100,firstDue:s.firstDue || ''});
 export default function SalesView({state,commit,run,saving,month,setMonth,leads=[]}) {
   const [editing,setEditing]=useState(null),[query,setQuery]=useState(''),[scope,setScope]=useState('all'),[report,setReport]=useState(false);
@@ -10,8 +10,19 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
   const closed=state.sales.filter(s=>s.status==='confirmed'&&monthOf(s.soldAt)===month);
   const contemplated=closed.filter(s=>s.product==='Carta Contemplada');
   const sum=(rows,key)=>rows.reduce((n,s)=>n+(s[key]||0),0);
-  const field=(key,value)=>setEditing(s=>({...s,[key]:value}));
-  const rules=state.rules.filter(r=>r.active&&r.administratorId===editing?.administratorId&&r.modality===editing?.modality&&r.plan===editing?.plan);
+  const field=(key,value)=>setEditing(s=>{
+    const next={...s,[key]:value};
+    if(next.product==='Consórcio'&&['soldAt','ruleId','firstDue'].includes(key))next.firstDue=ruleFirstDue(state.rules.find(r=>r.id===next.ruleId),next.soldAt,next.firstDue);
+    return next;
+  });
+  const adminRules=state.rules.filter(r=>r.active&&r.administratorId===editing?.administratorId);
+  const categoryOptions=[...new Set([...adminRules.map(r=>r.modality),editing?.modality].filter(Boolean))];
+  const planOptions=[...new Set([...adminRules.filter(r=>r.modality===editing?.modality).map(r=>canonicalPlan(r.plan)),...CONSORTIUM_PLANS,canonicalPlan(editing?.plan)].filter(Boolean))];
+  const rules=adminRules.filter(r=>r.modality===editing?.modality&&samePlan(r.plan,editing?.plan));
+  const selectedRule=editing?.product==='Consórcio'&&state.rules.find(r=>r.id===editing.ruleId);
+  const projectedFirst=selectedRule?ruleFirstDue(selectedRule,editing.soldAt,editing.firstDue):editing?.firstDue;
+  let calendarPreview=[];
+  if(selectedRule&&validDate(projectedFirst)&&validDate(editing?.soldAt)){try{calendarPreview=consortiumSchedule(selectedRule,editing.soldAt,projectedFirst);}catch{/* Validation appears when confirming. */}}
   const locked=editing&&(editing.status==='cancelled'||state.receipts.some(r=>r.saleId===editing.id));
   async function save(event,status) {
     event.preventDefault();
@@ -44,7 +55,7 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
         <Field label="Canal de origem" value={editing.channel} onChange={e=>field('channel',e.target.value)} required/>
         <Amount label="Crédito contratado (R$)" value={editing.credit} onChange={v=>field('credit',v)} required/>
         <Field label="Data de fechamento" type="date" value={editing.soldAt} onChange={e=>field('soldAt',e.target.value)} required/>
-        <Field label="Primeiro recebimento previsto" type="date" value={editing.firstDue} onChange={e=>field('firstDue',e.target.value)} required/>
+        <Field label="Primeiro recebimento previsto" type="date" value={projectedFirst||''} onChange={e=>field('firstDue',e.target.value)} readOnly={!!selectedRule?.calendar?.receiptDay} required/>
         <Field label="Referência de contrato / cota" value={editing.contract||''} onChange={e=>field('contract',e.target.value)}/>
         {editing.product==='Carta Contemplada'?<>
           <Amount label="Valor de venda da cota (R$)" value={editing.saleValue} onChange={v=>field('saleValue',v)} required/>
@@ -52,12 +63,14 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
           <Field label="Divisão da comissão"><select value={editing.officePercent} onChange={e=>field('officePercent',Number(e.target.value))}><option value={50}>50% escritório / 50% Geovane</option><option value={60}>60% escritório / 40% Geovane</option></select></Field>
         </>:<>
           <Field label="Administradora"><select value={editing.administratorId||''} onChange={e=>setEditing(s=>({...s,administratorId:e.target.value,ruleId:''}))} required><option value="">Selecione</option>{state.administrators.filter(a=>a.active).map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select></Field>
-          <Field label="Modalidade"><select value={editing.modality||''} onChange={e=>setEditing(s=>({...s,modality:e.target.value,ruleId:''}))} required><option value="">Selecione</option>{['Imobiliário','Veículos','Outros'].map(v=><option key={v}>{v}</option>)}</select></Field>
-          <Field label="Plano"><select value={editing.plan||''} onChange={e=>setEditing(s=>({...s,plan:e.target.value,ruleId:''}))} required><option value="">Selecione</option>{['Meia parcela','Parcela reduzida','Parcela integral'].map(v=><option key={v}>{v}</option>)}</select></Field>
+          <Field label="Categoria do consórcio"><select value={editing.modality||''} onChange={e=>setEditing(s=>({...s,modality:e.target.value,ruleId:''}))} required><option value="">Selecione</option>{categoryOptions.map(v=><option key={v}>{v}</option>)}</select></Field>
+          <Field label="Plano"><select value={canonicalPlan(editing.plan)||''} onChange={e=>setEditing(s=>({...s,plan:e.target.value,ruleId:''}))} required><option value="">Selecione</option>{planOptions.map(v=><option key={v}>{v}</option>)}</select></Field>
           <Field label="Regra de comissionamento"><select value={editing.ruleId||''} onChange={e=>field('ruleId',e.target.value)} required><option value="">Selecione a regra vigente</option>{rules.map(r=><option value={r.id} key={r.id}>{r.name} · {r.commissionBps/100}%</option>)}</select></Field>
         </>}
         <Field label="Observações"><textarea value={editing.notes||''} onChange={e=>field('notes',e.target.value)} rows="2"/></Field>
       </div>
+      {selectedRule?.calendar?.mode==='assembly'&&<div className="fin-callout">Vencimento/corte do grupo: dia {selectedRule.calendar.cutoffDay}. {Number(editing.soldAt?.slice(8,10))>selectedRule.calendar.cutoffDay?'Venda após o corte: um mês de intervalo adicional a partir da segunda comissão.':'Venda até o corte: calendário normal.'} {!selectedRule.calendar.receiptDay&&'Confirme o dia previsto de pagamento da comissão; ele não é o vencimento do grupo.'}</div>}
+      {calendarPreview.length>0&&<div className="fin-calculation"><span>Calendário projetado<strong style={{fontSize:14}}>{calendarPreview.map((p,i)=>`${i+1}ª: ${dateLabel(p.due)}`).join(' · ')}</strong></span></div>}
       {editing.product==='Carta Contemplada'&&<div className="fin-calculation"><span>Comissão total<strong>{editing.saleValue!==''&&editing.costValue!==''?money(Math.round((Number(editing.saleValue)-Number(editing.costValue))*100)):'Pendente'}</strong></span><span>Sua parte antes de despesas<strong>{editing.saleValue!==''&&editing.costValue!==''?money(Math.round((Number(editing.saleValue)-Number(editing.costValue))*100)-Math.round(Math.round((Number(editing.saleValue)-Number(editing.costValue))*100)*editing.officePercent/100)):'Pendente'}</strong></span></div>}
       <div className="fin-actions"><button className="btn-primary" type="submit">Confirmar venda e previsão</button>{editing.status!=='confirmed'&&<button type="button" onClick={e=>save(e,'draft')}>Salvar pendente</button>}</div></fieldset></form>
       {locked&&editing.ruleSnapshot&&<p className="fin-note">Regra preservada: {editing.ruleSnapshot.name} · {editing.ruleSnapshot.commissionBps/100}% · {editing.installments.length} parcelas.</p>}
