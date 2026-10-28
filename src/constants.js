@@ -1,4 +1,4 @@
-export const STAGES = ['Novo Lead', 'Ligação', 'Qualificação', 'Atendimento', 'Proposta', 'Negociação', 'Follow-up 1', 'Follow-up 2', 'Follow-up 3', 'Ganho', 'Perdido'];
+export const STAGES = ['Novo Lead', 'Qualificação', 'Atendimento', 'Proposta', 'Negociação', 'Follow-up 1', 'Follow-up 2', 'Follow-up 3', 'Ganho', 'Perdido'];
 // 'A identificar' (Fase 3.3.1) — estado oficial para leads criados por
 // inbound automático antes de o produto ser conhecido. Adicionado ao
 // FINAL da lista: o default da criação manual (PRODUTOS[0]) permanece
