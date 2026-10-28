@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { canConfirmHistoricalRule, historicalRuleConfirmation, hasHistoricalRuleConfirmation } from './historicalSales.js';
 import { fillSaleFromLead } from './leadSale.js';
 import { categoryOptions as consortiumCategories } from './categories.js';
 import { uid, cents, money, dateLabel, businessDate, monthOf, confirmSale, cancelSale, exportCSV, samePlan, canonicalPlan, CONSORTIUM_PLANS, ruleFirstDue, consortiumSchedule, validDate } from './model.js';
@@ -14,6 +15,7 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
   const sum=(rows,key)=>rows.reduce((n,s)=>n+(s[key]||0),0);
   const field=(key,value)=>setEditing(s=>{
     const next={...s,[key]:value};
+    if(['soldAt','ruleId'].includes(key))delete next.historicalRuleConfirmation;
     if(next.product==='Consórcio'&&['soldAt','ruleId','firstDue'].includes(key))next.firstDue=ruleFirstDue(state.rules.find(r=>r.id===next.ruleId),next.soldAt,next.firstDue);
     return next;
   });
@@ -22,6 +24,7 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
   const planOptions=[...new Set([...adminRules.filter(r=>r.modality===editing?.modality).map(r=>canonicalPlan(r.plan)),...CONSORTIUM_PLANS,canonicalPlan(editing?.plan)].filter(Boolean))];
   const rules=adminRules.filter(r=>r.modality===editing?.modality&&samePlan(r.plan,editing?.plan));
   const selectedRule=editing?.product==='Consórcio'&&state.rules.find(r=>r.id===editing.ruleId);
+  const historicalRule=selectedRule&&canConfirmHistoricalRule(selectedRule,editing.soldAt,businessDate());
   const projectedFirst=selectedRule?ruleFirstDue(selectedRule,editing.soldAt,editing.firstDue):editing?.firstDue;
   let calendarPreview=[];
   if(selectedRule&&validDate(projectedFirst)&&validDate(editing?.soldAt)){try{calendarPreview=consortiumSchedule(selectedRule,editing.soldAt,projectedFirst);}catch{/* Validation appears when confirming. */}}
@@ -69,10 +72,11 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
           <Field label="Administradora"><select value={editing.administratorId||''} onChange={e=>setEditing(s=>({...s,administratorId:e.target.value,ruleId:''}))} required><option value="">Selecione</option>{state.administrators.filter(a=>a.active).map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select></Field>
           <Field label="Categoria do consórcio"><select value={editing.modality||''} onChange={e=>setEditing(s=>({...s,modality:e.target.value,ruleId:''}))} required><option value="">Selecione</option>{categoryOptions.map(v=><option key={v}>{v}</option>)}</select></Field>
           <Field label="Plano"><select value={canonicalPlan(editing.plan)||''} onChange={e=>setEditing(s=>({...s,plan:e.target.value,ruleId:''}))} required><option value="">Selecione</option>{planOptions.map(v=><option key={v}>{v}</option>)}</select></Field>
-          <Field label="Regra de comissionamento"><select value={editing.ruleId||''} onChange={e=>field('ruleId',e.target.value)} required><option value="">Selecione a regra vigente</option>{rules.map(r=><option value={r.id} key={r.id}>{r.name} · {r.commissionBps/100}%</option>)}</select></Field>
+          <Field label="Regra de comissionamento"><select value={editing.ruleId||''} onChange={e=>field('ruleId',e.target.value)} required><option value="">Selecione a regra vigente</option>{rules.map(r=><option value={r.id} key={r.id}>{r.name} · {r.commissionBps/100}% · desde {dateLabel(r.startsOn)}</option>)}</select></Field>
         </>}
         <Field label="Observações"><textarea value={editing.notes||''} onChange={e=>field('notes',e.target.value)} rows="2"/></Field>
       </div>
+      {historicalRule&&<div className="fin-callout"><p>Venda histórica de {dateLabel(editing.soldAt)}. A regra selecionada começa em {dateLabel(selectedRule.startsOn)}. Confirme abaixo somente se ela corresponde às condições dessa venda.</p><label><input type="checkbox" checked={hasHistoricalRuleConfirmation(editing,selectedRule)} onChange={e=>field('historicalRuleConfirmation',e.target.checked?historicalRuleConfirmation(selectedRule,editing.soldAt):null)}/> Confirmo que estas condições de comissão também valiam na data desta venda.</label><p className="fin-note">As parcelas serão projetadas a partir da venda antiga. Recebimentos já realizados devem ser registrados separadamente no Financeiro.</p></div>}
       {selectedRule?.calendar?.mode==='assembly'&&<div className="fin-callout">Vencimento/corte do grupo: dia {selectedRule.calendar.cutoffDay}. {Number(editing.soldAt?.slice(8,10))>selectedRule.calendar.cutoffDay?'Venda após o corte: um mês de intervalo adicional a partir da segunda comissão.':'Venda até o corte: calendário normal.'} {!selectedRule.calendar.receiptDay&&'Confirme o dia previsto de pagamento da comissão; ele não é o vencimento do grupo.'}</div>}
       {calendarPreview.length>0&&<div className="fin-calculation"><span>Calendário projetado<strong style={{fontSize:14}}>{calendarPreview.map((p,i)=>`${i+1}ª: ${dateLabel(p.due)}`).join(' · ')}</strong></span></div>}
       {editing.product==='Carta Contemplada'&&<div className="fin-calculation"><span>Comissão total<strong>{editing.saleValue!==''&&editing.costValue!==''?money(Math.round((Number(editing.saleValue)-Number(editing.costValue))*100)):'Pendente'}</strong></span><span>Sua parte antes de despesas<strong>{editing.saleValue!==''&&editing.costValue!==''?money(Math.round((Number(editing.saleValue)-Number(editing.costValue))*100)-Math.round(Math.round((Number(editing.saleValue)-Number(editing.costValue))*100)*editing.officePercent/100)):'Pendente'}</strong></span></div>}

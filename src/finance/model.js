@@ -1,3 +1,4 @@
+import { ruleCoversSaleDate, canConfirmHistoricalRule, hasHistoricalRuleConfirmation } from './historicalSales.js';
 import { fillSaleFromLead } from './leadSale.js';
 // All money is stored as integer centavos. Dates are local business dates (YYYY-MM-DD).
 export const uid = () => {
@@ -146,7 +147,8 @@ export function confirmSale(input, state) {
     requireIt(rule && rule.active && rule.administratorId === sale.administratorId && rule.modality === sale.modality && samePlan(rule.plan, sale.plan), 'Selecione uma regra ativa para administradora, categoria e plano.');
     validateRule(rule);
     requireIt(state.administrators.some(a => a.id === rule.administratorId && a.active), 'Administradora inativa.');
-    requireIt(sale.soldAt >= rule.startsOn && (!rule.endsOn || sale.soldAt <= rule.endsOn), 'Regra fora da vigência na data de fechamento.');
+    const historical = canConfirmHistoricalRule(rule, sale.soldAt, businessDate());
+    requireIt(ruleCoversSaleDate(rule, sale.soldAt) || (historical && hasHistoricalRuleConfirmation(sale, rule)), historical ? `Esta regra começa em ${dateLabel(rule.startsOn)}. Para registrar a venda anterior, confirme que estas condições também valiam na data da venda.` : 'Regra fora da vigência na data de fechamento.');
     sale.gross = Math.round(sale.credit * rule.commissionBps / 10000);
     sale.office = Math.round(sale.gross * rule.officeBps / 10000);
     sale.own = sale.gross - sale.office;
