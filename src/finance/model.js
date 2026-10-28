@@ -1,3 +1,4 @@
+import { fillSaleFromLead } from './leadSale.js';
 // All money is stored as integer centavos. Dates are local business dates (YYYY-MM-DD).
 export const uid = () => {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -87,7 +88,7 @@ export function ruleFirstDue(rule, soldAt, reference = '') {
 }
 
 export function draftFromLead(lead) {
-  return { id: `lead-${lead.id}`, leadId: lead.id, name: lead.nome, product: lead.produto, channel: lead.canal || 'Não informado', ownerId: lead.userId || '', credit: Math.round(Number(lead.credito || lead.valor || 0) * 100), soldAt: lead.wonAt ? businessDate(new Date(lead.wonAt)) : '', status: 'draft', officePercent: 50, installments: [], source: 'lead' };
+  return fillSaleFromLead({ id: `lead-${lead.id}`, leadId: lead.id, name: lead.nome, product: lead.produto, channel: lead.canal || 'Não informado', ownerId: lead.userId || '', credit: Math.round(Number(lead.credito || lead.valor || 0) * 100), soldAt: lead.wonAt ? businessDate(new Date(lead.wonAt)) : '', status: 'draft', officePercent: 50, installments: [], source: 'lead' }, lead);
 }
 export function syncWonLeads(state, leads) {
   const known = new Set(state.sales.map(s => s.leadId));
