@@ -9,9 +9,10 @@ const TABS = [
   { key: 'conversas', label: 'Conversas', icon: 'chat' },
 ];
 
-export default function Header({ activeTab, onTabChange, onNewLead, onOpenExport, onExportBackup, onImportBackup, onSignOut, isAdmin }) {
+export default function Header({ activeTab, onTabChange, onNewLead, onOpenExport, onExportBackup, onImportBackup, onSignOut, isAdmin, preview = false }) {
   const fileInputRef = useRef(null);
-  const tabs = isAdmin ? [...TABS, { key: 'metricas', label: 'Métricas', icon: 'chart' }] : TABS;
+  const baseTabs = preview ? TABS.filter(t => t.key === 'funil') : TABS;
+  const tabs = isAdmin ? [...baseTabs, { key: 'vendas', label: 'Vendas', icon: 'file' }, { key: 'financeiro', label: 'Financeiro', icon: 'chart' }, { key: 'metricas', label: 'Métricas', icon: 'chart' }, { key: 'configuracoes', label: 'Configurações', icon: 'tools' }] : baseTabs;
 
   function handleFileChange(e) {
     const file = e.target.files[0];
@@ -39,16 +40,16 @@ export default function Header({ activeTab, onTabChange, onNewLead, onOpenExport
           </button>
         ))}
       </nav>
-      <div className="sidebar-footer"><strong>Painel Piccinini</strong><span>Cartas contempladas &amp; patrimônio</span><small>{BUILD_VERSION}</small><button className="btn-ghost signout" type="button" onClick={onSignOut}><Icon name="logout" />Sair da conta</button></div>
+      <div className="sidebar-footer"><strong>Painel Piccinini</strong><span>Cartas contempladas &amp; patrimônio</span><small>{preview ? 'Preview · dados fictícios' : BUILD_VERSION}</small>{!preview && <button className="btn-ghost signout" type="button" onClick={onSignOut}><Icon name="logout" />Sair da conta</button>}</div>
     </aside>
     <header className="crm-toolbar">
       <div className="breadcrumb">Seu espaço <span>/</span><strong>{tabs.find((t) => t.key === activeTab)?.label}</strong></div>
       <div className="toolbar-actions">
-        <details className="tools-menu"><summary><Icon name="tools" />Ferramentas</summary><div className="tools-popover">
+        {!preview && <details className="tools-menu"><summary><Icon name="tools" />Ferramentas</summary><div className="tools-popover">
         <button className="btn-ghost" type="button" onClick={onOpenExport}>Exportar planilha de leads</button>
         <button className="btn-ghost" type="button" onClick={onExportBackup}>Baixar backup</button>
         <button className="btn-ghost" type="button" onClick={() => fileInputRef.current?.click()}>Importar backup</button>
-        </div></details>
+        </div></details>}
         <input ref={fileInputRef} type="file" accept=".json" style={{ display: 'none' }} onChange={handleFileChange} />
         <button className="btn-primary" type="button" onClick={onNewLead}><Icon name="plus" />Novo lead</button>
       </div>

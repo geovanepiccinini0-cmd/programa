@@ -11,6 +11,8 @@ import SetupNeeded from './components/SetupNeeded.jsx';
 import MetricasView from './components/MetricasView.jsx';
 import WhatsAppInboxView from './components/WhatsAppInboxView.jsx';
 import AppointmentAlertBanner from './components/AppointmentAlertBanner.jsx';
+import FinanceSuite from './finance/FinanceSuite.jsx';
+import { useFinance } from './finance/useFinance.js';
 import { useAppState } from './hooks/useAppState.js';
 import { useAuth } from './hooks/useAuth.js';
 import { useAppointmentAlerts } from './hooks/useAppointmentAlerts.js';
@@ -22,6 +24,7 @@ import { downloadJSON, isValidBackup, todayStr } from './utils.js';
 const BACKUP_VERSION = 2;
 
 function CrmApp({ userId, isAdmin, onSignOut }) {
+  const finance = useFinance({ enabled: isAdmin });
   const {
     leads, tasks, templates, loading, error,
     interactions, interactionsLoading, interactionsError, refetchInteractions,
@@ -39,6 +42,9 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
   } = useAppState(userId);
 
   const [activeTab, setActiveTab] = useState('hoje');
+  useEffect(() => {
+    if (isAdmin && ['vendas', 'financeiro', 'configuracoes', 'metricas'].includes(activeTab)) finance.reload();
+  }, [activeTab, isAdmin, finance.reload]);
   const [filterProduto, setFilterProduto] = useState('Todos');
   const [filterStale, setFilterStale] = useState(false);
   const [sortOrder, setSortOrder] = useState('novo');
@@ -154,7 +160,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
       />
 
       <main className="crm-workspace">
-      {activeTab !== 'metricas' && <div className="page-heading"><span className="eyebrow">Painel Piccinini</span><h1>{{ hoje: 'Seu dia, com clareza', funil: 'Cada oportunidade no seu lugar', rotina: 'Uma rotina que faz acontecer', conversas: 'Suas conversas, organizadas' }[activeTab]}</h1><p>{{ hoje: 'Agenda, retornos e próximas ações para o seu dia.', funil: 'Todos os detalhes dos leads, com uma leitura mais clara.', rotina: 'Organize suas tarefas recorrentes e acompanhe a execução.', conversas: 'Continue seus atendimentos com todo o contexto.' }[activeTab]}</p></div>}
+      {!['metricas', 'vendas', 'financeiro', 'configuracoes'].includes(activeTab) && <div className="page-heading"><span className="eyebrow">Painel Piccinini</span><h1>{{ hoje: 'Seu dia, com clareza', funil: 'Cada oportunidade no seu lugar', rotina: 'Uma rotina que faz acontecer', conversas: 'Suas conversas, organizadas' }[activeTab]}</h1><p>{{ hoje: 'Agenda, retornos e próximas ações para o seu dia.', funil: 'Todos os detalhes dos leads, com uma leitura mais clara.', rotina: 'Organize suas tarefas recorrentes e acompanhe a execução.', conversas: 'Continue seus atendimentos com todo o contexto.' }[activeTab]}</p></div>}
       <AppointmentAlertBanner
         upcoming={appointmentAlerts.upcoming}
         permission={appointmentAlerts.permission}
@@ -163,7 +169,9 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
         leads={leads}
       />
 
-      {activeTab !== 'metricas' && <StatsBar leads={leads} tasks={tasks} />}
+      {!['metricas', 'vendas', 'financeiro', 'configuracoes'].includes(activeTab) && <StatsBar leads={leads} tasks={tasks} />}
+
+      {isAdmin && ['vendas', 'financeiro', 'configuracoes', 'metricas'].includes(activeTab) && <FinanceSuite finance={finance} activeTab={activeTab} leads={leads} />}
 
       {activeTab === 'metricas' && isAdmin && <MetricasView userId={userId} />}
 

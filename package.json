@@ -15,6 +15,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.3.14",
     "@vitejs/plugin-react": "^4.3.4",
     "vite": "^5.4.11",
     "vitest": "^2.1.9"
