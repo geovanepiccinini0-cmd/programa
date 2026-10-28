@@ -15,7 +15,8 @@ export default function AppointmentAlertBanner({ upcoming, permission, onRequest
           <div
             key={task.id}
             style={{
-              background: '#2a1f10',
+              background: 'var(--gold-soft)',
+              color: 'var(--text)',
               border: '1px solid var(--orange)',
               borderRadius: 8,
               padding: '10px 14px',
