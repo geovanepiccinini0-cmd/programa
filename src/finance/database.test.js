@@ -1,3 +1,4 @@
+import { historicalRuleConfirmation } from './historicalSales.js';
 import { deleteCommissionRule } from './rules.js';
 import { PGlite } from '@electric-sql/pglite';
 import { readFileSync } from 'node:fs';
@@ -63,6 +64,18 @@ describe('Persistência PostgreSQL isolada — sem produção',()=>{
     await as(seller);await db.exec("update public.leads set entrada=95000,etapa='Ganho' where id='10000000-0000-0000-0000-000000000003';");
     await as(admin);const after=(await db.query('select data from public.crm_finance_workspace')).rows[0].data;
     expect(after).toEqual(before);
+  });
+
+  it('persiste venda histórica confirmada sem alterar vigência da regra ou gerar caixa',async()=>{
+    await as(admin);const record=(await db.query('select * from public.crm_finance_workspace')).rows[0],next=structuredClone(record.data);
+    const rule=ruleFromCreditRates({id:'historical-rule',name:'Histórica',administratorId:'admin-rule',modality:'Imóveis',plan:'Parcela integral',office:'0',startsOn:'2026-10-28',active:true,parcels:[{offset:0,creditRate:'1'}]},next.administrators);
+    next.rules.push(rule);
+    next.sales.push(confirmSale({id:'historical-sale',name:'Exemplo histórico',product:'Consórcio',administratorId:'admin-rule',modality:rule.modality,plan:rule.plan,ruleId:rule.id,credit:30000000,soldAt:'2026-08-05',firstDue:'2026-09-15',historicalRuleConfirmation:historicalRuleConfirmation(rule,'2026-08-05')},next));
+    await db.query('select public.crm_save_finance_workspace($1,$2,$3)',[record.revision,next,'Cadastro de venda histórica']);
+    const saved=(await db.query('select data from public.crm_finance_workspace')).rows[0].data;
+    expect(saved.sales.find(s=>s.id==='historical-sale')).toMatchObject({status:'confirmed',soldAt:'2026-08-05',historicalRuleConfirmation:{confirmed:true},ruleSnapshot:{startsOn:'2026-10-28'}});
+    expect(saved.rules.find(r=>r.id===rule.id).startsOn).toBe('2026-10-28');
+    expect(saved.receipts).toEqual(record.data.receipts);
   });
 
 });
