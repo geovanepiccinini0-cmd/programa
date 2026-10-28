@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { fillSaleFromLead } from './leadSale.js';
 import { categoryOptions as consortiumCategories } from './categories.js';
 import { uid, cents, money, dateLabel, businessDate, monthOf, confirmSale, cancelSale, exportCSV, samePlan, canonicalPlan, CONSORTIUM_PLANS, ruleFirstDue, consortiumSchedule, validDate } from './model.js';
 import { Field, Amount, Panel, Table, Empty, Status, Kpis } from './ui.jsx';
@@ -39,17 +40,17 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
       setEditing(null);
     },'Venda salva.');
   }
-  const download=()=>exportCSV([['Demonstrativo comercial — fechamentos',month],['Cliente','Produto','Data','Canal','Crédito','Venda da cota','Custo da cota','Comissão total','Escritório','Geovane'],...closed.map(s=>[s.name,s.product,s.soldAt,s.channel,money(s.credit),s.product==='Carta Contemplada'?money(s.saleValue):'',s.product==='Carta Contemplada'?money(s.costValue):'',money(s.gross),money(s.office),money(s.own)])],`vendas-${month}.csv`);
+  const download=()=>exportCSV([['Demonstrativo comercial — fechamentos',month],['Cliente','Produto','Data','Canal','Crédito','Venda da cota','Custo da cota','Parceiro de origem da cota','Comissão total','Escritório','Geovane'],...closed.map(s=>[s.name,s.product,s.soldAt,s.channel,money(s.credit),s.product==='Carta Contemplada'?money(s.saleValue):'',s.product==='Carta Contemplada'?money(s.costValue):'',s.product==='Carta Contemplada'?(s.supplier||''):'',money(s.gross),money(s.office),money(s.own)])],`vendas-${month}.csv`);
   return <>
     <div className="fin-title"><div><span className="eyebrow">Produção comercial</span><h1>Vendas</h1><p>Do fechamento à comissão, com cada condição registrada.</p></div><button className="btn-primary" onClick={()=>setEditing(toForm(blankSale()))}>+ Registrar venda</button></div>
     <Kpis items={[["Vendas no mês",closed.length,'Por data de fechamento'],['Consórcio novo',money(sum(closed.filter(s=>s.product==='Consórcio'),'credit')),'Volume de crédito contratado'],['Sua comissão gerada',money(sum(closed,'own')),'Recebimentos ficam no Financeiro'],['Aguardando informações',state.sales.filter(s=>s.status==='draft').length,'Não entram na comissão confirmada']]}/>
     <div className="fin-toolbar"><Field label="Mês de fechamento"><input type="month" value={month} onChange={e=>setMonth(e.target.value)}/></Field><button onClick={()=>setReport(!report)} aria-pressed={report}>Demonstrativo do escritório</button><button onClick={download}>Exportar vendas CSV</button></div>
     {report&&<Panel title="Demonstrativo mensal · Contempladas" note="Divisão comercial antes de despesas próprias. Repasse apurado não significa repasse pago.">
       <Table headers={['Cliente / fechamento','Venda da cota','Custo','Comissão','Escritório / você','Escritório','Geovane']} foot={<tr><th>Total</th><td>{money(sum(contemplated,'saleValue'))}</td><td>{money(sum(contemplated,'costValue'))}</td><td>{money(sum(contemplated,'gross'))}</td><td>Por venda</td><td>{money(sum(contemplated,'office'))}</td><td>{money(sum(contemplated,'own'))}</td></tr>}>
-        {contemplated.map(s=><tr key={s.id}><th scope="row">{s.name}<small>{dateLabel(s.soldAt)}</small></th><td>{money(s.saleValue)}</td><td>{money(s.costValue)}</td><td>{money(s.gross)}</td><td>{s.officePercent}% / {100-s.officePercent}%</td><td>{money(s.office)}</td><td>{money(s.own)}</td></tr>)}
+        {contemplated.map(s=><tr key={s.id}><th scope="row">{s.name}<small>{dateLabel(s.soldAt)}</small>{s.supplier&&<small>Parceiro: {s.supplier}</small>}</th><td>{money(s.saleValue)}</td><td>{money(s.costValue)}</td><td>{money(s.gross)}</td><td>{s.officePercent}% / {100-s.officePercent}%</td><td>{money(s.office)}</td><td>{money(s.own)}</td></tr>)}
       </Table>{!contemplated.length&&<Empty/>}
     </Panel>}
-    {editing&&<Panel title={locked?'Condições históricas da venda':'Condições da venda'} note={locked?'Existem movimentos financeiros. Condições preservadas; devoluções e cancelamentos ficam no Financeiro.':'Crédito, valor comercial e sua remuneração são informações distintas.'} actions={<button onClick={()=>setEditing(null)}>Fechar</button>}>
+    {editing&&<Panel title={locked?'Condições históricas da venda':'Condições da venda'} note={locked?'Existem movimentos financeiros. Condições preservadas; devoluções e cancelamentos ficam no Financeiro.':editing.product==='Carta Contemplada'?'O valor de venda é a entrada informada no lead. Confira os dados, preencha o custo e identifique o parceiro. A parcela do consórcio é apenas informativa.':'Crédito, valor comercial e sua remuneração são informações distintas.'} actions={<button onClick={()=>setEditing(null)}>Fechar</button>}>
       <form onSubmit={e=>save(e,'confirmed')}><fieldset disabled={saving||locked} className="fin-fieldset"><div className="fin-form">
         <Field label="Cliente" value={editing.name} onChange={e=>field('name',e.target.value)} required/>
         <Field label="Produto"><select value={editing.product} onChange={e=>field('product',e.target.value)}><option>Carta Contemplada</option><option>Consórcio</option>{!['Consórcio','Carta Contemplada'].includes(editing.product)&&<option>{editing.product}</option>}</select></Field>
@@ -59,7 +60,9 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
         <Field label="Primeiro recebimento previsto" type="date" value={projectedFirst||''} onChange={e=>field('firstDue',e.target.value)} readOnly={!!selectedRule?.calendar?.receiptDay} required/>
         <Field label="Referência de contrato / cota" value={editing.contract||''} onChange={e=>field('contract',e.target.value)}/>
         {editing.product==='Carta Contemplada'?<>
-          <Amount label="Valor de venda da cota (R$)" value={editing.saleValue} onChange={v=>field('saleValue',v)} required/>
+          <Amount label="Valor de venda da cota / entrada (R$)" value={editing.saleValue} onChange={v=>field('saleValue',v)} required/>
+          <Field label="Parcela do consórcio (informativa)" value={editing.quotaInstallment==null?'Não informada':money(editing.quotaInstallment)} readOnly/>
+          <Field label="Parceiro de origem da cota (opcional)" value={editing.supplier||''} onChange={e=>field('supplier',e.target.value)} placeholder="Nome do parceiro ou fornecedor"/>
           <Amount label="Valor de custo da cota (R$)" value={editing.costValue} onChange={v=>field('costValue',v)} required/>
           <Field label="Divisão da comissão"><select value={editing.officePercent} onChange={e=>field('officePercent',Number(e.target.value))}><option value={50}>50% escritório / 50% Geovane</option><option value={60}>60% escritório / 40% Geovane</option></select></Field>
         </>:<>
@@ -79,7 +82,7 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
     <Panel title="Seus negócios" note="Ganhos geram fichas pendentes automaticamente. Comissões só entram na projeção após confirmação.">
       <div className="fin-toolbar"><Field label="Buscar cliente" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Nome do cliente"/><Field label="Situação"><select value={scope} onChange={e=>setScope(e.target.value)}><option value="all">Todas</option><option value="draft">Pendentes</option><option value="confirmed">Confirmadas</option><option value="cancelled">Canceladas</option></select></Field></div>
       <Table headers={['Cliente / produto','Origem','Fechamento','Sua comissão','Situação','Ações']}>
-        {all.map(s=><tr key={s.id}><th scope="row">{s.name}<small>{s.product}{s.contract?` · ${s.contract}`:''}</small>{s.leadId&&leads.some(l=>l.id===s.leadId&&l.etapa!=='Ganho')&&<small className="fin-warning">Lead reaberto: revisar venda</small>}</th><td>{s.channel}</td><td>{dateLabel(s.soldAt)}</td><td>{money(s.status==='confirmed'?s.own:null)}</td><td><Status value={s.status}/></td><td><button onClick={()=>setEditing(toForm(s))}>Detalhes</button>{s.status!=='cancelled'&&<button disabled={saving} onClick={()=>{const reason=prompt('Motivo do cancelamento (a ficha será preservada):');if(reason)run(()=>commit(current=>cancelSale(current,s.id,reason),'Cancelamento de venda'),'Venda cancelada.');}}>Cancelar</button>}</td></tr>)}
+        {all.map(s=><tr key={s.id}><th scope="row">{s.name}<small>{s.product}{s.contract?` · ${s.contract}`:''}</small>{s.leadId&&leads.some(l=>l.id===s.leadId&&l.etapa!=='Ganho')&&<small className="fin-warning">Lead reaberto: revisar venda</small>}</th><td>{s.channel}</td><td>{dateLabel(s.soldAt)}</td><td>{money(s.status==='confirmed'?s.own:null)}</td><td><Status value={s.status}/></td><td><button onClick={()=>setEditing(toForm(fillSaleFromLead(s,leads.find(l=>l.id===s.leadId))))}>Detalhes</button>{s.status!=='cancelled'&&<button disabled={saving} onClick={()=>{const reason=prompt('Motivo do cancelamento (a ficha será preservada):');if(reason)run(()=>commit(current=>cancelSale(current,s.id,reason),'Cancelamento de venda'),'Venda cancelada.');}}>Cancelar</button>}</td></tr>)}
       </Table>{!all.length&&<Empty/>}
     </Panel>
   </>;

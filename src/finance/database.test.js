@@ -12,9 +12,10 @@ beforeAll(async()=>{
     create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
     grant usage on schema auth to authenticated; grant execute on function auth.uid() to authenticated;
     create function public.is_admin() returns boolean language sql stable as $$ select auth.uid()='${admin}'::uuid $$;
-    create table public.leads(id uuid primary key,user_id uuid,nome text,produto text,canal text,etapa text,credito numeric,valor numeric,won_at timestamptz,deleted_at timestamptz);
+    create table public.leads(id uuid primary key,user_id uuid,nome text,produto text,canal text,etapa text,credito numeric,valor numeric,entrada numeric,parcela numeric,won_at timestamptz,deleted_at timestamptz);
     grant select,insert,update on public.leads to authenticated;`);
   await db.exec(migration);
+  await db.exec(readFileSync(new URL('../../supabase/migrations/20261028144445_lead_sale_values.sql',import.meta.url),'utf8'));
 },30000);
 afterAll(async()=>{await db?.close();});
 async function as(user){await db.exec(`reset role;select set_config('request.jwt.claim.sub','${user}',false);set role authenticated;`);}
@@ -44,6 +45,24 @@ describe('Persistência PostgreSQL isolada — sem produção',()=>{
     const audit=(await db.query('select previous_data,next_data from public.crm_finance_history order by revision desc limit 1')).rows[0];
     expect(audit.previous_data.rules.some(r=>r.id==='credit-rule')).toBe(true);
     expect(audit.next_data.rules.some(r=>r.id==='credit-rule')).toBe(false);
+  });
+
+  it('captura entrada e parcela do lead ganho sem gerar recebimentos nem inferir custo',async()=>{
+    await as(seller);
+    await db.query("insert into public.leads(id,user_id,nome,produto,etapa,credito,entrada,parcela,won_at) values('10000000-0000-0000-0000-000000000003',$1,'Contemplada fictícia','Carta Contemplada','Negociação',300000,90000.25,1800.50,'2026-10-28T14:00:00Z')",[seller]);
+    await db.exec("update public.leads set etapa='Ganho' where id='10000000-0000-0000-0000-000000000003';");
+    await as(admin);const row=(await db.query('select data,revision from public.crm_finance_workspace')).rows[0];
+    const sale=row.data.sales.find(s=>s.leadId==='10000000-0000-0000-0000-000000000003');
+    expect(sale).toMatchObject({credit:30000000,saleValue:9000025,quotaInstallment:180050,status:'draft',installments:[]});
+    expect(sale.costValue).toBeUndefined();expect(row.data.receipts).toEqual([]);
+    const next=structuredClone(row.data);
+    next.sales=next.sales.map(s=>s.id===sale.id?confirmSale({...s,costValue:7000000,supplier:'Parceiro fictício',firstDue:'2026-10-28'},next):s);
+    await db.query('select public.crm_save_finance_workspace($1,$2,$3)',[row.revision,next,'Custo e parceiro']);
+    const before=(await db.query('select data from public.crm_finance_workspace')).rows[0].data;
+    expect(before.sales.find(s=>s.id===sale.id)).toMatchObject({supplier:'Parceiro fictício',gross:2000025,quotaInstallment:180050});
+    await as(seller);await db.exec("update public.leads set entrada=95000,etapa='Ganho' where id='10000000-0000-0000-0000-000000000003';");
+    await as(admin);const after=(await db.query('select data from public.crm_finance_workspace')).rows[0].data;
+    expect(after).toEqual(before);
   });
 
 });
