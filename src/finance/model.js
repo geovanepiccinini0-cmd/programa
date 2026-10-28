@@ -273,10 +273,10 @@ export function forecast(state, startMonth, count = 6) {
 export function channelResults(state, month) {
   const channels = [...new Set([...state.sales.map(s => s.channel || 'Não informado'), ...state.expenses.filter(e => e.channel).map(e => e.channel)])];
   return channels.map(channel => {
-    const sales = state.sales.filter(s => s.status === 'confirmed' && s.channel === channel && monthOf(s.soldAt) === month);
+    const sales = state.sales.filter(s => s.status === 'confirmed' && (s.channel || 'Não informado') === channel && monthOf(s.soldAt) === month);
     const spent = state.expenses.filter(e => e.channel === channel && e.paidAt && monthOf(e.paidAt) === month).reduce((n, e) => n + e.amount, 0);
-    const received = state.receipts.filter(r => monthOf(r.date) === month && state.sales.find(s => s.id === r.saleId)?.channel === channel).reduce((n, r) => n + (r.type === 'refund' ? -r.amount : r.amount), 0);
-    return { channel, count: sales.length, credit: sales.filter(s => s.product === 'Consórcio').reduce((n, s) => n + s.credit, 0), own: sales.reduce((n, s) => n + s.own, 0), received, spent };
+    const received = state.receipts.filter(r => monthOf(r.date) === month && (state.sales.find(s => s.id === r.saleId)?.channel || 'Não informado') === channel).reduce((n, r) => n + (r.type === 'refund' ? -r.amount : r.amount), 0);
+    return { channel, count: sales.length, credit: sales.reduce((n, s) => n + (s.credit || 0), 0), own: sales.reduce((n, s) => n + (s.own || 0), 0), received, spent };
   });
 }
 export function exportCSV(rows, filename) {
