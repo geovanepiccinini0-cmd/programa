@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { deleteCommissionRule } from './rules.js';
 import { categoryOptions } from './categories.js';
 import { uid, businessDate, ruleFromCreditRates, ruleToCreditForm, CONSORTIUM_PLANS, canonicalPlan, samePlan } from './model.js';
 import { Field, Panel, Table, Empty } from './ui.jsx';
@@ -23,6 +24,10 @@ export default function SettingsView({state,commit,run,saving}) {
     if(overlap)throw new Error('Já existe uma regra ativa com vigência sobreposta. Inative a anterior ou ajuste as datas. As vendas antigas preservam sua regra.');
     await commit(s=>({...s,rules:[...s.rules,next]}),'Nova versão de comissionamento');setRule(null);
   },'Regra cadastrada.');};
+  const removeRule=r=>{
+    if(!window.confirm(`Excluir a regra “${r.name}”? Ela sairá do cadastro. Vendas confirmadas, parcelas e recebimentos serão preservados. Vendas pendentes precisarão de outra regra.`))return;
+    run(async()=>{await commit(s=>deleteCommissionRule(s,r.id),'Exclusão de regra de comissão');setRule(null);},'Regra excluída. Histórico das vendas preservado.');
+  };
   return <>
     <div className="fin-title"><div><span className="eyebrow">Base de comissionamento</span><h1>Configurações</h1><p>Administradora → categoria do consórcio → plano → comissão e recebimento.</p></div><button className="btn-primary" onClick={()=>setRule(emptyRule(selectedAdmin))}>+ Nova regra</button></div>
     <div className="fin-callout">Informe os percentuais sobre o crédito: 0,30% + 0,15% + 0,15% + 0,20% + 0,20% = 1,00% de comissão total. O nome da regra é gerado automaticamente. Vendas confirmadas preservam suas condições.</div>
@@ -48,8 +53,8 @@ export default function SettingsView({state,commit,run,saving}) {
       <div className="fin-actions"><button type="button" onClick={()=>field('parcels',[...rule.parcels,{offset:Math.max(...rule.parcels.map(p=>p.offset))+1,creditRate:''}])} disabled={rule.parcels.length>=60}>+ Parcela</button><strong>Total: {totalRate.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}% do crédito</strong><button className="btn-primary" type="submit">Salvar regra</button></div>
       </fieldset></form>
     </Panel>}
-    <Panel title={selectedAdmin?`Categorias e planos · ${state.administrators.find(a=>a.id===selectedAdmin)?.name}`:"Regras por administradora, categoria e plano"} note="O histórico das condições é automático. Cada venda preserva a regra usada na confirmação." actions={selectedAdmin&&<button onClick={()=>setSelectedAdmin('')}>Ver todas</button>}>
-      <Table headers={['Regra / administradora','Modalidade / plano','Comissão / repasse','Parcelas','Vigência','Ações']}>{visibleRules.map(r=><tr key={r.id}><th scope="row">{r.name}<small>{state.administrators.find(a=>a.id===r.administratorId)?.name}</small><small>{r.active?'Ativa':'Inativa'}</small></th><td>{r.modality}<small>{canonicalPlan(r.plan)}</small></td><td>{r.commissionBps/100}% / {r.officeBps/100}%</td><td>{r.parcels.length}</td><td>{r.startsOn}<small>até {r.endsOn||'nova condição'}</small></td><td><button onClick={()=>setRule({...ruleToCreditForm(r),startsOn:businessDate()})}>Cadastrar nova condição</button>{r.active&&<button disabled={saving} onClick={()=>run(()=>commit(s=>({...s,rules:s.rules.map(v=>v.id===r.id?{...v,active:false}:v)}),'Inativação de regra'),'Regra inativada. Histórico preservado.')}>Inativar</button>}</td></tr>)}</Table>{!visibleRules.length&&<Empty>Nenhuma regra cadastrada. Vendas sem regra ficam pendentes.</Empty>}
+    <Panel title={selectedAdmin?`Categorias e planos · ${state.administrators.find(a=>a.id===selectedAdmin)?.name}`:"Regras por administradora, categoria e plano"} note="Você pode excluir uma regra cadastrada por engano. Vendas confirmadas preservam suas condições, parcelas e recebimentos." actions={selectedAdmin&&<button onClick={()=>setSelectedAdmin('')}>Ver todas</button>}>
+      <Table headers={['Regra / administradora','Modalidade / plano','Comissão / repasse','Parcelas','Vigência','Ações']}>{visibleRules.map(r=><tr key={r.id}><th scope="row">{r.name}<small>{state.administrators.find(a=>a.id===r.administratorId)?.name}</small><small>{r.active?'Ativa':'Inativa'}</small></th><td>{r.modality}<small>{canonicalPlan(r.plan)}</small></td><td>{r.commissionBps/100}% / {r.officeBps/100}%</td><td>{r.parcels.length}</td><td>{r.startsOn}<small>até {r.endsOn||'nova condição'}</small></td><td><button onClick={()=>setRule({...ruleToCreditForm(r),startsOn:businessDate()})}>Cadastrar nova condição</button>{r.active&&<button disabled={saving} onClick={()=>run(()=>commit(s=>({...s,rules:s.rules.map(v=>v.id===r.id?{...v,active:false}:v)}),'Inativação de regra'),'Regra inativada. Histórico preservado.')}>Inativar</button>} <button disabled={saving} onClick={()=>removeRule(r)}>Excluir regra</button></td></tr>)}</Table>{!visibleRules.length&&<Empty>Nenhuma regra cadastrada. Vendas sem regra ficam pendentes.</Empty>}
     </Panel>
   </>;
 }

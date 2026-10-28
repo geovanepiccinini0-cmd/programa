@@ -1,3 +1,4 @@
+import { deleteCommissionRule } from './rules.js';
 import { PGlite } from '@electric-sql/pglite';
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -32,4 +33,17 @@ describe('Persistência PostgreSQL isolada — sem produção',()=>{
     await db.query('select public.crm_save_finance_workspace($1,$2,$3)',[record.revision,next,'Regra por assembleia']);
     const saved=(await db.query("select data from public.crm_finance_workspace")).rows[0].data.sales.find(s=>s.id==='credit-sale');expect(saved.installments[1].due).toBe('2027-01-15');expect(saved.installments[0].amount).toBe(150000);expect(saved.gross).toBe(500000);
   });
+  it('exclui uma regra pelo RPC auditado preservando a venda confirmada e seu calendário',async()=>{
+    await as(admin);const record=(await db.query('select * from public.crm_finance_workspace')).rows[0];
+    const before=record.data.sales.find(s=>s.id==='credit-sale');
+    const next=deleteCommissionRule(record.data,'credit-rule');
+    await db.query('select public.crm_save_finance_workspace($1,$2,$3)',[record.revision,next,'Exclusão de regra de comissão']);
+    const saved=(await db.query('select data from public.crm_finance_workspace')).rows[0].data;
+    expect(saved.rules.some(r=>r.id==='credit-rule')).toBe(false);
+    expect(saved.sales.find(s=>s.id==='credit-sale')).toEqual(before);
+    const audit=(await db.query('select previous_data,next_data from public.crm_finance_history order by revision desc limit 1')).rows[0];
+    expect(audit.previous_data.rules.some(r=>r.id==='credit-rule')).toBe(true);
+    expect(audit.next_data.rules.some(r=>r.id==='credit-rule')).toBe(false);
+  });
+
 });
