@@ -1,12 +1,13 @@
 import { useState } from 'react';
+import { categoryOptions } from './categories.js';
 import { uid, businessDate, ruleFromCreditRates, ruleToCreditForm, CONSORTIUM_PLANS, canonicalPlan, samePlan } from './model.js';
 import { Field, Panel, Table, Empty } from './ui.jsx';
 
-const emptyRule=(administratorId='')=>({id:uid(),name:'',administratorId,modality:'Imobiliário',plan:'Parcela integral',office:'0',startsOn:businessDate(),endsOn:'',conditions:'',parcels:[{offset:0,creditRate:''}],calendar:{mode:'manual'},active:true});
+const emptyRule=(administratorId='')=>({id:uid(),name:'',administratorId,modality:'Imóveis',plan:'Parcela integral',office:'0',startsOn:businessDate(),endsOn:'',conditions:'',parcels:[{offset:0,creditRate:''}],calendar:{mode:'manual'},active:true});
 export default function SettingsView({state,commit,run,saving}) {
   const [name,setName]=useState(''),[rule,setRule]=useState(null),[selectedAdmin,setSelectedAdmin]=useState('');
   const field=(key,value)=>setRule(r=>({...r,[key]:value}));
-  const categories=[...new Set(['Imobiliário','Veículos','Outros',...state.rules.filter(r=>r.administratorId===rule?.administratorId).map(r=>r.modality)])];
+  const categories=categoryOptions([...state.rules.filter(r=>r.administratorId===rule?.administratorId).map(r=>r.modality),rule?.modality]);
   const totalRate=rule?.parcels.reduce((n,p)=>n+(Number(p.creditRate)||0),0)||0;
   const visibleRules=state.rules.filter(r=>!selectedAdmin||r.administratorId===selectedAdmin);
   const saveAdmin=e=>{e.preventDefault();run(async()=>{
@@ -33,7 +34,7 @@ export default function SettingsView({state,commit,run,saving}) {
       <form onSubmit={saveRule}><fieldset disabled={saving} className="fin-fieldset"><div className="fin-form">
         <Field label="Descrição adicional (opcional)" value={rule.name} onChange={e=>field('name',e.target.value)} placeholder="Ex.: campanha especial"/>
         <Field label="Administradora"><select value={rule.administratorId} onChange={e=>field('administratorId',e.target.value)} required><option value="">Selecione</option>{state.administrators.filter(a=>a.active).map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></Field>
-        <Field label="Categoria do consórcio"><input list="rule-categories" value={rule.modality} onChange={e=>field('modality',e.target.value)} required/><datalist id="rule-categories">{categories.map(v=><option key={v} value={v}/>)}</datalist></Field>
+        <Field label="Categoria do consórcio"><select value={rule.modality} onChange={e=>field('modality',e.target.value)} required><option value="">Selecione</option>{categories.map(v=><option key={v} value={v}>{v}</option>)}</select></Field>
         <Field label="Plano de venda"><select value={rule.plan} onChange={e=>field('plan',e.target.value)}>{[...new Set([...CONSORTIUM_PLANS,rule.plan])].map(v=><option key={v}>{v}</option>)}</select></Field>
         <Field label="Comissão total sobre crédito (%)"><input readOnly value={totalRate.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}/></Field>
         <Field label="Repasse escritório sobre comissão (%)" type="number" min="0" max="100" step="0.01" value={rule.office} onChange={e=>field('office',e.target.value)} required/>
