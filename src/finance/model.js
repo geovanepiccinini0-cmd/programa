@@ -233,12 +233,13 @@ export function cash(state, asOf = businessDate()) {
   const from = state.opening?.date || '0000-01-01';
   const received = state.receipts.filter(r => r.date >= from && r.date <= asOf).reduce((n, r) => n + (r.type === 'refund' ? -r.amount : r.amount), 0);
   const spent = state.expenses.filter(e => e.paidAt && e.paidAt >= from && e.paidAt <= asOf).reduce((n, e) => n + e.amount, 0);
+  const withdrawn = state.expenses.filter(e => e.category === 'Retirada pessoal' && e.paidAt && e.paidAt >= from && e.paidAt <= asOf).reduce((n, e) => n + e.amount, 0);
   const reserved = state.pockets.reduce((n, p) => n + pocketBalance(state, p.id), 0);
   const obligations = state.expenses.filter(e => !e.paidAt).reduce((n, e) => n + e.amount, 0);
   const uncovered = state.expenses.filter(e => !e.paidAt && !e.pocketId).reduce((n, e) => n + e.amount, 0)
     + state.pockets.reduce((n, p) => n + Math.max(0, state.expenses.filter(e => !e.paidAt && e.pocketId === p.id).reduce((a, e) => a + e.amount, 0) - pocketBalance(state, p.id)), 0);
   const balance = (state.opening && state.opening.date <= asOf ? state.opening.amount : 0) + received - spent;
-  return { received, spent, balance, reserved, obligations, available: balance - reserved - uncovered, initialized: !!state.opening };
+  return { received, spent, withdrawn, allocationBase: Math.max(0, received - withdrawn), balance, reserved, obligations, available: balance - reserved - uncovered, initialized: !!state.opening };
 }
 export function transferPocket(state, input) {
   requireIt(state.pockets.some(p => p.id === input.pocketId) && ['in', 'out'].includes(input.type), 'Caixinha inválida.');
