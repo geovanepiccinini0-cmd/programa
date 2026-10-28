@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { emptyWorkspace, confirmSale, receive, refundReceipt, cash, pocketBalance, transferPocket, addExpense, payExpense, cancelSale, mapMonths, syncWonLeads, forecast, cents, addMonths, validDate, validateRule } from './model.js';
+import { emptyWorkspace, confirmSale, receive, refundReceipt, cash, pocketBalance, transferPocket, addExpense, payExpense, cancelSale, mapMonths, mapSaleMonths, syncWonLeads, forecast, cents, addMonths, validDate, validateRule } from './model.js';
 const sale=(extra={})=>({id:'s1',name:'Cliente',product:'Carta Contemplada',channel:'TikTok',credit:30000000,soldAt:'2026-10-01',firstDue:'2026-10-05',saleValue:9000000,costValue:7000000,officePercent:50,...extra});
 function workspace(){const s=emptyWorkspace();s.opening={amount:0,date:'2026-10-01'};s.sales=[confirmSale(sale(),s)];return s;}
 const receipt=(extra={})=>({saleId:'s1',installmentId:'s1-0',amount:500000,date:'2026-10-10',...extra});
@@ -20,4 +20,23 @@ describe('Recebimentos e projeção',()=>{
 describe('Caixinhas sem duplicação de despesas',()=>{
   it('separar não reduz caixa; pagar pela caixinha não desconta a reserva duas vezes',()=>{let s=receive(workspace(),receipt());s.pockets=[{id:'p',name:'Operação',target:100000,percentBps:2000}];s=transferPocket(s,{pocketId:'p',amount:100000,type:'in',date:'2026-10-20'});expect(cash(s).balance).toBe(500000);expect(cash(s).available).toBe(400000);s=addExpense(s,{title:'Ferramenta',category:'CRM',amount:40000,pocketId:'p',due:'2026-10-25'});expect(cash(s).available).toBe(400000);s=payExpense(s,s.expenses[0].id,'2026-10-25');expect(pocketBalance(s,'p')).toBe(60000);expect(cash(s).balance).toBe(460000);expect(cash(s).available).toBe(400000);});
   it('não destina dinheiro previsto nem permite saldo negativo',()=>{const s=workspace();s.pockets=[{id:'p'}];expect(()=>transferPocket(s,{pocketId:'p',amount:10000,type:'in',date:'2026-10-20'})).toThrow('insuficiente');});
+});
+describe('Mapa por mês da venda × mês do recebimento',()=>{
+  it('agrupa clientes do mesmo mês sem perder o total mensal',()=>{
+    const s=workspace();s.sales.push(confirmSale(sale({id:'s2',name:'Outro cliente',soldAt:'2026-10-20',firstDue:'2026-11-05'}),s));
+    const map=mapSaleMonths(s,'2026-01');const row=map.rows.find(r=>r.saleMonth==='2026-10');
+    expect(map.rows).toHaveLength(12);expect(row.saleCount).toBe(2);expect(row.cells[9].expected).toBe(1000000);expect(row.cells[10].expected).toBe(1000000);
+    map.totals.forEach((total,i)=>expect(map.rows.reduce((n,r)=>n+r.cells[i].expected,0)).toBe(total.expected));
+  });
+  it('sobrepõe safras diferentes na mesma coluna e preserva recebimentos parciais',()=>{
+    let s=workspace();s.sales.push(confirmSale(sale({id:'s2',soldAt:'2026-09-10',firstDue:'2026-10-05',officePercent:60}),s));s=receive(s,receipt());
+    const map=mapSaleMonths(s,'2026-01');expect(map.totals[9]).toEqual({expected:1800000,paid:500000,balance:1300000});expect(map.rows.find(r=>r.saleMonth==='2026-09').cells[9].expected).toBe(800000);expect(map.rows.find(r=>r.saleMonth==='2026-10').cells[9].paid).toBe(500000);
+  });
+  it('inclui vendas do ano anterior que ainda geram comissões e permite mudar o ano',()=>{
+    const s=workspace();s.sales.push(confirmSale(sale({id:'old',soldAt:'2025-12-12',firstDue:'2026-02-05'}),s));s.sales.push(confirmSale(sale({id:'future',soldAt:'2026-12-12',firstDue:'2027-01-05'}),s));
+    expect(mapSaleMonths(s,'2026-01').rows.find(r=>r.saleMonth==='2025-12').cells[1].expected).toBe(1000000);const next=mapSaleMonths(s,'2027-01');expect(next.rows.find(r=>r.saleMonth==='2026-12').cells[0].expected).toBe(1000000);
+  });
+  it('mantém filtros, cancelamentos e ausências de data consistentes',()=>{
+    const s=workspace();s.sales.push({...s.sales[0],id:'cancelled',status:'cancelled'});s.sales[0].soldAt='';expect(mapSaleMonths(s,'2026-01').rows.find(r=>r.saleMonth==='Sem mês informado').cells[9].expected).toBe(1000000);expect(mapSaleMonths(s,'2026-01',12,'Consórcio').totals[9].expected).toBe(0);
+  });
 });

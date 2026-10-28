@@ -2,12 +2,13 @@ import { useState } from 'react';
 import SalesView from './SalesView.jsx';
 import FinanceView from './FinanceView.jsx';
 import SettingsView from './SettingsView.jsx';
-import { monthOf, businessDate, money, channelResults } from './model.js';
+import { monthOf, businessDate, money, channelResults, validDate } from './model.js';
 import { Kpis, Panel, Table } from './ui.jsx';
 import './finance.css';
 
 export default function FinanceSuite({finance,activeTab,leads=[]}) {
-  const [month,setMonth]=useState(monthOf(businessDate())),[message,setMessage]=useState(''),[actionError,setActionError]=useState('');
+  const [month,updateMonth]=useState(monthOf(businessDate())),[message,setMessage]=useState(''),[actionError,setActionError]=useState('');
+  const setMonth = value => { if (validDate(`${value}-01`)) updateMonth(value); };
   const {state,commit,loading,saving,error,reload}=finance;
   async function run(task,success='Alteração salva.') {setActionError('');setMessage('');try{await task();setMessage(success);return true;}catch(e){setActionError(e.message);return false;}}
   if(loading)return <div className="fin-app"><p role="status">Carregando vendas e financeiro...</p></div>;

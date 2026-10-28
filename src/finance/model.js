@@ -131,6 +131,30 @@ export function pocketBalance(state, pocketId) {
   return state.transfers.filter(t => t.pocketId === pocketId).reduce((n, t) => n + (t.type === 'in' ? t.amount : -t.amount), 0)
     - state.expenses.filter(e => e.pocketId === pocketId && e.paidAt).reduce((n, e) => n + e.amount, 0);
 }
+
+// Cohorts are months of SALE, not clients or installment numbers. Older sale
+// cohorts remain visible whenever they contribute to the receipt window.
+export function mapSaleMonths(state, startMonth, length = 12, product = 'Todos') {
+  const source = mapMonths(state, startMonth, length, product);
+  const groups = new Map();
+  const emptyCells = () => source.months.map(() => ({ expected: 0, paid: 0, balance: 0 }));
+  source.months.forEach(month => groups.set(month, { saleMonth: month, saleCount: 0, cells: emptyCells() }));
+  source.rows.forEach(row => {
+    const saleMonth = validDate(row.sale.soldAt) ? monthOf(row.sale.soldAt) : 'Sem mês informado';
+    const contributes = row.cells.some(cell => cell.expected || cell.paid || cell.balance);
+    if (!groups.has(saleMonth) && !contributes) return;
+    if (!groups.has(saleMonth)) groups.set(saleMonth, { saleMonth, saleCount: 0, cells: emptyCells() });
+    const group = groups.get(saleMonth);
+    group.saleCount += 1;
+    group.cells.forEach((cell, i) => {
+      cell.expected += row.cells[i].expected;
+      cell.paid += row.cells[i].paid;
+      cell.balance += row.cells[i].balance;
+    });
+  });
+  const rows = [...groups.values()].sort((a, b) => a.saleMonth.localeCompare(b.saleMonth));
+  return { months: source.months, rows, totals: source.totals };
+}
 export function cash(state, asOf = businessDate()) {
   const from = state.opening?.date || '0000-01-01';
   const received = state.receipts.filter(r => r.date >= from && r.date <= asOf).reduce((n, r) => n + (r.type === 'refund' ? -r.amount : r.amount), 0);
