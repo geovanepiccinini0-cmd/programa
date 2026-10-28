@@ -31,6 +31,61 @@ export const emptyWorkspace = () => ({ schema: 1, administrators: [], rules: [],
 const requireIt = (condition, message) => { if (!condition) throw new Error(message); };
 const amountValid = (n) => Number.isSafeInteger(n) && n >= 0 && n <= 1e12;
 
+export const CONSORTIUM_PLANS = ['Parcela integral', 'Parcela reduzida 70%', 'Parcela 50%'];
+export const canonicalPlan = plan => plan === 'Meia parcela' ? 'Parcela 50%' : plan;
+export const samePlan = (a, b) => canonicalPlan(a) === canonicalPlan(b);
+
+// The form accepts the percentage of CREDIT per installment (0.30 + 0.15
+// etc.). Keep normalized shares for compatibility with historical snapshots.
+export function ruleFromCreditRates(form, administrators) {
+  const parcels = form.parcels.map(p => ({ offset: Number(p.offset), creditBps: cents(p.creditRate) }));
+  const commissionBps = parcels.reduce((sum, p) => sum + p.creditBps, 0);
+  requireIt(commissionBps > 0 && commissionBps <= 10000, 'A soma da comissão deve estar entre 0 e 100% do crédito.');
+  let allocated = 0;
+  const normalized = parcels.map((p, index) => {
+    const shareBps = index === parcels.length - 1 ? 10000 - allocated : Math.round(p.creditBps / commissionBps * 10000);
+    allocated += shareBps;
+    return { ...p, shareBps };
+  });
+  const administrator = administrators.find(a => a.id === form.administratorId);
+  const name = form.name?.trim() || `${administrator?.name || ''} · ${form.modality} · ${canonicalPlan(form.plan)} · ${form.startsOn}`;
+  const result = { ...form, name, plan: canonicalPlan(form.plan), commissionBps, officeBps: cents(form.office), basis: 'credit', parcels: normalized };
+  delete result.office; delete result.commission;
+  validateRule(result);
+  return result;
+}
+
+export function ruleToCreditForm(rule) {
+  let allocated = 0;
+  return { ...structuredClone(rule), id: uid(), name: '', plan: canonicalPlan(rule.plan), office: String(rule.officeBps / 100), active: true,
+    calendar: rule.calendar || { mode: 'manual' },
+    parcels: rule.parcels.map((p, i) => {
+      const creditBps = p.creditBps ?? (i === rule.parcels.length - 1 ? rule.commissionBps - allocated : Math.round(rule.commissionBps * p.shareBps / 10000));
+      allocated += creditBps;
+      return { offset: p.offset, creditRate: (creditBps / 100).toFixed(2) };
+    }),
+  };
+}
+
+export function consortiumSchedule(rule, soldAt, firstDue) {
+  requireIt(validDate(soldAt) && validDate(firstDue), 'Informe fechamento e data do primeiro recebimento.');
+  const parcels = [...rule.parcels].sort((a, b) => a.offset - b.offset);
+  if (rule.calendar?.mode === 'assembly') {
+    requireIt(monthOf(firstDue) === monthOf(addMonths(soldAt, rule.calendar.firstMonthOffset ?? 1)), 'O mês do primeiro recebimento não corresponde à regra. Confira o calendário e o dia efetivo de pagamento da comissão.');
+    const afterCutoff = Number(soldAt.slice(8, 10)) > rule.calendar.cutoffDay;
+    return parcels.map((p, i) => ({ ...p, due: addMonths(firstDue, p.offset + (afterCutoff && i > 0 ? 1 : 0)) }));
+  }
+  return parcels.map(p => ({ ...p, due: addMonths(firstDue, p.offset) }));
+}
+
+export function ruleFirstDue(rule, soldAt, reference = '') {
+  if (rule?.calendar?.mode !== 'assembly' || !validDate(soldAt)) return reference;
+  const month = monthOf(addMonths(soldAt, rule.calendar.firstMonthOffset ?? 1));
+  const day = rule.calendar.receiptDay || (validDate(reference) ? Number(reference.slice(8,10)) : null);
+  if (!day) return '';
+  return addMonths(`${month}-01`, 0).slice(0,8) + String(Math.min(day, new Date(Date.UTC(Number(month.slice(0,4)),Number(month.slice(5,7)),0)).getUTCDate())).padStart(2,'0');
+}
+
 export function draftFromLead(lead) {
   return { id: `lead-${lead.id}`, leadId: lead.id, name: lead.nome, product: lead.produto, channel: lead.canal || 'Não informado', ownerId: lead.userId || '', credit: Math.round(Number(lead.credito || lead.valor || 0) * 100), soldAt: lead.wonAt ? businessDate(new Date(lead.wonAt)) : '', status: 'draft', officePercent: 50, installments: [], source: 'lead' };
 }
@@ -48,6 +103,16 @@ export function validateRule(rule) {
   requireIt(rule.parcels.every(p => Number.isInteger(p.offset) && p.offset >= 0 && p.offset <= 120 && Number.isInteger(p.shareBps) && p.shareBps > 0), 'Confira mês e percentual de cada parcela.');
   requireIt(rule.parcels.reduce((sum, p) => sum + p.shareBps, 0) === 10000, 'A distribuição das parcelas deve somar 100%.');
   requireIt(new Set(rule.parcels.map(p => p.offset)).size === rule.parcels.length, 'Não repita o mês da parcela.');
+  if (rule.basis === 'credit') {
+    requireIt(rule.parcels.every(p => Number.isInteger(p.creditBps) && p.creditBps > 0), 'Informe um percentual sobre o crédito em cada parcela.');
+    requireIt(rule.parcels.reduce((n,p) => n+p.creditBps,0) === rule.commissionBps, 'Percentuais das parcelas não conciliam com a comissão total.');
+  }
+  if (rule.calendar?.mode === 'assembly') {
+    requireIt(Number.isInteger(rule.calendar.cutoffDay) && rule.calendar.cutoffDay >= 1 && rule.calendar.cutoffDay <= 31, 'Informe o dia de vencimento/corte do grupo entre 1 e 31.');
+    requireIt(Number.isInteger(rule.calendar.firstMonthOffset ?? 1) && (rule.calendar.firstMonthOffset ?? 1) >= 0 && (rule.calendar.firstMonthOffset ?? 1) <= 12, 'Confira o mês do primeiro recebimento.');
+    requireIt(!rule.calendar.receiptDay || (Number.isInteger(rule.calendar.receiptDay) && rule.calendar.receiptDay >= 1 && rule.calendar.receiptDay <= 31), 'Confira o dia de pagamento da comissão.');
+    requireIt(Math.min(...rule.parcels.map(p => p.offset)) === 0, 'A primeira parcela deve usar mês 0 do recebimento.');
+  } else requireIt(!rule.calendar || rule.calendar.mode === 'manual', 'Calendário de recebimento inválido.');
 }
 export function saleAmounts(sale) {
   if (sale.status !== 'confirmed') return { gross: null, office: null, own: null };
@@ -56,6 +121,10 @@ export function saleAmounts(sale) {
 export const netPaid = (state, saleId, installmentId) => state.receipts.filter(r => r.saleId === saleId && (!installmentId || r.installmentId === installmentId)).reduce((sum, r) => sum + (r.type === 'refund' ? -r.amount : r.amount), 0);
 export function confirmSale(input, state) {
   const sale = { ...input };
+  if (sale.product === 'Consórcio') {
+    const rule = state.rules.find(r => r.id === sale.ruleId);
+    sale.firstDue = ruleFirstDue(rule, sale.soldAt, sale.firstDue);
+  }
   requireIt(sale.name?.trim() && validDate(sale.soldAt) && validDate(sale.firstDue), 'Informe cliente, fechamento e primeiro recebimento.');
   requireIt(amountValid(sale.credit), 'Informe o crédito contratado.');
   const previous = state.sales.find(s => s.id === sale.id);
@@ -73,7 +142,7 @@ export function confirmSale(input, state) {
     sale.ruleSnapshot = null;
   } else if (sale.product === 'Consórcio') {
     const rule = state.rules.find(r => r.id === sale.ruleId);
-    requireIt(rule && rule.active && rule.administratorId === sale.administratorId && rule.modality === sale.modality && rule.plan === sale.plan, 'Selecione uma regra ativa para administradora, modalidade e plano.');
+    requireIt(rule && rule.active && rule.administratorId === sale.administratorId && rule.modality === sale.modality && samePlan(rule.plan, sale.plan), 'Selecione uma regra ativa para administradora, categoria e plano.');
     validateRule(rule);
     requireIt(state.administrators.some(a => a.id === rule.administratorId && a.active), 'Administradora inativa.');
     requireIt(sale.soldAt >= rule.startsOn && (!rule.endsOn || sale.soldAt <= rule.endsOn), 'Regra fora da vigência na data de fechamento.');
@@ -81,13 +150,15 @@ export function confirmSale(input, state) {
     sale.office = Math.round(sale.gross * rule.officeBps / 10000);
     sale.own = sale.gross - sale.office;
     sale.ruleSnapshot = structuredClone(rule);
-    parcels = [...rule.parcels].sort((a, b) => a.offset - b.offset);
+    parcels = consortiumSchedule(rule, sale.soldAt, sale.firstDue);
   } else throw new Error('Comissionamento disponível nesta entrega para Consórcio e Carta Contemplada.');
   let distributed = 0;
   sale.installments = parcels.map((p, index) => {
-    const amount = index === parcels.length - 1 ? sale.own - distributed : Math.round(sale.own * p.shareBps / 10000);
+    const parcelGross = p.creditBps ? Math.round(sale.credit * p.creditBps / 10000) : null;
+    const ownPortion = parcelGross == null ? Math.round(sale.own * p.shareBps / 10000) : parcelGross - Math.round(parcelGross * sale.ruleSnapshot.officeBps / 10000);
+    const amount = index === parcels.length - 1 ? sale.own - distributed : ownPortion;
     distributed += amount;
-    return { id: `${sale.id}-${index}`, number: index + 1, due: addMonths(sale.firstDue, p.offset), amount };
+    return { id: `${sale.id}-${index}`, number: index + 1, due: p.due || addMonths(sale.firstDue, p.offset), amount };
   });
   requireIt(sale.installments.every(p => p.amount >= 0), 'Distribuição não comporta o valor da comissão.');
   return { ...sale, status: 'confirmed', confirmedAt: previous?.confirmedAt || new Date().toISOString() };
