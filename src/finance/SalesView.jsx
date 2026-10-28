@@ -1,8 +1,9 @@
 import { useState } from 'react';
+import { categoryOptions as consortiumCategories } from './categories.js';
 import { uid, cents, money, dateLabel, businessDate, monthOf, confirmSale, cancelSale, exportCSV, samePlan, canonicalPlan, CONSORTIUM_PLANS, ruleFirstDue, consortiumSchedule, validDate } from './model.js';
 import { Field, Amount, Panel, Table, Empty, Status, Kpis } from './ui.jsx';
 
-const blankSale=()=>({id:uid(),name:'',product:'Carta Contemplada',channel:'Não informado',soldAt:businessDate(),firstDue:'',credit:'',saleValue:'',costValue:'',officePercent:50,administratorId:'',modality:'Imobiliário',plan:'Parcela integral',ruleId:'',status:'draft',installments:[]});
+const blankSale=()=>({id:uid(),name:'',product:'Carta Contemplada',channel:'Não informado',soldAt:businessDate(),firstDue:'',credit:'',saleValue:'',costValue:'',officePercent:50,administratorId:'',modality:'Imóveis',plan:'Parcela integral',ruleId:'',status:'draft',installments:[]});
 const toForm=s=>({...s,credit:s.credit==null||s.credit===''?'':s.credit/100,saleValue:s.saleValue==null||s.saleValue===''?'':s.saleValue/100,costValue:s.costValue==null||s.costValue===''?'':s.costValue/100,firstDue:s.firstDue || ''});
 export default function SalesView({state,commit,run,saving,month,setMonth,leads=[]}) {
   const [editing,setEditing]=useState(null),[query,setQuery]=useState(''),[scope,setScope]=useState('all'),[report,setReport]=useState(false);
@@ -16,7 +17,7 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
     return next;
   });
   const adminRules=state.rules.filter(r=>r.active&&r.administratorId===editing?.administratorId);
-  const categoryOptions=[...new Set([...adminRules.map(r=>r.modality),editing?.modality].filter(Boolean))];
+  const categoryOptions=consortiumCategories([...adminRules.map(r=>r.modality),editing?.modality]);
   const planOptions=[...new Set([...adminRules.filter(r=>r.modality===editing?.modality).map(r=>canonicalPlan(r.plan)),...CONSORTIUM_PLANS,canonicalPlan(editing?.plan)].filter(Boolean))];
   const rules=adminRules.filter(r=>r.modality===editing?.modality&&samePlan(r.plan,editing?.plan));
   const selectedRule=editing?.product==='Consórcio'&&state.rules.find(r=>r.id===editing.ruleId);
