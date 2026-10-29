@@ -43,7 +43,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
 
   const [activeTab, setActiveTab] = useState('hoje');
   useEffect(() => {
-    if (isAdmin && ['vendas', 'financeiro', 'configuracoes', 'metricas'].includes(activeTab)) finance.reload();
+    if (isAdmin && ['vendas', 'financeiro', 'configuracoes', 'clientes', 'metricas'].includes(activeTab)) finance.reload();
   }, [activeTab, isAdmin, finance.reload]);
   const [filterProduto, setFilterProduto] = useState('Todos');
   const [filterStale, setFilterStale] = useState(false);
@@ -160,7 +160,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
       />
 
       <main className="crm-workspace">
-      {!['metricas', 'vendas', 'financeiro', 'configuracoes'].includes(activeTab) && <div className="page-heading"><span className="eyebrow">Painel Piccinini</span><h1>{{ hoje: 'Seu dia, com clareza', funil: 'Cada oportunidade no seu lugar', rotina: 'Uma rotina que faz acontecer', conversas: 'Suas conversas, organizadas' }[activeTab]}</h1><p>{{ hoje: 'Agenda, retornos e próximas ações para o seu dia.', funil: 'Todos os detalhes dos leads, com uma leitura mais clara.', rotina: 'Organize suas tarefas recorrentes e acompanhe a execução.', conversas: 'Continue seus atendimentos com todo o contexto.' }[activeTab]}</p></div>}
+      {!['metricas', 'vendas', 'financeiro', 'configuracoes', 'clientes'].includes(activeTab) && <div className="page-heading"><span className="eyebrow">Painel Piccinini</span><h1>{{ hoje: 'Seu dia, com clareza', funil: 'Cada oportunidade no seu lugar', rotina: 'Uma rotina que faz acontecer', conversas: 'Suas conversas, organizadas' }[activeTab]}</h1><p>{{ hoje: 'Agenda, retornos e próximas ações para o seu dia.', funil: 'Todos os detalhes dos leads, com uma leitura mais clara.', rotina: 'Organize suas tarefas recorrentes e acompanhe a execução.', conversas: 'Continue seus atendimentos com todo o contexto.' }[activeTab]}</p></div>}
       <AppointmentAlertBanner
         upcoming={appointmentAlerts.upcoming}
         permission={appointmentAlerts.permission}
@@ -169,9 +169,9 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
         leads={leads}
       />
 
-      {!['metricas', 'vendas', 'financeiro', 'configuracoes'].includes(activeTab) && <StatsBar leads={leads} tasks={tasks} />}
+      {!['metricas', 'vendas', 'financeiro', 'configuracoes', 'clientes'].includes(activeTab) && <StatsBar leads={leads} tasks={tasks} />}
 
-      {isAdmin && ['vendas', 'financeiro', 'configuracoes', 'metricas'].includes(activeTab) && <FinanceSuite finance={finance} activeTab={activeTab} leads={leads} />}
+      {isAdmin && ['vendas', 'financeiro', 'configuracoes', 'clientes', 'metricas'].includes(activeTab) && <FinanceSuite finance={finance} activeTab={activeTab} leads={leads} />}
 
       {activeTab === 'metricas' && isAdmin && <MetricasView userId={userId} />}
 

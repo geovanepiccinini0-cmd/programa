@@ -183,10 +183,13 @@ export function refundReceipt(state, input) {
   requireIt(input.amount <= receipt.amount - refunded, 'Devolução supera o recebido.');
   return { ...state, receipts: [...state.receipts, { ...input, id: uid(), saleId: receipt.saleId, installmentId: receipt.installmentId, type: 'refund', recordedAt: new Date().toISOString() }] };
 }
-export function cancelSale(state, id, reason) {
+export function cancelSale(state, id, reason, category = 'Outro') {
   requireIt(reason?.trim(), 'Informe o motivo do cancelamento.');
   requireIt(netPaid(state, id) === 0, 'Registre a devolução dos recebimentos antes de cancelar.');
-  return { ...state, sales: state.sales.map(s => s.id === id ? { ...s, status: 'cancelled', cancelReason: reason, cancelledAt: new Date().toISOString() } : s) };
+  const target=state.sales.find(s=>s.id===id);
+  requireIt(target && target.status!=='cancelled', 'Venda ausente ou já cancelada.');
+  const date=new Date().toISOString();
+  return { ...state, saleEvents:[...(state.saleEvents||[]),{id:uid(),saleId:id,type:'cancelled',date,note:reason.trim(),category}], sales: state.sales.map(s => s.id === id ? { ...s, status: 'cancelled', cancelReason: reason.trim(), cancelledAt: date } : s) };
 }
 export function installments(state) {
   return state.sales.filter(s => s.status === 'confirmed').flatMap(s => s.installments.map(p => ({ ...p, sale: s, paid: netPaid(state, s.id, p.id), balance: p.amount - netPaid(state, s.id, p.id) })));

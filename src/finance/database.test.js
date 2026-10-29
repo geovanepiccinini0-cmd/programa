@@ -1,9 +1,10 @@
+import { customerPortfolio, saveCustomer, restoreSale } from './customers.js';
 import { historicalRuleConfirmation } from './historicalSales.js';
 import { deleteCommissionRule } from './rules.js';
 import { PGlite } from '@electric-sql/pglite';
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { emptyWorkspace, confirmSale, ruleFromCreditRates } from './model.js';
+import { emptyWorkspace, confirmSale, ruleFromCreditRates, cancelSale } from './model.js';
 let db;
 const admin='00000000-0000-0000-0000-000000000001',seller='00000000-0000-0000-0000-000000000002';
 const migration=readFileSync(new URL('../../supabase/migrations/20261028105435_commercial_finance_workspace.sql',import.meta.url),'utf8');
@@ -76,6 +77,21 @@ describe('Persistência PostgreSQL isolada — sem produção',()=>{
     expect(saved.sales.find(s=>s.id==='historical-sale')).toMatchObject({status:'confirmed',soldAt:'2026-08-05',historicalRuleConfirmation:{confirmed:true},ruleSnapshot:{startsOn:'2026-10-28'}});
     expect(saved.rules.find(r=>r.id===rule.id).startsOn).toBe('2026-10-28');
     expect(saved.receipts).toEqual(record.data.receipts);
+  });
+
+  it('persiste carteira e restauração pelo RPC auditado sem reescrever condições ou recebimentos',async()=>{
+    await as(admin);const record=(await db.query('select * from public.crm_finance_workspace')).rows[0];
+    const customer=customerPortfolio(record.data).find(c=>c.saleIds.includes('sale-test'));
+    customer.cpf='00000000000';customer.contracts={'sale-test':{group:'001',quota:'002',contract:'TESTE'}};
+    let next=saveCustomer(record.data,customer);next=cancelSale(next,'sale-test','Documentação pendente','Documentação');
+    await db.query('select public.crm_save_finance_workspace($1,$2,$3)',[record.revision,next,'Cancelar e completar ficha']);
+    next=restoreSale(next,'sale-test',{mode:'same',note:'Documentos regularizados'});
+    await db.query('select public.crm_save_finance_workspace($1,$2,$3)',[record.revision+1,next,'Recuperação de venda']);
+    const saved=(await db.query('select data from public.crm_finance_workspace')).rows[0].data;
+    expect(saved.sales.find(s=>s.id==='sale-test')).toEqual(record.data.sales.find(s=>s.id==='sale-test'));
+    expect(saved.receipts).toEqual(record.data.receipts);
+    expect(saved.customers.find(c=>c.id===customer.id).contracts['sale-test'].quota).toBe('002');
+    expect(saved.saleEvents.slice(-2).map(e=>e.type)).toEqual(['cancelled','restored']);
   });
 
 });

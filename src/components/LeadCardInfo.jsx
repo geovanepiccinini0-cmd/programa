@@ -48,7 +48,7 @@ export function LeadCardBody({ lead, footer }) {
         </div>
         <div className="card-product">
           <span className="prod-badge" style={{ '--product-color': lead.produto === 'A identificar' ? 'var(--text-dim)' : PROD_COLOR[lead.produto] || 'var(--text-dim)' }}>{lead.produto}</span>
-          {lead.tipo && <span className="card-type">{lead.tipo}</span>}
+          {(lead.tipo || ['Consórcio','Carta Contemplada','Financiamento'].includes(lead.produto)) && <span className="card-type">{lead.tipo || 'Finalidade a informar'}</span>}
         </div>
       </div>
       {(lead.tags && lead.tags.length > 0) || leadHasNoNextAction(lead) ? (
