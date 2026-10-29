@@ -20,3 +20,5 @@ describe('cartão completo do lead', () => {
     expect(renderToStaticMarkup(<LeadCardBody lead={{ ...base, produto: 'Consórcio', etapa: 'Ganho', proximoContato: '' }}/>)).not.toContain('SEM PRÓXIMA AÇÃO');
   });
 });
+it.each(['Veículo','Investimento','Pesados','Imóvel'])('mostra a finalidade %s no card sem abrir o lead',tipo=>{expect(renderToStaticMarkup(<LeadCardBody lead={{...base,produto:'Consórcio',tipo}}/>)).toContain(tipo);});
+it('não inventa a finalidade de um lead antigo sem tipo',()=>{expect(renderToStaticMarkup(<LeadCardBody lead={{...base,produto:'Consórcio',tipo:''}}/>)).toContain('Finalidade a informar');});

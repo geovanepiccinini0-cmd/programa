@@ -122,16 +122,16 @@ export default function LeadModal({ lead, tasks, onClose, onSave, onAddInteracti
 
   function buildExtraForSave() {
     if (produto === 'Carta Contemplada') {
-      return { tipo: extra.tipo, credito: parseMoneyValue(extra.credito), entrada: parseMoneyValue(extra.entrada), parcela: parseMoneyValue(extra.parcela), lance: null, valor: null, valorImovel: null };
+      return { tipo: extra.tipo || 'Veículo', credito: parseMoneyValue(extra.credito), entrada: parseMoneyValue(extra.entrada), parcela: parseMoneyValue(extra.parcela), lance: null, valor: null, valorImovel: null };
     }
     if (produto === 'Consórcio') {
-      return { tipo: extra.tipo, credito: parseMoneyValue(extra.credito), parcela: parseMoneyValue(extra.parcela), lance: parseMoneyValue(extra.lance), entrada: null, valor: null, valorImovel: null };
+      return { tipo: extra.tipo || 'Imóvel', credito: parseMoneyValue(extra.credito), parcela: parseMoneyValue(extra.parcela), lance: parseMoneyValue(extra.lance), entrada: null, valor: null, valorImovel: null };
     }
     if (produto === 'Home Equity') {
       return { valor: parseMoneyValue(extra.valor), valorImovel: parseMoneyValue(extra.valorImovel), tipo: null, credito: null, entrada: null, parcela: null, lance: null };
     }
     if (produto === 'Financiamento') {
-      return { tipo: extra.tipo, valor: parseMoneyValue(extra.valor), entrada: parseMoneyValue(extra.entrada), parcela: parseMoneyValue(extra.parcela), credito: null, lance: null, valorImovel: null };
+      return { tipo: extra.tipo || 'Imóvel', valor: parseMoneyValue(extra.valor), entrada: parseMoneyValue(extra.entrada), parcela: parseMoneyValue(extra.parcela), credito: null, lance: null, valorImovel: null };
     }
     return { valor: parseMoneyValue(extra.valor), tipo: null, credito: null, entrada: null, parcela: null, lance: null, valorImovel: null };
   }

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import SaleRecovery from './SaleRecovery.jsx';
 import { canConfirmHistoricalRule, historicalRuleConfirmation, hasHistoricalRuleConfirmation } from './historicalSales.js';
 import { fillSaleFromLead } from './leadSale.js';
 import { categoryOptions as consortiumCategories } from './categories.js';
@@ -28,6 +29,8 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
   const projectedFirst=selectedRule?ruleFirstDue(selectedRule,editing.soldAt,editing.firstDue):editing?.firstDue;
   let calendarPreview=[];
   if(selectedRule&&validDate(projectedFirst)&&validDate(editing?.soldAt)){try{calendarPreview=consortiumSchedule(selectedRule,editing.soldAt,projectedFirst);}catch{/* Validation appears when confirming. */}}
+  const customer=editing&&(state.customers||[]).find(c=>c.saleIds?.includes(editing.id));
+  const references=customer?.contracts?.[editing?.id];
   const locked=editing&&(editing.status==='cancelled'||state.receipts.some(r=>r.saleId===editing.id));
   async function save(event,status) {
     event.preventDefault();
@@ -81,12 +84,14 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
       {calendarPreview.length>0&&<div className="fin-calculation"><span>Calendário projetado<strong style={{fontSize:14}}>{calendarPreview.map((p,i)=>`${i+1}ª: ${dateLabel(p.due)}`).join(' · ')}</strong></span></div>}
       {editing.product==='Carta Contemplada'&&<div className="fin-calculation"><span>Comissão total<strong>{editing.saleValue!==''&&editing.costValue!==''?money(Math.round((Number(editing.saleValue)-Number(editing.costValue))*100)):'Pendente'}</strong></span><span>Sua parte antes de despesas<strong>{editing.saleValue!==''&&editing.costValue!==''?money(Math.round((Number(editing.saleValue)-Number(editing.costValue))*100)-Math.round(Math.round((Number(editing.saleValue)-Number(editing.costValue))*100)*editing.officePercent/100)):'Pendente'}</strong></span></div>}
       <div className="fin-actions"><button className="btn-primary" type="submit">Confirmar venda e previsão</button>{editing.status!=='confirmed'&&<button type="button" onClick={e=>save(e,'draft')}>Salvar pendente</button>}</div></fieldset></form>
+      {state.sales.some(s=>s.id===editing.id)&&<SaleRecovery key={editing.id} sale={state.sales.find(s=>s.id===editing.id)||editing} state={state} commit={commit} run={run} saving={saving} onChanged={()=>setEditing(null)}/>}
+      {references&&<p className="fin-callout">Administradora: {references.administrator||'—'} · Grupo: {references.group||'—'} · Cota: {references.quota||'—'} · Contrato: {references.contract||editing.contract||'—'}{customer.cpf&&` · CPF: ${customer.cpf}`}</p>}
       {locked&&editing.ruleSnapshot&&<p className="fin-note">Regra preservada: {editing.ruleSnapshot.name} · {editing.ruleSnapshot.commissionBps/100}% · {editing.installments.length} parcelas.</p>}
     </Panel>}
     <Panel title="Seus negócios" note="Ganhos geram fichas pendentes automaticamente. Comissões só entram na projeção após confirmação.">
       <div className="fin-toolbar"><Field label="Buscar cliente" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Nome do cliente"/><Field label="Situação"><select value={scope} onChange={e=>setScope(e.target.value)}><option value="all">Todas</option><option value="draft">Pendentes</option><option value="confirmed">Confirmadas</option><option value="cancelled">Canceladas</option></select></Field></div>
       <Table headers={['Cliente / produto','Origem','Fechamento','Sua comissão','Situação','Ações']}>
-        {all.map(s=><tr key={s.id}><th scope="row">{s.name}<small>{s.product}{s.contract?` · ${s.contract}`:''}</small>{s.leadId&&leads.some(l=>l.id===s.leadId&&l.etapa!=='Ganho')&&<small className="fin-warning">Lead reaberto: revisar venda</small>}</th><td>{s.channel}</td><td>{dateLabel(s.soldAt)}</td><td>{money(s.status==='confirmed'?s.own:null)}</td><td><Status value={s.status}/></td><td><button onClick={()=>setEditing(toForm(fillSaleFromLead(s,leads.find(l=>l.id===s.leadId))))}>Detalhes</button>{s.status!=='cancelled'&&<button disabled={saving} onClick={()=>{const reason=prompt('Motivo do cancelamento (a ficha será preservada):');if(reason)run(()=>commit(current=>cancelSale(current,s.id,reason),'Cancelamento de venda'),'Venda cancelada.');}}>Cancelar</button>}</td></tr>)}
+        {all.map(s=><tr key={s.id}><th scope="row">{s.name}<small>{s.product}{s.contract?` · ${s.contract}`:''}</small>{s.leadId&&leads.some(l=>l.id===s.leadId&&l.etapa!=='Ganho')&&<small className="fin-warning">Lead reaberto: revisar venda</small>}</th><td>{s.channel}</td><td>{dateLabel(s.soldAt)}</td><td>{money(s.status==='confirmed'?s.own:null)}</td><td><Status value={s.status}/></td><td><button onClick={()=>setEditing(toForm(fillSaleFromLead(s,leads.find(l=>l.id===s.leadId))))}>Detalhes</button></td></tr>)}
       </Table>{!all.length&&<Empty/>}
     </Panel>
   </>;

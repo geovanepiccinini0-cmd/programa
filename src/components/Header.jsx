@@ -9,10 +9,10 @@ const TABS = [
   { key: 'conversas', label: 'Conversas', icon: 'chat' },
 ];
 
-export default function Header({ activeTab, onTabChange, onNewLead, onOpenExport, onExportBackup, onImportBackup, onSignOut, isAdmin, preview = false }) {
+export default function Header({ activeTab, onTabChange, onNewLead, onOpenExport, onExportBackup, onImportBackup, onSignOut, isAdmin, preview = false, portfolioPreview = false }) {
   const fileInputRef = useRef(null);
   const baseTabs = preview ? TABS.filter(t => t.key === 'funil') : TABS;
-  const tabs = isAdmin ? [...baseTabs, { key: 'vendas', label: 'Vendas', icon: 'file' }, { key: 'financeiro', label: 'Financeiro', icon: 'chart' }, { key: 'metricas', label: 'Métricas', icon: 'chart' }, { key: 'configuracoes', label: 'Configurações', icon: 'tools' }] : baseTabs;
+  const tabs = isAdmin ? [...baseTabs, { key: 'vendas', label: 'Vendas', icon: 'file' }, { key: 'clientes', label: 'Clientes', icon: 'file' }, { key: 'financeiro', label: 'Financeiro', icon: 'chart' }, { key: 'metricas', label: 'Métricas', icon: 'chart' }, { key: 'configuracoes', label: 'Configurações', icon: 'tools' }] : baseTabs;
 
   function handleFileChange(e) {
     const file = e.target.files[0];
