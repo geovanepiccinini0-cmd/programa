@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   formatPhoneBR, fmtDate, moneyFormat, parseMoneyValue, leadMatchesSearch,
   isTaskOverdue, minutesUntil, upcomingAppointments, leadHasNoNextAction,
@@ -81,6 +81,8 @@ describe('isTaskOverdue', () => {
 });
 
 describe('minutesUntil / upcomingAppointments', () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date(2026, 10, 2, 12, 0, 0)); });
+  afterEach(() => vi.useRealTimers());
   it('retorna null sem data ou horário', () => {
     expect(minutesUntil(null, '10:00')).toBeNull();
     expect(minutesUntil('2026-01-01', null)).toBeNull();
