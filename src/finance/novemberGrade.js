@@ -92,7 +92,7 @@ export function prepareNovemberGrade(state) {
     return ruleFromCreditRates({
       id: `grade-nov-2026-${index + 1}`, name: `${item.admin} · ${item.category} · ${item.plan} · 10/11/2026`,
       administratorId: admin.id, modality: item.category, plan: item.plan,
-      office: String((exact?.officeBps ?? 0) / 100), startsOn, endsOn: '', active: true,
+      office: '0', startsOn, endsOn: '', active: true,
       conditions: item.conditions, calendar: reference?.calendar || { mode: 'manual' },
       basis: item.equalRate ? 'equal' : 'credit', equalRate: item.equalRate,
       parcels: item.rates.map((rate,i)=>({offset:item.offsets?.[i] ?? i,creditRate:String(rate)})),
