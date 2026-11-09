@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import SaleRecovery from './SaleRecovery.jsx';
+import { SettlementEditor, SettlementReport, validateSettlement } from './ContemplatedSettlement.jsx';
 import { canConfirmHistoricalRule, historicalRuleConfirmation, hasHistoricalRuleConfirmation } from './historicalSales.js';
 import { fillSaleFromLead } from './leadSale.js';
 import { categoryOptions as consortiumCategories } from './categories.js';
@@ -29,6 +30,7 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
   const projectedFirst=selectedRule?ruleFirstDue(selectedRule,editing.soldAt,editing.firstDue):editing?.firstDue;
   let calendarPreview=[];
   if(selectedRule&&validDate(projectedFirst)&&validDate(editing?.soldAt)){try{calendarPreview=consortiumSchedule(selectedRule,editing.soldAt,projectedFirst);}catch{/* Validation appears when confirming. */}}
+  const savedSale=state.sales.find(s=>s.id===editing?.id);
   const customer=editing&&(state.customers||[]).find(c=>c.saleIds?.includes(editing.id));
   const references=customer?.contracts?.[editing?.id];
   const locked=editing&&(editing.status==='cancelled'||state.receipts.some(r=>r.saleId===editing.id));
@@ -41,6 +43,7 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
         const previous=s.sales.find(v=>v.id===input.id);
         if(previous?.status==='confirmed'&&status==='draft')throw new Error('Venda confirmada não pode voltar a rascunho.');
         const next=status==='confirmed'?confirmSale(input,s):{...input,status:'draft',installments:[]};
+        if(next.product==='Carta Contemplada')validateSettlement(next,s.contemplatedSettlements?.[next.id]);
         return {...s,sales:previous?s.sales.map(v=>v.id===next.id?next:v):[...s.sales,next]};
       },status==='confirmed'?'Confirmação de venda e calendário':'Dados da venda');
       setEditing(null);
@@ -56,6 +59,7 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
         {contemplated.map(s=><tr key={s.id}><th scope="row">{s.name}<small>{dateLabel(s.soldAt)}</small>{s.supplier&&<small>Parceiro: {s.supplier}</small>}</th><td>{money(s.credit)}</td><td>{money(s.saleValue)}</td><td>{money(s.costValue)}</td><td>{money(s.gross)}</td><td>{s.officePercent}% / {100-s.officePercent}%</td><td>{money(s.office)}</td><td>{money(s.own)}</td></tr>)}
       </Table>{!contemplated.length&&<Empty/>}
     </Panel>}
+    {report&&<SettlementReport sales={contemplated} state={state}/>}
     {editing&&<Panel title={locked?'Condições históricas da venda':'Condições da venda'} note={locked?'Existem movimentos financeiros. Condições preservadas; devoluções e cancelamentos ficam no Financeiro.':editing.product==='Carta Contemplada'?'O valor de venda é a entrada informada no lead. Confira os dados, preencha o custo e identifique o parceiro. A parcela do consórcio é apenas informativa.':'Crédito, valor comercial e sua remuneração são informações distintas.'} actions={<button onClick={()=>setEditing(null)}>Fechar</button>}>
       <form onSubmit={e=>save(e,'confirmed')}><fieldset disabled={saving||locked} className="fin-fieldset"><div className="fin-form">
         <Field label="Cliente" value={editing.name} onChange={e=>field('name',e.target.value)} required/>
@@ -84,6 +88,7 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
       {calendarPreview.length>0&&<div className="fin-calculation"><span>Calendário projetado<strong style={{fontSize:14}}>{calendarPreview.map((p,i)=>`${i+1}ª: ${dateLabel(p.due)}`).join(' · ')}</strong></span></div>}
       {editing.product==='Carta Contemplada'&&<div className="fin-calculation"><span>Comissão total<strong>{editing.saleValue!==''&&editing.costValue!==''?money(Math.round((Number(editing.saleValue)-Number(editing.costValue))*100)):'Pendente'}</strong></span><span>Sua parte antes de despesas<strong>{editing.saleValue!==''&&editing.costValue!==''?money(Math.round((Number(editing.saleValue)-Number(editing.costValue))*100)-Math.round(Math.round((Number(editing.saleValue)-Number(editing.costValue))*100)*editing.officePercent/100)):'Pendente'}</strong></span></div>}
       <div className="fin-actions"><button className="btn-primary" type="submit">Confirmar venda e previsão</button>{editing.status!=='confirmed'&&<button type="button" onClick={e=>save(e,'draft')}>Salvar pendente</button>}</div></fieldset></form>
+      {savedSale?.product==='Carta Contemplada'&&<SettlementEditor key={savedSale.id} sale={savedSale} state={state} commit={commit} run={run} saving={saving}/>}
       {state.sales.some(s=>s.id===editing.id)&&<SaleRecovery key={editing.id} sale={state.sales.find(s=>s.id===editing.id)||editing} state={state} commit={commit} run={run} saving={saving} onChanged={()=>setEditing(null)}/>}
       {references&&<p className="fin-callout">Administradora: {references.administrator||'—'} · Grupo: {references.group||'—'} · Cota: {references.quota||'—'} · Contrato: {references.contract||editing.contract||'—'}{customer.cpf&&` · CPF: ${customer.cpf}`}</p>}
       {locked&&editing.ruleSnapshot&&<p className="fin-note">Regra preservada: {editing.ruleSnapshot.name} · {editing.ruleSnapshot.commissionBps/100}% · {editing.installments.length} parcelas.</p>}
