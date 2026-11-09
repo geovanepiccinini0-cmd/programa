@@ -13,6 +13,9 @@ export function demoWorkspace() {
   ];
   state.sales = rows.map(row => confirmSale(row, state));
   state.sales.push({ id:'sale-d',name:'Cliente exemplo D',product:'Carta Contemplada',channel:'Site Próprio',credit:20000000,status:'draft',soldAt:'',installments:[],officePercent:50 });
+  state.contemplatedSettlements = {
+    'sale-a': { customerDeposit: 300000, partnerDeposit: 200000, customerBalancePaid: 0, partnerBalancePaid: 0 },
+  };
   state.receipts = [{ id:uid(),saleId:'sale-a',installmentId:'sale-a-0',date:first,amount:500000,type:'receipt' }];
   state.pockets = [{ id:'p-reinvest',name:'Reinvestimento',target:500000,percentBps:1500 },{ id:'p-operation',name:'Operação',target:200000,percentBps:2000 },{ id:'p-reserve',name:'Reserva',target:1000000,percentBps:2000 },{ id:'p-personal',name:'Retirada pessoal',target:0,percentBps:0 }];
   return state;
