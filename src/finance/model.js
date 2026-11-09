@@ -40,19 +40,25 @@ export const samePlan = (a, b) => canonicalPlan(a) === canonicalPlan(b);
 // The form accepts the percentage of CREDIT per installment (0.30 + 0.15
 // etc.). Keep normalized shares for compatibility with historical snapshots.
 export function ruleFromCreditRates(form, administrators) {
-  const parcels = form.parcels.map(p => ({ offset: Number(p.offset), creditBps: cents(p.creditRate) }));
-  const commissionBps = parcels.reduce((sum, p) => sum + p.creditBps, 0);
+  const equal = form.basis === 'equal';
+  const parcels = form.parcels.map(p => {
+    if (equal) return { offset: Number(p.offset) };
+    const rate = String(p.creditRate);
+    requireIt(/^\d+(?:\.\d{1,3})?$/.test(rate), 'Informe a comissão da parcela com até três casas decimais.');
+    return { offset: Number(p.offset), creditBps: Math.round(Number(rate) * 1000) / 10 };
+  });
+  const commissionBps = equal ? cents(form.equalRate) : parcels.reduce((sum, p) => sum + Math.round(p.creditBps * 10), 0) / 10;
   requireIt(commissionBps > 0 && commissionBps <= 10000, 'A soma da comissão deve estar entre 0 e 100% do crédito.');
   let allocated = 0;
   const normalized = parcels.map((p, index) => {
-    const shareBps = index === parcels.length - 1 ? 10000 - allocated : Math.round(p.creditBps / commissionBps * 10000);
+    const shareBps = index === parcels.length - 1 ? 10000 - allocated : Math.round(equal ? 10000 / parcels.length : p.creditBps / commissionBps * 10000);
     allocated += shareBps;
     return { ...p, shareBps };
   });
   const administrator = administrators.find(a => a.id === form.administratorId);
   const name = form.name?.trim() || `${administrator?.name || ''} · ${form.modality} · ${canonicalPlan(form.plan)} · ${form.startsOn}`;
-  const result = { ...form, name, plan: canonicalPlan(form.plan), commissionBps, officeBps: cents(form.office), basis: 'credit', parcels: normalized };
-  delete result.office; delete result.commission;
+  const result = { ...form, name, plan: canonicalPlan(form.plan), commissionBps, officeBps: cents(form.office), basis: equal ? 'equal' : 'credit', parcels: normalized };
+  delete result.office; delete result.commission; delete result.equalRate;
   validateRule(result);
   return result;
 }
@@ -60,11 +66,11 @@ export function ruleFromCreditRates(form, administrators) {
 export function ruleToCreditForm(rule) {
   let allocated = 0;
   return { ...structuredClone(rule), id: uid(), name: '', plan: canonicalPlan(rule.plan), office: String(rule.officeBps / 100), active: true,
-    calendar: rule.calendar || { mode: 'manual' },
+    calendar: rule.calendar || { mode: 'manual' }, equalRate: String(rule.commissionBps / 100),
     parcels: rule.parcels.map((p, i) => {
       const creditBps = p.creditBps ?? (i === rule.parcels.length - 1 ? rule.commissionBps - allocated : Math.round(rule.commissionBps * p.shareBps / 10000));
       allocated += creditBps;
-      return { offset: p.offset, creditRate: (creditBps / 100).toFixed(2) };
+      return { offset: p.offset, creditRate: (creditBps / 100).toFixed(Number.isInteger(creditBps) ? 2 : 3) };
     }),
   };
 }
@@ -99,15 +105,15 @@ export function syncWonLeads(state, leads) {
 export function validateRule(rule) {
   requireIt(rule.administratorId && rule.modality && rule.plan && rule.name?.trim(), 'Informe administradora, modalidade, plano e nome da regra.');
   requireIt(validDate(rule.startsOn) && (!rule.endsOn || (validDate(rule.endsOn) && rule.endsOn >= rule.startsOn)), 'Confira a vigência da regra.');
-  requireIt(Number.isInteger(rule.commissionBps) && rule.commissionBps > 0 && rule.commissionBps <= 10000, 'Comissão deve estar entre 0 e 100%.');
+  requireIt(Number.isInteger(rule.commissionBps * 10) && rule.commissionBps > 0 && rule.commissionBps <= 10000, 'Comissão deve estar entre 0 e 100%.');
   requireIt(Number.isInteger(rule.officeBps) && rule.officeBps >= 0 && rule.officeBps <= 10000, 'Repasse inválido.');
   requireIt(rule.parcels?.length > 0 && rule.parcels.length <= 60, 'Cadastre entre 1 e 60 parcelas.');
   requireIt(rule.parcels.every(p => Number.isInteger(p.offset) && p.offset >= 0 && p.offset <= 120 && Number.isInteger(p.shareBps) && p.shareBps > 0), 'Confira mês e percentual de cada parcela.');
   requireIt(rule.parcels.reduce((sum, p) => sum + p.shareBps, 0) === 10000, 'A distribuição das parcelas deve somar 100%.');
   requireIt(new Set(rule.parcels.map(p => p.offset)).size === rule.parcels.length, 'Não repita o mês da parcela.');
   if (rule.basis === 'credit') {
-    requireIt(rule.parcels.every(p => Number.isInteger(p.creditBps) && p.creditBps > 0), 'Informe um percentual sobre o crédito em cada parcela.');
-    requireIt(rule.parcels.reduce((n,p) => n+p.creditBps,0) === rule.commissionBps, 'Percentuais das parcelas não conciliam com a comissão total.');
+    requireIt(rule.parcels.every(p => Number.isInteger(p.creditBps * 10) && p.creditBps > 0), 'Informe um percentual sobre o crédito em cada parcela.');
+    requireIt(rule.parcels.reduce((n,p) => n+Math.round(p.creditBps * 10),0) === Math.round(rule.commissionBps * 10), 'Percentuais das parcelas não conciliam com a comissão total.');
   }
   if (rule.calendar?.mode === 'assembly') {
     requireIt(Number.isInteger(rule.calendar.cutoffDay) && rule.calendar.cutoffDay >= 1 && rule.calendar.cutoffDay <= 31, 'Informe o dia de vencimento/corte do grupo entre 1 e 31.');
@@ -159,7 +165,9 @@ export function confirmSale(input, state) {
   sale.installments = parcels.map((p, index) => {
     const parcelGross = p.creditBps ? Math.round(sale.credit * p.creditBps / 10000) : null;
     const ownPortion = parcelGross == null ? Math.round(sale.own * p.shareBps / 10000) : parcelGross - Math.round(parcelGross * sale.ruleSnapshot.officeBps / 10000);
-    const amount = index === parcels.length - 1 ? sale.own - distributed : ownPortion;
+    const amount = sale.ruleSnapshot?.basis === 'equal'
+      ? Math.round(sale.own * (index + 1) / parcels.length) - distributed
+      : index === parcels.length - 1 ? sale.own - distributed : ownPortion;
     distributed += amount;
     return { id: `${sale.id}-${index}`, number: index + 1, due: p.due || addMonths(sale.firstDue, p.offset), amount };
   });

@@ -1,3 +1,4 @@
+import { prepareNovemberGrade } from './novemberGrade.js';
 import { emptyWorkspace, confirmSale, addMonths, businessDate, uid } from './model.js';
 
 export function demoWorkspace() {
@@ -18,7 +19,9 @@ export function demoWorkspace() {
   };
   state.receipts = [{ id:uid(),saleId:'sale-a',installmentId:'sale-a-0',date:first,amount:500000,type:'receipt' }];
   state.pockets = [{ id:'p-reinvest',name:'Reinvestimento',target:500000,percentBps:1500 },{ id:'p-operation',name:'Operação',target:200000,percentBps:2000 },{ id:'p-reserve',name:'Reserva',target:1000000,percentBps:2000 },{ id:'p-personal',name:'Retirada pessoal',target:0,percentBps:0 }];
-  return state;
+  return typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('grade')
+    ? prepareNovemberGrade(state)
+    : state;
 }
 export const demoLeads = [
   { id:'demo-new',nome:'Lead de demonstração',produto:'Carta Contemplada',canal:'TikTok',etapa:'Negociação',credito:300000,entrada:90000,parcela:1800,telefone:'',cidade:'Exemplo',tags:['PRIORIDADE'],createdAt:new Date().toISOString(),ultimaAtualizacao:businessDate() },
