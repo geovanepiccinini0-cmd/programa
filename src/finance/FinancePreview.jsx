@@ -9,7 +9,7 @@ import { STAGES } from '../constants.js';
 
 export default function FinancePreview() {
   const finance=useFinance({preview:true});
-  const [activeTab,setActiveTab]=useState(new URLSearchParams(window.location.search).has('sinal')?'vendas':'financeiro'),[filterProduto,setFilterProduto]=useState('Todos'),[filterStale,setFilterStale]=useState(false),[sortOrder,setSortOrder]=useState('novo'),[searchQuery,setSearchQuery]=useState(''),[editing,setEditing]=useState(null),[modal,setModal]=useState(false),[error,setError]=useState('');
+  const [activeTab,setActiveTab]=useState(new URLSearchParams(window.location.search).has('grade')?'configuracoes':new URLSearchParams(window.location.search).has('sinal')?'vendas':'financeiro'),[filterProduto,setFilterProduto]=useState('Todos'),[filterStale,setFilterStale]=useState(false),[sortOrder,setSortOrder]=useState('novo'),[searchQuery,setSearchQuery]=useState(''),[editing,setEditing]=useState(null),[modal,setModal]=useState(false),[error,setError]=useState('');
   const leads=finance.state?.demoLeads||demoLeads;
   async function changeLeads(next){setError('');try{await finance.commit(s=>syncWonLeads({...s,demoLeads:next},next),'Operação em lead fictício');}catch(e){setError(e.message);}}
   function changeStage(id,etapa){changeLeads(leads.map(l=>l.id===id?{...l,etapa,wonAt:etapa==='Ganho'?new Date().toISOString():null}:l));}
