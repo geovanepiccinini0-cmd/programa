@@ -8,7 +8,7 @@ import { monthOf, businessDate, money, channelResults, validDate } from './model
 import { Kpis, Panel, Table } from './ui.jsx';
 import './finance.css';
 
-export default function FinanceSuite({finance,activeTab,leads=[]}) {
+export default function FinanceSuite({finance,activeTab,leads=[],selectedCustomerId}) {
   const [month,updateMonth]=useState(monthOf(businessDate())),[message,setMessage]=useState(''),[actionError,setActionError]=useState('');
   const setMonth = value => { if (validDate(`${value}-01`)) updateMonth(value); };
   const {state,commit,loading,saving,error,reload}=finance;
@@ -21,7 +21,7 @@ export default function FinanceSuite({finance,activeTab,leads=[]}) {
   return <div className="fin-app" aria-busy={saving}>
     {(error||actionError)&&<div role="alert" className="fin-error">{actionError||error} <button onClick={reload}>Recarregar dados</button></div>}
     {message&&<p role="status" className="fin-success">{message}</p>}{saving&&<p role="status">Salvando...</p>}
-    {activeTab==='clientes'&&<CustomersView {...props}/>}
+    {activeTab==='clientes'&&<CustomersView {...props} selectedCustomerId={selectedCustomerId}/>}
     {activeTab==='vendas'&&<SalesView {...props}/>}
     {activeTab==='financeiro'&&<FinanceView {...props}/>}
     {activeTab==='configuracoes'&&<SettingsView {...props}/>}

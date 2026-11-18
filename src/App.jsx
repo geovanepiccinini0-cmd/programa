@@ -12,6 +12,7 @@ import MetricasView from './components/MetricasView.jsx';
 import WhatsAppInboxView from './components/WhatsAppInboxView.jsx';
 import AppointmentAlertBanner from './components/AppointmentAlertBanner.jsx';
 import FinanceSuite from './finance/FinanceSuite.jsx';
+import BirthdayReminder from './finance/BirthdayReminder.jsx';
 import { useFinance } from './finance/useFinance.js';
 import { useAppState } from './hooks/useAppState.js';
 import { useAuth } from './hooks/useAuth.js';
@@ -42,6 +43,7 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
   } = useAppState(userId);
 
   const [activeTab, setActiveTab] = useState('hoje');
+  const [selectedCustomerId, setSelectedCustomerId] = useState(null);
   useEffect(() => {
     if (isAdmin && ['vendas', 'financeiro', 'configuracoes', 'clientes', 'metricas'].includes(activeTab)) finance.reload();
   }, [activeTab, isAdmin, finance.reload]);
@@ -171,7 +173,8 @@ function CrmApp({ userId, isAdmin, onSignOut }) {
 
       {!['metricas', 'vendas', 'financeiro', 'configuracoes', 'clientes'].includes(activeTab) && <StatsBar leads={leads} tasks={tasks} />}
 
-      {isAdmin && ['vendas', 'financeiro', 'configuracoes', 'clientes', 'metricas'].includes(activeTab) && <FinanceSuite finance={finance} activeTab={activeTab} leads={leads} />}
+      {isAdmin && <BirthdayReminder state={finance.state} leads={leads} onOpenCustomer={id => { setSelectedCustomerId(id); setActiveTab('clientes'); }} />}
+      {isAdmin && ['vendas', 'financeiro', 'configuracoes', 'clientes', 'metricas'].includes(activeTab) && <FinanceSuite finance={finance} activeTab={activeTab} leads={leads} selectedCustomerId={selectedCustomerId} />}
 
       {activeTab === 'metricas' && isAdmin && <MetricasView userId={userId} />}
 
