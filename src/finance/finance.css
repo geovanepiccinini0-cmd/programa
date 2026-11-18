@@ -3,3 +3,11 @@
 @media(max-width:650px){.fin-title h1{font-size:25px}.fin-form,.fin-pocket-grid{grid-template-columns:1fr}.fin-panel,.fin-pocket{padding:16px}.fin-field input,.fin-field select,.fin-field textarea{font-size:16px;min-height:44px}.fin-app button{min-height:44px}.fin-preview-banner{flex-direction:column;align-items:stretch}.fin-kpi{padding:16px}.fin-kpi strong{font-size:22px}.fin-month-chart{gap:12px}.fin-month-chart>div{min-width:90px}.fin-title{gap:15px}.fin-table td,.fin-table th{padding:12px 8px}}
 @media print{.crm-sidebar,.crm-toolbar,.fin-toolbar,.fin-subnav,.fin-preview-banner,.fin-actions,.fin-app button{display:none!important}.crm-shell{display:block!important}.crm-workspace{padding:0!important}.fin-panel{break-inside:avoid}.fin-table-scroll{overflow:visible}}
 .fin-cohort-map .fin-table th:first-child{position:sticky;left:0;z-index:1;background:#fff;min-width:205px}.fin-cohort-map .fin-table thead th:first-child,.fin-cohort-map .fin-table tfoot th{background:#f0f4f7}.fin-cohort-map .fin-table td{white-space:nowrap;text-align:right;padding:9px 8px}.fin-cohort-map .fin-cell{min-width:108px;padding:8px;font-size:13px}.fin-cohort-map .fin-table tfoot td{background:#eaf4ed;color:#245b40}.fin-cohort-map .fin-table tbody th{text-transform:capitalize;font-weight:500}.fin-cohort-map .fin-table th{font-size:12px}.fin-cohort-map .fin-table thead th{white-space:normal}
+
+.birthday-reminder{border:1px solid var(--border);border-top:5px solid var(--gold,#b88635);border-radius:18px;padding:26px;width:min(540px,calc(100vw - 32px));max-height:85vh;overflow:auto;background:var(--surface,#fff);color:var(--navy,#20364b);box-shadow:0 20px 70px #142b4433}
+.birthday-reminder::backdrop{background:#142b4470}
+.birthday-reminder h2{margin:12px 0;font-size:26px}
+.birthday-reminder ul{list-style:none;padding:0;margin:20px 0}
+.birthday-reminder li{padding:16px 0;border-top:1px solid var(--border)}
+.birthday-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+.birthday-actions a{display:inline-block;text-decoration:none;padding:10px 14px;border-radius:8px}

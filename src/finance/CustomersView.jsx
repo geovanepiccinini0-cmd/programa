@@ -1,10 +1,15 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { customerPortfolio, saveCustomer, linkCustomer } from './customers.js';
 import { businessDate, money, dateLabel } from './model.js';
 import { Panel, Kpis, Table, Field, Empty } from './ui.jsx';
-export default function CustomersView({state,leads,commit,run,saving}){
+export default function CustomersView({state,leads,commit,run,saving,selectedCustomerId}){
  const [query,setQuery]=useState(''),[filter,setFilter]=useState('all'),[draft,setDraft]=useState(null),[section,setSection]=useState('profile'),[linkTarget,setLinkTarget]=useState('');
  const customers=customerPortfolio(state,leads),month=businessDate().slice(5,7),birthday=c=>c.birth?.slice(5,7)===month;
+ useEffect(() => {
+   if (!selectedCustomerId) return;
+   const customer = customerPortfolio(state, leads).find(c => c.id === selectedCustomerId);
+   if (customer) { setDraft(structuredClone(customer)); setSection('profile'); }
+ }, [selectedCustomerId]);
  const rows=customers.filter(c=>`${c.name} ${c.phone} ${c.city} ${c.cpf}`.toLowerCase().includes(query.toLowerCase())&&(filter==='all'||filter==='birthday'&&birthday(c)||filter==='missing'&&!c.birth||filter==='revisit'&&c.interests));
  const sales=c=>state.sales.filter(s=>c.saleIds.includes(s.id));
  const save=e=>{e.preventDefault();run(()=>commit(s=>saveCustomer(s,draft,leads),'Cadastro e referências do cliente'),'Ficha do cliente salva.');};
