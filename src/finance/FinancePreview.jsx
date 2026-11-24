@@ -10,7 +10,7 @@ import { STAGES } from '../constants.js';
 
 export default function FinancePreview() {
   const finance=useFinance({preview:true});
-  const [activeTab,setActiveTab]=useState(new URLSearchParams(window.location.search).has('grade')?'configuracoes':new URLSearchParams(window.location.search).has('sinal')?'vendas':'financeiro'),[filterProduto,setFilterProduto]=useState('Todos'),[filterStale,setFilterStale]=useState(false),[sortOrder,setSortOrder]=useState('novo'),[searchQuery,setSearchQuery]=useState(''),[editing,setEditing]=useState(null),[modal,setModal]=useState(false),[error,setError]=useState('');
+  const [activeTab,setActiveTab]=useState(new URLSearchParams(window.location.search).has('grade')?'configuracoes':new URLSearchParams(window.location.search).has('sinal')||new URLSearchParams(window.location.search).has('consorcios')?'vendas':'financeiro'),[filterProduto,setFilterProduto]=useState('Todos'),[filterStale,setFilterStale]=useState(false),[sortOrder,setSortOrder]=useState('novo'),[searchQuery,setSearchQuery]=useState(''),[editing,setEditing]=useState(null),[modal,setModal]=useState(false),[error,setError]=useState('');
   const leads=finance.state?.demoLeads||demoLeads;
   const birthdayDemo=new URLSearchParams(window.location.search).has('aniversarios');
   const [reminderKey,setReminderKey]=useState(0),[selectedCustomerId,setSelectedCustomerId]=useState(null);

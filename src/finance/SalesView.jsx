@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import ConsortiumSalesReport from './ConsortiumSalesReport.jsx';
 import SaleRecovery from './SaleRecovery.jsx';
 import { SettlementEditor, SettlementReport, validateSettlement } from './ContemplatedSettlement.jsx';
 import { canConfirmHistoricalRule, historicalRuleConfirmation, hasHistoricalRuleConfirmation } from './historicalSales.js';
@@ -10,7 +11,7 @@ import { Field, Amount, Panel, Table, Empty, Status, Kpis } from './ui.jsx';
 const blankSale=()=>({id:uid(),name:'',product:'Carta Contemplada',channel:'Não informado',soldAt:businessDate(),firstDue:'',credit:'',saleValue:'',costValue:'',officePercent:50,administratorId:'',modality:'Imóveis',plan:'Parcela integral',ruleId:'',status:'draft',installments:[]});
 const toForm=s=>({...s,credit:s.credit==null||s.credit===''?'':s.credit/100,saleValue:s.saleValue==null||s.saleValue===''?'':s.saleValue/100,costValue:s.costValue==null||s.costValue===''?'':s.costValue/100,firstDue:s.firstDue || ''});
 export default function SalesView({state,commit,run,saving,month,setMonth,leads=[]}) {
-  const [editing,setEditing]=useState(null),[query,setQuery]=useState(''),[scope,setScope]=useState('all'),[report,setReport]=useState(false);
+  const [editing,setEditing]=useState(null),[query,setQuery]=useState(''),[scope,setScope]=useState('all'),[report,setReport]=useState(new URLSearchParams(window.location.search).has('consorcios')),[reportType,setReportType]=useState(new URLSearchParams(window.location.search).has('consorcios')?'consortium':'contemplated');
   const all=state.sales.filter(s=>s.name.toLowerCase().includes(query.toLowerCase()) && (scope==='all'||s.status===scope));
   const closed=state.sales.filter(s=>s.status==='confirmed'&&monthOf(s.soldAt)===month);
   const contemplated=closed.filter(s=>s.product==='Carta Contemplada');
@@ -54,12 +55,14 @@ export default function SalesView({state,commit,run,saving,month,setMonth,leads=
     <div className="fin-title"><div><span className="eyebrow">Produção comercial</span><h1>Vendas</h1><p>Do fechamento à comissão, com cada condição registrada.</p></div><button className="btn-primary" onClick={()=>setEditing(toForm(blankSale()))}>+ Registrar venda</button></div>
     <Kpis items={[["Vendas no mês",closed.length,'Por data de fechamento'],['Crédito comercializado',money(sum(closed,'credit')),'Volume de crédito de todos os produtos'],['Sua comissão gerada',money(sum(closed,'own')),'Recebimentos ficam no Financeiro'],['Aguardando informações',state.sales.filter(s=>s.status==='draft').length,'Não entram na comissão confirmada']]}/>
     <div className="fin-toolbar"><Field label="Mês de fechamento"><input type="month" value={month} onChange={e=>setMonth(e.target.value)}/></Field><button onClick={()=>setReport(!report)} aria-pressed={report}>Demonstrativo do escritório</button><button onClick={download}>Exportar vendas CSV</button></div>
-    {report&&<Panel title="Demonstrativo mensal · Contempladas" note="Divisão comercial antes de despesas próprias. Repasse apurado não significa repasse pago.">
+    {report&&<Field label="Tipo de demonstrativo"><select value={reportType} onChange={e=>setReportType(e.target.value)}><option value="contemplated">Cartas contempladas</option><option value="consortium">Consórcios</option></select></Field>}
+    {report&&reportType==='consortium'&&<ConsortiumSalesReport state={state} month={month}/>}
+    {report&&reportType==='contemplated'&&<Panel title="Demonstrativo mensal · Contempladas"  note="Divisão comercial antes de despesas próprias. Repasse apurado não significa repasse pago.">
       <Table headers={['Cliente / fechamento','Crédito','Venda da cota','Custo','Comissão','Escritório / você','Escritório','Geovane']} foot={<tr><th>Total</th><td>{money(sum(contemplated,'credit'))}</td><td>{money(sum(contemplated,'saleValue'))}</td><td>{money(sum(contemplated,'costValue'))}</td><td>{money(sum(contemplated,'gross'))}</td><td>Por venda</td><td>{money(sum(contemplated,'office'))}</td><td>{money(sum(contemplated,'own'))}</td></tr>}>
         {contemplated.map(s=><tr key={s.id}><th scope="row">{s.name}<small>{dateLabel(s.soldAt)}</small>{s.supplier&&<small>Parceiro: {s.supplier}</small>}</th><td>{money(s.credit)}</td><td>{money(s.saleValue)}</td><td>{money(s.costValue)}</td><td>{money(s.gross)}</td><td>{s.officePercent}% / {100-s.officePercent}%</td><td>{money(s.office)}</td><td>{money(s.own)}</td></tr>)}
       </Table>{!contemplated.length&&<Empty/>}
     </Panel>}
-    {report&&<SettlementReport sales={contemplated} state={state}/>}
+    {report&&reportType==='contemplated'&&<SettlementReport sales={contemplated} state={state}/>}
     {editing&&<Panel title={locked?'Condições históricas da venda':'Condições da venda'} note={locked?'Existem movimentos financeiros. Condições preservadas; devoluções e cancelamentos ficam no Financeiro.':editing.product==='Carta Contemplada'?'O valor de venda é a entrada informada no lead. Confira os dados, preencha o custo e identifique o parceiro. A parcela do consórcio é apenas informativa.':'Crédito, valor comercial e sua remuneração são informações distintas.'} actions={<button onClick={()=>setEditing(null)}>Fechar</button>}>
       <form onSubmit={e=>save(e,'confirmed')}><fieldset disabled={saving||locked} className="fin-fieldset"><div className="fin-form">
         <Field label="Cliente" value={editing.name} onChange={e=>field('name',e.target.value)} required/>

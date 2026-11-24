@@ -5,7 +5,7 @@ import './styles.css';
 // Netlify Deploy Previews never mount the authenticated CRM or its Supabase
 // client. Only fictional browser-local data is available in this build.
 const preview = __FINANCE_PREVIEW__ || (import.meta.env.DEV && new URLSearchParams(window.location.search).has('finance-preview'));
-const settlementDemo = ['sinal','grade','aniversarios'].some(key => new URLSearchParams(window.location.search).has(key));
+const settlementDemo = ['sinal','grade','aniversarios','consorcios'].some(key => new URLSearchParams(window.location.search).has(key));
 const App = React.lazy(() => preview
   ? (settlementDemo ? import('./finance/FinancePreview.jsx') : import('./finance/PortfolioPreview.jsx'))
   : import('./App.jsx'));
